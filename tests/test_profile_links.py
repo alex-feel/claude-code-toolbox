@@ -34,16 +34,20 @@ _REAL_INSTALLED_PROFILES = setup_environment.installed_profiles
 
 def _args(
     *,
+    config: str | None = None,
     link_dirs: str | None = None,
     link_from: str | None = None,
     env: dict[str, str] | None = None,
     select: str | None = None,
+    skip_install: bool = True,
+    run_all_commands: bool = False,
 ) -> argparse.Namespace:
     """Build resolved arguments the way main() does."""
     namespace = argparse.Namespace(
-        config=None, yes=True, dry_run=False, skip_install=True, no_admin=True, env_vars=None,
+        config=config, yes=True, dry_run=False, skip_install=skip_install, no_admin=True, env_vars=None,
         select=select, with_=None, without=None, list_components=False, command_names=None, profile=None,
-        switch_config=False, child_run=False, link_dirs=link_dirs, link_from=link_from, run_all_commands=False,
+        switch_config=False, child_run=False, for_dependent=None, link_dirs=link_dirs, link_from=link_from,
+        run_all_commands=run_all_commands,
     )
     cleared = {twin.variable: '' for twin in setup_environment.ENV_TWINS}
     with patch.dict(os.environ, {**cleared, **(env or {})}, clear=False):
@@ -737,6 +741,530 @@ class TestDependentHelpers:
         assert skipped == [(str(profile / 'skills' / 'a.txt'), 'skills')]
 
 
+TEAM_URL = 'https://example.com/team.yaml'
+SNAPSHOT_TEXT = 'name: Team\nagents:\n- agents/core.md\n'
+
+
+def _loaded(config: dict[str, Any], version: str | None = '1.1.0') -> setup_environment.LoadedConfiguration:
+    """A configuration as fetch_configuration() returns it."""
+    return setup_environment.LoadedConfiguration(config, TEAM_URL, version, [])
+
+
+def _digest_of(config: dict[str, Any]) -> str:
+    """The digest a source's run records for a configuration."""
+    return setup_environment.config_digest_of(setup_environment.render_resolved_config(config))
+
+
+def _source(
+    tmp_path: Path,
+    *,
+    digest: str | None,
+    components: dict[str, str | None] | None = None,
+    components_origin: str = 'yaml',
+) -> LinkSource:
+    """Install the manifest and the snapshot of a source profile and return it as a link source."""
+    source_dir = tmp_path / '.claude' / 'team-1'
+    manifest = _manifest(source_dir, 'team-1', config_source=TEAM_URL)
+    manifest['config_digest'] = digest
+    manifest['version'] = '1.0.0'
+    manifest['installed_at'] = '2026-10-01T10:00:00+00:00'
+    manifest['components'] = components
+    manifest['origins']['components'] = components_origin
+    (source_dir / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+    (source_dir / 'resolved-config.yaml').write_text(SNAPSHOT_TEXT, encoding='utf-8')
+    return LinkSource('team-1', source_dir, manifest)
+
+
+def _resolve(
+    source: LinkSource, args: argparse.Namespace, tmp_path: Path, **kwargs: Any,
+) -> setup_environment.DependentConfiguration:
+    """Resolve the configuration of a run installing team-2 from the source."""
+    return setup_environment.resolve_dependent_configuration(
+        source, 'team-2', args=args, config_name=TEAM_URL, home_dir=tmp_path, **kwargs,
+    )
+
+
+class TestDependentConfiguration:
+    """resolve_dependent_configuration() applies the source's snapshot or refreshes the source first."""
+
+    def test_profile_rerun_without_a_configuration_applies_the_snapshot_without_fetching(self, tmp_path: Path) -> None:
+        source = _source(tmp_path, digest='stale')
+        with patch.object(setup_environment, 'fetch_configuration') as fetch:
+            result = _resolve(source, _args(), tmp_path)
+        fetch.assert_not_called()
+        assert result.config == {'name': 'Team', 'agents': ['agents/core.md']}
+        assert result.config_source == TEAM_URL
+        assert result.config_version == '1.0.0'
+        assert result.inheritance_chain == []
+        assert result.refresh is None
+
+    def test_matching_configuration_applies_the_snapshot_after_one_fetch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        fetched = {'name': 'Team', 'agents': ['agents/core.md']}
+        source = _source(tmp_path, digest=_digest_of(fetched))
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)) as fetch:
+            result = _resolve(source, _args(config=TEAM_URL), tmp_path)
+        fetch.assert_called_once_with(TEAM_URL, None)
+        assert result.refresh is None
+        assert result.config == {'name': 'Team', 'agents': ['agents/core.md']}
+        assert result.config_version == '1.0.0', 'the snapshot run records the source manifest version'
+        output = capsys.readouterr().out
+        assert 'The configuration matches the resolved-config.yaml of profile "team-1"; applying the snapshot' in output
+        assert 'Applying the configuration profile "team-1" installed' in output
+
+    def test_configuration_that_differs_refreshes_the_source_first(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        claude = tmp_path / '.claude'
+        _manifest(claude / 'team-2', 'team-2', link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
+        _manifest(claude / 'team-3', 'team-3', link=_record(['skills'], 'team-1'))
+        _manifest(claude / 'sessions', 'sessions', link=_record(['projects'], 'team-1'))
+        fetched = {'name': 'Team', 'agents': ['agents/core.md', 'agents/extra.md']}
+        source = _source(tmp_path, digest=_digest_of({'name': 'Team', 'agents': ['agents/core.md']}))
+        chain = [
+            setup_environment.InheritanceChainEntry(source='https://example.com/base.yaml', source_type='url', name='Base'),
+        ]
+        loaded = setup_environment.LoadedConfiguration(fetched, TEAM_URL, '1.1.0', chain)
+        with (
+            patch.object(setup_environment, 'fetch_configuration', return_value=loaded),
+            patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES),
+        ):
+            result = _resolve(source, _args(config=TEAM_URL, skip_install=False), tmp_path)
+        assert result.config == fetched
+        assert result.config is not fetched, 'the run gets its own copy'
+        assert result.config_source == TEAM_URL
+        assert result.config_version == '1.1.0'
+        assert result.inheritance_chain == chain
+        assert result.refresh == setup_environment.SourceRefresh(
+            'team-1', source.directory, 'differs', _digest_of(fetched), ['team-3'], False, False, fetched,
+        )
+        output = capsys.readouterr().out
+        assert (
+            'Profile "team-1" is stale: the configuration this run was given differs from the snapshot it installed; '
+            'it is refreshed before this profile installs'
+        ) in output
+        assert 'Applying the configuration profile' not in output
+
+    def test_missing_digest_refreshes_the_source(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        fetched = {'name': 'Team', 'agents': ['agents/core.md']}
+        source = _source(tmp_path, digest=None)
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)):
+            result = _resolve(source, _args(config=TEAM_URL), tmp_path)
+        assert result.refresh is not None
+        assert result.refresh.reason == 'missing'
+        assert result.refresh.digest == _digest_of(fetched)
+        assert result.refresh.dependents == []
+        assert result.refresh.skip_install is True
+        output = capsys.readouterr().out
+        assert 'Profile "team-1" is stale: its manifest records no configuration digest; it is refreshed' in output
+
+    def test_already_loaded_configuration_is_compared_without_a_second_fetch(self, tmp_path: Path) -> None:
+        fetched = {'name': 'Team', 'agents': ['agents/core.md', 'agents/extra.md']}
+        source = _source(tmp_path, digest='stale')
+        with patch.object(setup_environment, 'fetch_configuration') as fetch:
+            result = _resolve(source, _args(config=TEAM_URL), tmp_path, loaded=_loaded(fetched))
+        fetch.assert_not_called()
+        assert result.refresh is not None
+        assert result.refresh.reason == 'differs'
+
+    def test_environment_configuration_counts_as_given(self, tmp_path: Path) -> None:
+        fetched = {'name': 'Team', 'agents': ['agents/core.md']}
+        source = _source(tmp_path, digest='stale')
+        args = _args(env={'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': TEAM_URL})
+        assert args.origins['config'] == 'env'
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)) as fetch:
+            result = _resolve(source, args, tmp_path)
+        fetch.assert_called_once()
+        assert result.refresh is not None
+
+    def test_source_component_selection_is_replayed_before_the_digest(self, tmp_path: Path) -> None:
+        """The digest is taken from the configuration as the source's remembered --with filters it."""
+        def _fetched() -> dict[str, Any]:
+            return {
+                'name': 'Components',
+                'agents': ['agents/core.md', 'agents/extra.md'],
+                'components': [
+                    {'name': 'core', 'includes': {'agents': ['agents/core.md']}},
+                    {'name': 'extra', 'default': False, 'includes': {'agents': ['agents/extra.md']}},
+                ],
+            }
+
+        with_extra = _digest_of(_fetched())
+        defaults_only = _digest_of({**_fetched(), 'agents': ['agents/core.md']})
+        assert with_extra != defaults_only
+        delta: dict[str, str | None] = {'select': None, 'with': 'extra', 'without': None}
+
+        remembered = _source(tmp_path, digest=with_extra, components=delta, components_origin='cli')
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(_fetched())):
+            assert _resolve(remembered, _args(config=TEAM_URL), tmp_path).refresh is None
+
+        unremembered = _source(tmp_path, digest=with_extra, components=delta, components_origin='yaml')
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(_fetched())):
+            result = _resolve(unremembered, _args(config=TEAM_URL), tmp_path)
+        assert result.refresh is not None
+        assert result.refresh.digest == defaults_only, 'a delta recorded with a yaml origin is not replayed'
+        assert result.config == {'name': 'Components', 'agents': ['agents/core.md']}, 'components popped, extra dropped'
+
+    def test_remembered_selection_the_configuration_no_longer_declares_stops_the_run(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        fetched = {
+            'name': 'Components', 'agents': ['agents/core.md'],
+            'components': [{'name': 'core', 'includes': {'agents': ['agents/core.md']}}],
+        }
+        source = _source(
+            tmp_path, digest='stale', components={'select': None, 'with': 'gone', 'without': None}, components_origin='cli',
+        )
+        with (
+            patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _resolve(source, _args(config=TEAM_URL), tmp_path)
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert f"recorded in {source.directory / 'manifest.json'}) names 'gone' in --with" in err
+        assert 'Profile "team-1" cannot be refreshed from this configuration until its remembered selection is replaced' in err
+
+    def test_invalid_fetched_configuration_stops_the_run(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        fetched = {
+            'name': 'Components', 'agents': ['agents/core.md'],
+            'components': [{'name': 'core', 'includes': {'agents': ['agents/missing.md']}}],
+        }
+        source = _source(tmp_path, digest='stale')
+        with (
+            patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _resolve(source, _args(config=TEAM_URL), tmp_path)
+        assert exc_info.value.code == 1
+        assert 'agents/missing.md' in capsys.readouterr().err
+
+    def test_stale_path_installs_the_snapshot_the_refreshed_source_records(self, tmp_path: Path) -> None:
+        """The configuration installed after a refresh has the shape of a run by name: no profile identity keys."""
+        registry = [
+            {'name': 'core', 'includes': {'agents': ['agents/core.md']}},
+            {'name': 'extra', 'default': False, 'includes': {'agents': ['agents/extra.md']}},
+        ]
+        fetched = {
+            'name': 'Team', 'command-names': ['team-1', 't1'], 'link-dirs': ['projects'], 'link-from': 'base',
+            'agents': ['agents/core.md', 'agents/extra.md'], 'components': registry,
+        }
+        source = _source(tmp_path, digest='stale')
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)):
+            result = _resolve(source, _args(config=TEAM_URL), tmp_path)
+        assert result.refresh is not None
+        assert result.config == {'name': 'Team', 'agents': ['agents/core.md']}
+        for key in setup_environment.PROFILE_IDENTITY_CONFIG_KEYS:
+            assert key not in result.config, key
+        snapshot = {'name': 'Team', 'agents': ['agents/core.md'], 'components': registry}
+        assert result.refresh.digest == _digest_of(snapshot), 'the digest is that of the snapshot the source records'
+        assert result.refresh.snapshot == snapshot, 'the refresh carries the snapshot whose digest it records'
+        assert result.config == setup_environment.dependent_configuration_of(snapshot)
+        assert 'components' not in result.config
+
+    @pytest.mark.parametrize('given', ['flag', 'environment'])
+    def test_run_all_commands_reaches_the_refresh(self, tmp_path: Path, given: str) -> None:
+        """--run-all-commands, typed or from its environment twin, travels to the source's run."""
+        fetched = {'name': 'Team', 'agents': ['agents/core.md', 'agents/extra.md']}
+        source = _source(tmp_path, digest='stale')
+        args = (
+            _args(config=TEAM_URL, run_all_commands=True) if given == 'flag'
+            else _args(config=TEAM_URL, env={'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'})
+        )
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)):
+            result = _resolve(source, args, tmp_path)
+        assert result.refresh is not None
+        assert result.refresh.run_all_commands is True
+        assert result.refresh.child_arguments('team-2')[-1] == '--run-all-commands'
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)):
+            plain = _resolve(source, _args(config=TEAM_URL), tmp_path)
+        assert plain.refresh is not None
+        assert plain.refresh.run_all_commands is False
+        assert '--run-all-commands' not in plain.refresh.child_arguments('team-2')
+
+    def test_base_source_is_refreshed_like_an_isolated_one(self, tmp_path: Path) -> None:
+        """A dependent of the base profile refreshes it as --profile base and leaves itself out of its Step 23."""
+        claude = tmp_path / '.claude'
+        manifest = _manifest(claude, None, config_source=TEAM_URL)
+        manifest['config_digest'] = 'stale'
+        (claude / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+        (claude / 'resolved-config.yaml').write_text(SNAPSHOT_TEXT, encoding='utf-8')
+        _manifest(claude / 'team-2', 'team-2', link=_record(list(LINKABLE_PROFILE_DIRS), 'base'))
+        _manifest(claude / 'team-3', 'team-3', link=_record(list(LINKABLE_PROFILE_DIRS), 'base'))
+        base = LinkSource('base', claude, manifest)
+        fetched = {'name': 'Team', 'agents': ['agents/core.md', 'agents/extra.md']}
+        with (
+            patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)),
+            patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES),
+        ):
+            result = _resolve(base, _args(config=TEAM_URL), tmp_path)
+        assert result.refresh == setup_environment.SourceRefresh(
+            'base', claude, 'differs', _digest_of(fetched), ['team-3'], True, False, fetched,
+        )
+        assert result.refresh is not None
+        assert result.refresh.child_arguments('team-2') == [
+            '--profile', 'base', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+        ]
+        assert result.refresh.covered_profiles() == ['base', 'team-3']
+        assert result.config == fetched
+
+
+class TestSourceRefreshOutcome:
+    """source_refresh_recorded() and unrefreshed_siblings() read what the source's run left behind."""
+
+    @staticmethod
+    def _refreshed_source(tmp_path: Path, snapshot: dict[str, Any]) -> setup_environment.SourceRefresh:
+        """Write a source whose manifest and resolved-config.yaml record the snapshot, and the refresh that asked for it."""
+        source_dir = tmp_path / '.claude' / 'team-1'
+        manifest = _manifest(source_dir, 'team-1', config_source=TEAM_URL)
+        text = setup_environment.render_resolved_config(snapshot)
+        manifest['config_digest'] = setup_environment.config_digest_of(text)
+        (source_dir / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+        (source_dir / 'resolved-config.yaml').write_text(text, encoding='utf-8')
+        return setup_environment.SourceRefresh(
+            'team-1', source_dir, 'differs', manifest['config_digest'], ['team-3', 'team-4'], True, False, snapshot,
+        )
+
+    @staticmethod
+    def _dependent(tmp_path: Path, name: str, digest: str) -> Path:
+        """Write a dependent of team-1 recording a digest and return its manifest path."""
+        directory = tmp_path / '.claude' / name
+        manifest = _manifest(directory, name, link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
+        manifest['config_digest'] = digest
+        path = directory / 'manifest.json'
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        return path
+
+    def test_recorded_when_the_manifest_holds_the_digest_the_refresh_asked_for(self, tmp_path: Path) -> None:
+        refresh = self._refreshed_source(tmp_path, {'name': 'Team', 'agents': ['agents/core.md']})
+        assert setup_environment.source_refresh_recorded(refresh)
+        assert not setup_environment.source_refresh_recorded(refresh._replace(digest='other'))
+        (refresh.directory / 'manifest.json').write_text('{not json', encoding='utf-8')
+        assert not setup_environment.source_refresh_recorded(refresh)
+        (refresh.directory / 'manifest.json').unlink()
+        assert not setup_environment.source_refresh_recorded(refresh)
+
+    def test_siblings_are_compared_with_the_digest_a_dependent_records(self, tmp_path: Path) -> None:
+        """A dependent records the snapshot without the components registry, so that digest is the expected one."""
+        snapshot = {
+            'name': 'Components', 'agents': ['agents/core.md'],
+            'components': [{'name': 'core', 'includes': {'agents': ['agents/core.md']}}],
+        }
+        refresh = self._refreshed_source(tmp_path, snapshot)
+        dependent_digest = _digest_of(setup_environment.dependent_configuration_of(snapshot))
+        assert dependent_digest != refresh.digest
+        self._dependent(tmp_path, 'team-3', dependent_digest)
+        stale = self._dependent(tmp_path, 'team-4', 'stale')
+        assert setup_environment.unrefreshed_siblings(refresh, tmp_path) == ['team-4']
+        stale.write_text('{not json', encoding='utf-8')
+        assert setup_environment.unrefreshed_siblings(refresh, tmp_path) == ['team-4']
+        (tmp_path / '.claude' / 'team-3' / 'manifest.json').unlink()
+        assert setup_environment.unrefreshed_siblings(refresh, tmp_path) == ['team-3', 'team-4']
+
+    def test_every_sibling_counts_as_left_behind_without_the_refreshed_snapshot(self, tmp_path: Path) -> None:
+        snapshot = {'name': 'Team', 'agents': ['agents/core.md']}
+        refresh = self._refreshed_source(tmp_path, snapshot)
+        self._dependent(tmp_path, 'team-3', refresh.digest)
+        self._dependent(tmp_path, 'team-4', refresh.digest)
+        assert setup_environment.unrefreshed_siblings(refresh, tmp_path) == []
+        (refresh.directory / 'resolved-config.yaml').unlink()
+        assert setup_environment.unrefreshed_siblings(refresh, tmp_path) == ['team-3', 'team-4']
+
+
+class TestSourceRefresh:
+    """SourceRefresh renders the summary rows and starts the source's run."""
+
+    def _refresh(
+        self,
+        tmp_path: Path,
+        *,
+        reason: str = 'differs',
+        dependents: list[str] | None = None,
+        skip_install: bool = True,
+        run_all_commands: bool = False,
+        snapshot: dict[str, Any] | None = None,
+    ) -> setup_environment.SourceRefresh:
+        return setup_environment.SourceRefresh(
+            'team-1', tmp_path / '.claude' / 'team-1', reason, 'abc', dependents or [], skip_install, run_all_commands,
+            snapshot or {},
+        )
+
+    def test_child_arguments_carry_both_hidden_flags_and_the_parents_skip_install(self, tmp_path: Path) -> None:
+        assert self._refresh(tmp_path).child_arguments('team-2') == [
+            '--profile', 'team-1', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+        ]
+        assert self._refresh(tmp_path, skip_install=False).child_arguments('team-2') == [
+            '--profile', 'team-1', '--yes', '--child-run', '--for-dependent', 'team-2', '--no-admin',
+        ]
+
+    def test_child_arguments_and_the_command_row_carry_the_parents_run_all_commands(self, tmp_path: Path) -> None:
+        """The child's environment loses the twin, so the flag travels in argv and the summary names it."""
+        refresh = self._refresh(tmp_path, run_all_commands=True)
+        assert refresh.child_arguments('team-2') == [
+            '--profile', 'team-1', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+            '--run-all-commands',
+        ]
+        assert refresh.rows()[1] == 'command: --profile team-1 --yes --skip-install --no-admin --run-all-commands'
+
+    def test_elevation_reasons_name_the_sources_install_and_its_commands_as_its_run_spells_them(
+        self, tmp_path: Path,
+    ) -> None:
+        """The source's run starts with --no-admin, so the dependent's run decides elevation from its work."""
+        home = tmp_path / 'home'
+        snapshot = {'dependencies': {
+            'windows': ['npm install -g x --prefix ~/.claude/tools', 'winget install y --scope machine'],
+            'common': ['uv tool install z'],
+        }}
+        isolated = setup_environment.SourceRefresh(
+            'team-1', home / '.claude' / 'team-1', 'differs', 'abc', [], False, False, snapshot,
+        )
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert isolated.elevation_reasons(home, ['team-1']) == [
+                'Installing Claude Code (includes Node.js and Git)',
+                'Global npm package: npm install -g x --prefix ~/.claude/team-1/tools',
+                'System-wide installation: winget install y --scope machine',
+            ]
+            assert isolated._replace(skip_install=True).elevation_reasons(home, ['team-1']) == [
+                'Global npm package: npm install -g x --prefix ~/.claude/team-1/tools',
+                'System-wide installation: winget install y --scope machine',
+            ]
+            base = isolated._replace(source='base', directory=home / '.claude', skip_install=True)
+            assert base.elevation_reasons(home, ['base']) == [
+                'Global npm package: npm install -g x --prefix ~/.claude/tools',
+                'System-wide installation: winget install y --scope machine',
+            ]
+        assert snapshot['dependencies']['windows'][0] == 'npm install -g x --prefix ~/.claude/tools', 'left as authored'
+        with patch.object(setup_environment.platform, 'system', return_value='Linux'):
+            assert isolated.elevation_reasons(home, ['team-1']) == []
+
+    def test_base_source_runs_as_profile_base(self, tmp_path: Path) -> None:
+        """The base profile is refreshed by its own --profile base run, like any isolated source."""
+        refresh = setup_environment.SourceRefresh(
+            'base', tmp_path / '.claude', 'differs', 'abc', ['team-3'], True, False, {},
+        )
+        assert refresh.child_arguments('team-2') == [
+            '--profile', 'base', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+        ]
+        assert refresh.rows()[1] == 'command: --profile base --yes --skip-install --no-admin'
+        assert refresh.rows()[2] == 'other profiles its run refreshes: team-3'
+        assert refresh.covered_profiles() == ['base', 'team-3']
+
+    def test_rows_name_the_reason_the_command_and_the_other_dependents(self, tmp_path: Path) -> None:
+        assert self._refresh(tmp_path, dependents=['team-3', 'team-4']).rows() == [
+            'reason: the configuration this run was given differs from the snapshot it installed',
+            'command: --profile team-1 --yes --skip-install --no-admin',
+            'other profiles its run refreshes: team-3, team-4',
+            'this profile then installs from the fresh resolved-config.yaml',
+        ]
+        assert self._refresh(tmp_path, reason='missing', skip_install=False).rows() == [
+            'reason: its manifest records no configuration digest',
+            'command: --profile team-1 --yes --no-admin',
+            'no other installed profile links content from it',
+            'this profile then installs from the fresh resolved-config.yaml',
+        ]
+
+    def test_refresh_source_profile_runs_the_child_with_a_clean_environment(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        calls: list[tuple[list[str], dict[str, str]]] = []
+
+        def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append((argv, cast(dict[str, str], kwargs['env'])))
+            return subprocess.CompletedProcess(argv, 4)
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=_run),
+            patch.dict(os.environ, {
+                'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'leak', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'leak',
+                'CLAUDE_CONFIG_DIR': '/x', 'GITHUB_TOKEN': 't', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'h:v',
+            }),
+            patch('sys.argv', ['/repo/scripts/setup_environment.py', 'team.yaml', '--yes', '--command-names', 'team-2']),
+        ):
+            code = setup_environment.refresh_source_profile(self._refresh(tmp_path), 'team-2')
+
+        assert code == 4
+        assert [argv for argv, _ in calls] == [[
+            sys.executable, '/repo/scripts/setup_environment.py', '--profile', 'team-1', '--yes', '--child-run',
+            '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+        ]]
+        env = calls[0][1]
+        for variable in ('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'CLAUDE_CONFIG_DIR'):
+            assert variable not in env, variable
+        assert env['GITHUB_TOKEN'] == 't'
+        assert env['CLAUDE_CODE_TOOLBOX_ENV_AUTH'] == 'h:v'
+        assert '=== Source profile team-1 ===' in capsys.readouterr().out
+
+    def test_packaged_entry_point_starts_the_source_through_the_cli_module(self, tmp_path: Path) -> None:
+        calls: list[list[str]] = []
+
+        def _run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=_run),
+            patch.object(setup_environment, '__name__', 'cc_toolbox.setup_environment'),
+            patch('sys.argv', ['/venv/bin/cc-toolbox', 'setup', 'team.yaml', '--command-names', 'team-2']),
+        ):
+            assert setup_environment.refresh_source_profile(self._refresh(tmp_path, skip_install=False), 'team-2') == 0
+        assert calls == [[
+            sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'team-1', '--yes', '--child-run',
+            '--for-dependent', 'team-2', '--no-admin',
+        ]]
+
+    def test_refresh_source_profile_hands_on_run_all_commands(self, tmp_path: Path) -> None:
+        """The flag reaches the source's run in argv, because its environment twin is stripped."""
+        calls: list[tuple[list[str], dict[str, str]]] = []
+
+        def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append((argv, cast(dict[str, str], kwargs['env'])))
+            return subprocess.CompletedProcess(argv, 0)
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=_run),
+            patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'}),
+            patch('sys.argv', ['/repo/scripts/setup_environment.py']),
+        ):
+            refresh = self._refresh(tmp_path, run_all_commands=True)
+            assert setup_environment.refresh_source_profile(refresh, 'team-2') == 0
+        assert [argv for argv, _ in calls] == [[
+            sys.executable, '/repo/scripts/setup_environment.py', '--profile', 'team-1', '--yes', '--child-run',
+            '--for-dependent', 'team-2', '--skip-install', '--no-admin', '--run-all-commands',
+        ]]
+        assert 'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS' not in calls[0][1]
+
+    def test_unstartable_child_is_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=OSError('no interpreter')),
+            patch('sys.argv', ['/repo/scripts/setup_environment.py']),
+        ):
+            assert setup_environment.refresh_source_profile(self._refresh(tmp_path), 'team-2') == 1
+        assert 'Cannot start the run of profile "team-1": no interpreter' in capsys.readouterr().err
+
+
+class TestSnapshotOriginLines:
+    """snapshot_origin_lines() attributes a dependent's file list to its source's snapshot."""
+
+    def test_lines_name_the_snapshot_its_install_time_and_the_remedy(self, tmp_path: Path) -> None:
+        source = _source(tmp_path, digest='x')
+        snapshot = source.directory / 'resolved-config.yaml'
+        origin = (
+            f'The file list comes from profile "team-1": this run applies its resolved-config.yaml ({snapshot}), '
+            'installed 2026-10-01T10:00:00+00:00, not the configuration itself.'
+        )
+        remedy = (
+            'Re-run the source first (--profile team-1; a source run also refreshes every profile already linking content '
+            'from it), then run this command again.'
+        )
+        assert setup_environment.snapshot_origin_lines(source) == [origin, remedy]
+
+    def test_unknown_install_time(self, tmp_path: Path) -> None:
+        source = LinkSource('team-1', tmp_path / '.claude' / 'team-1', None)
+        first_line = setup_environment.snapshot_origin_lines(source)[0]
+        assert 'installed at an unknown time, not the configuration itself.' in first_line
+
+
 class TestEnvironmentLinkGuard:
     """guard_environment_link_change() holds back a variable that would change a profile's links."""
 
@@ -1025,6 +1553,43 @@ class TestDependentRefreshStep:
                 source_commands=frozenset({'npm install -g x'}), run_all_commands=True,
             )
         refresh.assert_called_once_with([dep], source_commands=frozenset({'npm install -g x'}), run_all_commands=True)
+
+    def test_run_started_by_a_dependent_refreshes_the_others_and_leaves_that_dependent_out(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source run a dependent started refreshes every other dependent, whatever --child-run says."""
+        dep = setup_environment.InstalledProfile('Dep', Path('/dep'), Path('/dep/manifest.json'), None)
+        other = setup_environment.InstalledProfile('other', Path('/o'), Path('/o/manifest.json'), None)
+        expected = [setup_environment.DependentResult('other', 0, False)]
+        assert setup_environment.dependents_except([dep, other], 'dep') == [other]
+        assert setup_environment.dependents_except([dep, other], None) == [dep, other]
+        with patch.object(setup_environment, 'refresh_dependents', return_value=expected) as refresh:
+            assert setup_environment.run_dependent_refresh_step(
+                [dep, other], source_name='s', child_run=True, for_dependent='dep',
+            ) == expected
+            assert setup_environment.run_dependent_refresh_step(
+                [dep], source_name='s', child_run=True, for_dependent='dep',
+            ) == []
+        refresh.assert_called_once_with([other], source_commands=frozenset(), run_all_commands=False)
+        output = capsys.readouterr().out
+        assert (
+            'Step 23: Refreshing 1 other dependent profile(s): other (profile "dep" installs itself after this run)...'
+        ) in output
+        assert (
+            'Step 23: No other installed profile links content from "s" (profile "dep" installs itself after this run)'
+        ) in output
+        assert 'refreshed by the run that started this one' not in output
+
+    def test_run_started_by_a_dependent_hands_the_source_commands_and_the_flag_to_the_others(self) -> None:
+        """The other dependents a dependent's source refresh reaches get the source's commands and the flag too."""
+        dep = setup_environment.InstalledProfile('dep', Path('/dep'), Path('/dep/manifest.json'), None)
+        other = setup_environment.InstalledProfile('other', Path('/o'), Path('/o/manifest.json'), None)
+        with patch.object(setup_environment, 'refresh_dependents', return_value=[]) as refresh:
+            setup_environment.run_dependent_refresh_step(
+                [dep, other], source_name='s', child_run=True, for_dependent='dep',
+                source_commands=frozenset({'npm install -g x'}), run_all_commands=True,
+            )
+        refresh.assert_called_once_with([other], source_commands=frozenset({'npm install -g x'}), run_all_commands=True)
 
 
 class TestUnrefreshedLines:

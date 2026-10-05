@@ -85,6 +85,7 @@ def run_main(
     argv0: str = 'setup_environment.py',
     os_env_writes: list[dict[str, str | None]] | None = None,
     claude_path: str | None = '/usr/bin/claude',
+    validation_result: tuple[bool, list[tuple[str, str, bool, str]]] = (True, []),
 ) -> int:
     """Run main() with the given arguments and return its exit code.
 
@@ -105,6 +106,9 @@ def run_main(
             environment writer is appended to it.
         claude_path: What the run finds when it looks for the Claude Code
             binary; None makes the presence check of Step 1 fail.
+        validation_result: What the remote validation of the run's files
+            reports: every file accessible by default, or a failure with
+            its ``(file_type, path, is_valid, method)`` rows.
 
     Returns:
         The exit code; 0 when main() returns normally.
@@ -129,7 +133,7 @@ def run_main(
     with (
         patch.dict(os.environ, {}, clear=False),
         patch.dict(sys.modules, {'questionary': None}),
-        patch('scripts.setup_environment.validate_all_config_files', return_value=(True, [])),
+        patch('scripts.setup_environment.validate_all_config_files', return_value=validation_result),
         patch('scripts.setup_environment.cleanup_temp_paths_from_registry', return_value=(0, [])),
         patch('scripts.setup_environment.set_all_os_env_variables', side_effect=_record_os_env),
         patch('scripts.setup_environment.configure_all_mcp_servers',

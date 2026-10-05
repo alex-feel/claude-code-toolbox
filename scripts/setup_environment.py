@@ -37,6 +37,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
@@ -944,7 +945,11 @@ def admin_elevation_reasons(
 
 
 def request_admin_elevation_if_needed(
-    config: dict[str, Any], args: argparse.Namespace, *, skip_install: bool | None = None,
+    config: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    skip_install: bool | None = None,
+    source_refresh_reasons: Sequence[str] = (),
 ) -> None:
     """Relaunch through UAC when this run needs administrator rights it lacks.
 
@@ -959,10 +964,18 @@ def request_admin_elevation_if_needed(
         args: Command line arguments.
         skip_install: Whether Step 1 skips the Claude Code install; None
             reads ``args.skip_install`` (see admin_elevation_reasons()).
+        source_refresh_reasons: What the refresh of a stale source this run
+            starts with ``--no-admin`` needs elevation for
+            (SourceRefresh.elevation_reasons()); listed first, because that
+            run comes first, and this run's own reasons follow without
+            repeating any of them.
     """
     if args.no_admin:
         return
-    reasons = admin_elevation_reasons(config, args, skip_install=skip_install)
+    reasons = list(source_refresh_reasons)
+    reasons.extend(
+        reason for reason in admin_elevation_reasons(config, args, skip_install=skip_install) if reason not in reasons
+    )
     if not reasons or is_admin():
         return
 
@@ -1179,8 +1192,12 @@ class InstallationPlan:
     # run, each item a [from source NAME] row; None for every other run
     source_work: 'SourceWork | None' = None
     # Whether this run was given --run-all-commands, which its dependents'
-    # child runs receive too
+    # child runs and the refresh of its stale source receive too
     run_all_commands: bool = False
+    # The refresh of a stale source a dependent run performs after consent
+    # and before its own installation; None when the run applies the
+    # source's snapshot as recorded
+    source_refresh: 'SourceRefresh | None' = None
 
     # Writes of an isolated run that reach beyond its profile directory,
     # each named before consent
@@ -4811,7 +4828,9 @@ def _read_profile_pin(manifest_path: Path) -> _ProfilePin | None:
     )
 
 
-def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _ProfilePinScan:
+def _other_profile_pins(
+    home_dir: Path, primary_command_name: str | None, *, pending: frozenset[str] = frozenset(),
+) -> _ProfilePinScan:
     """Read which installed profiles OTHER than this run's pin a Claude Code version.
 
     One machine has one Claude Code binary, so the controls that hold it at
@@ -4824,7 +4843,12 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _Pr
     ~/.claude/{cmd}/manifest.json. A manifest belongs to this run when its
     'name' field matches primary_command_name (None identifies the base
     profile), so a profile relocated by a user-set CLAUDE_CONFIG_DIR is
-    recognized as its own rather than counted as another profile.
+    recognized as its own rather than counted as another profile. A manifest
+    this run rewrites to its own configuration before it reads the pins
+    again -- the stale source a dependent run refreshes first, and the
+    dependents that refresh covers (SourceRefresh.covered_profiles()) -- is
+    skipped like the run's own, because the pin it records is the one this
+    run is replacing.
 
     An absent manifest records no profile and counts as unpinned, as does a
     manifest that carries no pin. A manifest or profile directory that
@@ -4835,10 +4859,14 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _Pr
         home_dir: User home directory.
         primary_command_name: This run's primary command name, or None when
             the run configures the base profile.
+        pending: Display names ('base' for the base profile) of the profiles
+            this run's pipeline rewrites to its configuration's pin before
+            the controls are decided again.
 
     Returns:
         The registry scan result.
     """
+    pending_folded = {name.casefold() for name in pending}
     claude_dir = home_dir / '.claude'
     manifest_paths = [claude_dir / MANIFEST_FILENAME]
     undetermined = False
@@ -4865,8 +4893,11 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _Pr
             continue
         if profile.name == primary_command_name:
             continue  # This run's own profile
+        display_name = profile.name or 'base'
+        if display_name.casefold() in pending_folded:
+            continue  # Rewritten to this run's configuration before the controls are decided again
         if profile.pinned and profile.version is not None:
-            pinned.add(profile.name or 'base')
+            pinned.add(display_name)
             versions.add(profile.version)
     return _ProfilePinScan(sorted(pinned), undetermined, sorted(versions))
 
@@ -9777,7 +9808,12 @@ def display_installation_summary(
     if plan.command_names:
         names_marker = origin_marker(plan.command_names_origin, remembered=plan.command_names_remembered)
         settings_items.append(f"Command names: {', '.join(plan.command_names)}{names_marker}")
-    if plan.linked_from:
+    if plan.linked_from and plan.source_refresh is not None:
+        settings_items.append(
+            f'Configuration: applied from profile "{plan.linked_from}" ({RESOLVED_CONFIG_FILENAME}) after its '
+            'refresh, components as installed there',
+        )
+    elif plan.linked_from:
         settings_items.append(
             f'Configuration: applied from profile "{plan.linked_from}" ({RESOLVED_CONFIG_FILENAME}), '
             f'components as installed there',
@@ -9805,6 +9841,18 @@ def display_installation_summary(
             _print(f'  * {row}')
         for row in link_plan.move_aside_rows():
             _print(f'  {Colors.YELLOW}[MOVE ASIDE]{Colors.NC} {row}')
+
+    # The source a dependent run refreshes first, because the configuration
+    # the run was given is not the one the source's resolved-config.yaml
+    # records; a dry run starts no such refresh
+    if plan.source_refresh is not None:
+        _print()
+        _print(
+            f'{Colors.YELLOW}{Colors.BOLD}Source refresh (profile "{plan.source_refresh.source}" is re-run before '
+            f'this profile installs):{Colors.NC}',
+        )
+        for row in plan.source_refresh.rows():
+            _print(f'  * {row}')
 
     # Profiles that link content from this one: each is re-run after this run
     # from this run's resolved-config.yaml; a dry run starts none
@@ -13990,15 +14038,23 @@ PROFILE_SOURCES: dict[str, str] = {
 ALL_PROFILES = 'all'
 
 # The hidden argument a parent run passes to every child it starts -- the
-# children of --profile all, and the dependents a source's Step 23 refreshes:
-# the parent's report covers every installed profile, so a child lists none
-# as unrefreshed and leaves the dependent refresh to the parent
+# children of --profile all, the dependents a source's Step 23 refreshes, and
+# the stale source a dependent run refreshes first: the parent's report covers
+# the profiles its children run, so a child lists none as unrefreshed and
+# leaves the dependent refresh to the parent
 CHILD_RUN_FLAG = '--child-run'
+
 # Makes a run that links content from a source do the machine-wide work its
 # source's run already does (the Claude Code install, the IDE extension,
 # Node.js, the shared dependency commands); the parent of a child run hands it
 # on in argv, because child_run_environment() strips its twin
 RUN_ALL_COMMANDS_FLAG = '--run-all-commands'
+
+# The hidden argument a dependent run adds, beside --child-run, to the
+# refresh of its stale source: the named dependent installs itself once the
+# source's run returns, so the source's Step 23 refreshes every other
+# dependent and leaves that one out
+FOR_DEPENDENT_FLAG = '--for-dependent'
 
 # The second --command-names entry that drops every alias of a profile:
 # NAME,none installs the profile NAME under that one command
@@ -18859,11 +18915,29 @@ def _exit_on_broken_links(broken: list[str], profile_name: str) -> None:
     sys.exit(1)
 
 
+def dependents_except(dependents: list[InstalledProfile], name: str | None) -> list[InstalledProfile]:
+    """Leave the dependent whose run started this one out of the profiles to refresh.
+
+    Args:
+        dependents: The dependents content_dependents() found.
+        name: The --for-dependent value: the profile that installs itself
+            once this run returns, or None when no dependent started it.
+
+    Returns:
+        The dependents without the named one, compared without regard to case
+        like every profile name.
+    """
+    if name is None:
+        return list(dependents)
+    return [profile for profile in dependents if profile.name.casefold() != name.casefold()]
+
+
 def run_dependent_refresh_step(
     dependents: list[InstalledProfile],
     *,
     source_name: str,
     child_run: bool,
+    for_dependent: str | None = None,
     source_commands: frozenset[str] = frozenset(),
     run_all_commands: bool = False,
 ) -> list[DependentResult]:
@@ -18875,6 +18949,10 @@ def run_dependent_refresh_step(
         child_run: Whether another run started this one -- --profile all,
             which runs every installed profile itself, or a source's Step 23,
             which refreshes every dependent itself.
+        for_dependent: The dependent whose run started this one to refresh
+            its stale source: it installs itself afterwards, so this step
+            refreshes every other dependent and leaves it out, whatever
+            ``child_run`` says.
         source_commands: The dependency commands this run executes on this
             platform (see refresh_dependents()).
         run_all_commands: Whether this run was given --run-all-commands,
@@ -18884,6 +18962,15 @@ def run_dependent_refresh_step(
         One result per dependent refreshed; empty when none ran.
     """
     print()
+    if for_dependent is not None:
+        others = dependents_except(dependents, for_dependent)
+        note = f'(profile "{for_dependent}" installs itself after this run)'
+        if not others:
+            print(f'{Colors.CYAN}Step 23: No other installed profile links content from "{source_name}" {note}{Colors.NC}')
+            return []
+        names = ', '.join(profile.name for profile in others)
+        print(f'{Colors.CYAN}Step 23: Refreshing {len(others)} other dependent profile(s): {names} {note}...{Colors.NC}')
+        return refresh_dependents(others, source_commands=source_commands, run_all_commands=run_all_commands)
     if child_run:
         print(f'{Colors.CYAN}Step 23: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
         return []
@@ -18896,7 +18983,7 @@ def run_dependent_refresh_step(
 
 
 def child_run_environment() -> dict[str, str]:
-    """Build the environment of a child run (of --profile all, or of a source's Step 23).
+    """Build the environment of a child run (of --profile all, a source's Step 23, or a dependent's source refresh).
 
     Every argument twin except the repository credential is dropped, so a
     variable set for the parent cannot change what a child installs, and
@@ -18941,8 +19028,10 @@ def load_dependent_config(source: LinkSource, profile_name: str) -> tuple[dict[s
     The source's resolved-config.yaml is the component-selected configuration
     the source installed, so the dependent applies the same files and the
     same choices without fetching anything; its components registry is left
-    out, because the source resolved it. The run exits with code 1 when the
-    source has no readable snapshot.
+    out, because the source resolved it. resolve_dependent_configuration()
+    decides when a run given a configuration applies the snapshot and when
+    it refreshes the source first. The run exits with code 1 when the source
+    has no readable snapshot.
 
     Args:
         source: The profile the run links content from.
@@ -18959,8 +19048,7 @@ def load_dependent_config(source: LinkSource, profile_name: str) -> tuple[dict[s
             f'{RESOLVED_CONFIG_FILENAME} is missing or unreadable; re-run the source first: --profile {source.name}',
         )
         sys.exit(1)
-    config = deepcopy(snapshot)
-    config.pop('components', None)
+    config = dependent_configuration_of(snapshot)
     source_config = str(source.manifest.get('config_source') or '')
     version = source.manifest.get('version')
     info(f'Applying the configuration profile "{source.name}" installed ({source.directory / RESOLVED_CONFIG_FILENAME})')
@@ -19021,30 +19109,64 @@ def dependency_commands_for_this_platform(dependencies: object) -> list[str]:
     return commands
 
 
-def source_run_commands(source: LinkSource, home_dir: Path, profile_names: Iterable[str]) -> frozenset[str]:
-    """Spell the dependency commands the source's run executes on this platform.
+def source_run_dependencies(
+    snapshot: dict[str, Any], *, source: str, directory: Path, home_dir: Path, profile_names: Iterable[str],
+) -> dict[str, Any]:
+    """Spell a source's dependency lists the way the source's run executes them.
 
-    The source's resolved-config.yaml holds its commands as authored; an
-    isolated source's run rewrites the ones that name the base config home
-    into its own profile directory (see ConfigHomeReroot), the base
-    profile's run executes them as written.
+    A snapshot holds the commands as authored; an isolated source's run
+    rewrites the ones that name the base config home into its own profile
+    directory (see ConfigHomeReroot), the base profile's run executes them as
+    written.
+
+    Args:
+        snapshot: The source's resolved-config.yaml content.
+        source: The source profile's display name.
+        directory: Its profile directory.
+        home_dir: The user's home directory.
+        profile_names: The directory names whose paths a rewrite keeps as
+            written (the source's name and the installed profiles).
+
+    Returns:
+        A configuration holding only a copy of the ``dependencies`` section,
+        rewritten for the source's run.
+    """
+    config: dict[str, Any] = {'dependencies': deepcopy(snapshot.get('dependencies'))}
+    if source != LINK_SOURCE_BASE:
+        ConfigHomeReroot(directory, home_dir, profile_names).apply(config)
+    return config
+
+
+def source_run_commands(
+    source: LinkSource,
+    home_dir: Path,
+    profile_names: Iterable[str],
+    *,
+    snapshot: dict[str, Any] | None = None,
+) -> frozenset[str]:
+    """Spell the dependency commands the source's run executes on this platform.
 
     Args:
         source: The profile this run links content from.
         home_dir: The user's home directory.
         profile_names: The directory names whose paths a rewrite keeps as
-            written (this run's primary name and the installed profiles).
+            written (the source's name and the installed profiles).
+        snapshot: The snapshot the source's run executes when this run
+            refreshes a stale source first (SourceRefresh.snapshot), which
+            its resolved-config.yaml holds only once that refresh ran; None
+            reads the resolved-config.yaml.
 
     Returns:
-        The commands, as the source's run executes them; empty when the
-        source has no readable snapshot.
+        The commands, as the source's run executes them (see
+        source_run_dependencies()); empty when the source has no readable
+        snapshot.
     """
-    snapshot = read_resolved_config_snapshot(source.directory) or {}
-    commands = dependency_commands_for_this_platform(snapshot.get('dependencies'))
-    if source.name != LINK_SOURCE_BASE:
-        reroot = ConfigHomeReroot(source.directory, home_dir, profile_names)
-        commands = [reroot.rewrite(command) for command in commands]
-    return frozenset(commands)
+    if snapshot is None:
+        snapshot = read_resolved_config_snapshot(source.directory) or {}
+    dependencies = source_run_dependencies(
+        snapshot, source=source.name, directory=source.directory, home_dir=home_dir, profile_names=profile_names,
+    )['dependencies']
+    return frozenset(dependency_commands_for_this_platform(dependencies))
 
 
 def leave_commands_to_source(dependencies: object, source_commands: frozenset[str]) -> list[str]:
@@ -19127,6 +19249,421 @@ def dependent_run_snapshot(profile: InstalledProfile, *, source_commands: frozen
     ):
         leave_commands_to_source(snapshot.get('dependencies'), source_commands)
     return snapshot
+
+
+class LoadedConfiguration(NamedTuple):
+    """A configuration as fetched from its source, with its inheritance resolved.
+
+    Attributes:
+        config: The resolved configuration.
+        config_source: The resolved source: a URL, or an absolute local path.
+        config_version: The root file's version, or None.
+        inheritance_chain: The parents the configuration inherits from, in
+            resolution order, without the configuration itself.
+    """
+
+    config: dict[str, Any]
+    config_source: str
+    config_version: str | None
+    inheritance_chain: list[InheritanceChainEntry]
+
+
+def fetch_configuration(config_name: str, auth_param: str | None) -> LoadedConfiguration:
+    """Load a configuration from its source and resolve its inheritance.
+
+    Args:
+        config_name: The configuration as given: a URL, a local path, or a
+            repository name.
+        auth_param: The repository credential, or None.
+
+    Returns:
+        The loaded configuration.
+    """
+    config, config_source = load_config_from_source(config_name, auth_param)
+
+    # The version field identifies this specific configuration file, so it is
+    # read from the root file before any parent is merged in
+    config_version: str | None = None
+    raw_version = config.get('version')
+    if raw_version is not None:
+        version_str = str(raw_version).strip()
+        if version_str:
+            config_version = version_str
+            info(f'Configuration version: {config_version}')
+
+    inheritance_chain: list[InheritanceChainEntry] = []
+    if INHERIT_KEY in config:
+        info('Configuration uses inheritance, resolving parent configs...')
+        config, inheritance_chain = resolve_config_inheritance(config, config_source, auth_param=auth_param)
+        success('Configuration inheritance resolved successfully')
+    return LoadedConfiguration(config, config_source, config_version, inheritance_chain)
+
+
+def replay_source_snapshot(config: dict[str, Any], source: LinkSource) -> tuple[dict[str, Any], str]:
+    """Apply a source's recorded component selection to a fetched configuration and digest the result.
+
+    A ``--profile SOURCE --yes`` run of the source validates the
+    configuration, fills its selectors from the delta its manifest remembers,
+    resolves the selection without a picker and records the digest of the
+    selected configuration; this replays those steps on a copy, so the
+    digest it returns is the one the source's run records for the same
+    configuration. It exits with code 1 where the source's run exits:
+    when the configuration fails validation, and when the remembered
+    selection names a component the configuration no longer declares.
+
+    Args:
+        config: The fetched configuration, inheritance resolved.
+        source: The source profile, with its manifest.
+
+    Returns:
+        The snapshot the source's run writes as its resolved-config.yaml --
+        the component-selected copy without PROFILE_IDENTITY_CONFIG_KEYS,
+        components registry included -- and the digest of that same object.
+    """
+    candidate = deepcopy(config)
+    validation_errors = [*validate_components(candidate), *validate_hooks_files_consistency(candidate)]
+    if validation_errors:
+        for err in validation_errors:
+            error(err)
+        sys.exit(1)
+    components_list = [cast(dict[str, Any], c) for c in candidate.get('components') or [] if isinstance(c, dict)]
+    replay_args = argparse.Namespace(select=None, with_=None, without=None, yes=True, dry_run=False, origins={})
+    delta_errors = apply_remembered_component_delta(
+        replay_args,
+        source.manifest,
+        [str(c.get('name', '')).strip() for c in components_list],
+        profile_name=source.name,
+        manifest_path=source.directory / MANIFEST_FILENAME,
+    )
+    if delta_errors:
+        for err in delta_errors:
+            error(err)
+        error(
+            f'Profile "{source.name}" cannot be refreshed from this configuration until its remembered selection is '
+            f'replaced: re-run it with --profile {source.name} and the selector named above, then run this command again.',
+        )
+        sys.exit(1)
+    selection = resolve_component_selection(components_list, replay_args, picker=None)
+    if selection.is_active:
+        apply_component_selection(candidate, selection)
+        post_selection_errors = validate_hooks_files_consistency(candidate, require_all_files_used=False)
+        if post_selection_errors:
+            for err in post_selection_errors:
+                error(err)
+            sys.exit(1)
+    snapshot = resolved_config_snapshot(candidate)
+    return snapshot, config_digest_of(render_resolved_config(snapshot))
+
+
+def dependent_configuration_of(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Shape a source's snapshot into the configuration a dependent installs and records.
+
+    The source resolved the components registry when it took the snapshot,
+    so the dependent installs the snapshot without it and records that
+    configuration (and its digest) in its own manifest.
+
+    Args:
+        snapshot: A source's resolved-config.yaml content, or the snapshot
+            replay_source_snapshot() computed for a fetched configuration.
+
+    Returns:
+        A deep copy without the components registry.
+    """
+    config = deepcopy(snapshot)
+    config.pop('components', None)
+    return config
+
+
+class SourceRefresh(NamedTuple):
+    """The refresh of a stale source a dependent run performs before installing itself.
+
+    Attributes:
+        source: The source profile's display name.
+        directory: Its profile directory.
+        reason: Why its snapshot is stale: ``differs`` when the configuration
+            this run was given renders to another digest than the one its
+            manifest records, ``missing`` when the manifest records none.
+        digest: The digest of the configuration this run was given, as the
+            source's run records it; the refreshed manifest must hold it.
+        dependents: The source's other content dependents, which the
+            source's Step 23 refreshes.
+        skip_install: Whether this run skips the Claude Code installation,
+            forwarded to the source's run.
+        run_all_commands: Whether this run was given --run-all-commands,
+            forwarded to the source's run, whose Step 23 hands it to every
+            other dependent.
+        snapshot: The resolved-config.yaml the source's run records for the
+            configuration this run was given (replay_source_snapshot()), the
+            snapshot whose digest is ``digest``; the commands this run leaves
+            to the source are read from it, because the source's file holds
+            it only once the refresh ran.
+    """
+
+    source: str
+    directory: Path
+    reason: str
+    digest: str
+    dependents: list[str]
+    skip_install: bool
+    run_all_commands: bool
+    snapshot: dict[str, Any]
+
+    def covered_profiles(self) -> list[str]:
+        """Name the profiles the refresh rewrites to this run's configuration: the source, then its other dependents."""
+        return [self.source, *self.dependents]
+
+    def reason_text(self) -> str:
+        """Render the reason for the warning and the summary row."""
+        if self.reason == 'missing':
+            return 'its manifest records no configuration digest'
+        return 'the configuration this run was given differs from the snapshot it installed'
+
+    def child_arguments(self, this_profile: str) -> list[str]:
+        """Build the arguments of the source's run, after the program name.
+
+        Args:
+            this_profile: The dependent's display name, which the source's
+                Step 23 leaves out.
+
+        Returns:
+            ``--profile SOURCE --yes --child-run --for-dependent THIS``, the
+            parent's ``--skip-install`` when it has one, ``--no-admin``, and
+            the parent's ``--run-all-commands`` when it has one.
+        """
+        return [
+            '--profile', self.source, '--yes', CHILD_RUN_FLAG, FOR_DEPENDENT_FLAG, this_profile,
+            *(['--skip-install'] if self.skip_install else []), '--no-admin',
+            *([RUN_ALL_COMMANDS_FLAG] if self.run_all_commands else []),
+        ]
+
+    def elevation_reasons(self, home_dir: Path, profile_names: Iterable[str]) -> list[str]:
+        """List what the source's run needs administrator rights for.
+
+        The source's run starts with ``--no-admin``, because the dependent's
+        run decides elevation for both: its Claude Code install unless
+        ``--skip-install``, and every command of the refreshed snapshot.
+
+        Args:
+            home_dir: The user's home directory.
+            profile_names: The directory names whose paths a rewrite keeps as
+                written (the source's name and the installed profiles).
+
+        Returns:
+            The reasons, in installation order; empty off Windows.
+        """
+        config = source_run_dependencies(
+            self.snapshot, source=self.source, directory=self.directory, home_dir=home_dir,
+            profile_names=profile_names,
+        )
+        return admin_elevation_reasons(config, argparse.Namespace(skip_install=self.skip_install))
+
+    def rows(self) -> list[str]:
+        """Render the rows of the installation summary's Source refresh block."""
+        command = (
+            f'--profile {self.source} --yes' + (' --skip-install' if self.skip_install else '') + ' --no-admin'
+            + (f' {RUN_ALL_COMMANDS_FLAG}' if self.run_all_commands else '')
+        )
+        others = (
+            f'other profiles its run refreshes: {", ".join(self.dependents)}' if self.dependents
+            else 'no other installed profile links content from it'
+        )
+        return [
+            f'reason: {self.reason_text()}',
+            f'command: {command}',
+            others,
+            f'this profile then installs from the fresh {RESOLVED_CONFIG_FILENAME}',
+        ]
+
+
+class DependentConfiguration(NamedTuple):
+    """The configuration a run that links content installs, and where it comes from.
+
+    Attributes:
+        config: The configuration without its components registry and
+            without PROFILE_IDENTITY_CONFIG_KEYS, as a run by name installs
+            it: the source's snapshot, or the snapshot the refreshed source
+            records for the configuration this run was given.
+        config_source: The resolved configuration source.
+        config_version: The configuration version.
+        inheritance_chain: The parents of a fetched configuration; empty
+            when the snapshot is applied.
+        refresh: The source refresh the run performs after consent, or None
+            when the snapshot is applied as recorded.
+    """
+
+    config: dict[str, Any]
+    config_source: str
+    config_version: str | None
+    inheritance_chain: list[InheritanceChainEntry]
+    refresh: SourceRefresh | None
+
+
+def resolve_dependent_configuration(
+    source: LinkSource,
+    profile_name: str,
+    *,
+    args: argparse.Namespace,
+    config_name: str,
+    home_dir: Path,
+    loaded: LoadedConfiguration | None = None,
+) -> DependentConfiguration:
+    """Decide what a run that links content installs: its source's snapshot, or a fresh one.
+
+    A run given no configuration (``--profile NAME``) applies the snapshot
+    as recorded. A run given one -- positionally or through
+    CLAUDE_CODE_TOOLBOX_ENV_CONFIG -- fetches it and compares the digest the
+    source's run would record for it with the digest the source's manifest
+    holds: an equal digest applies the snapshot like a run given none, and
+    a different or missing one makes the run refresh the source first, so
+    the source's dependents never install a configuration the source has
+    moved away from, and installs the snapshot the refreshed source records
+    for the fetched configuration, shaped as a run by name installs it.
+
+    Args:
+        source: The profile the run links content from.
+        profile_name: This run's profile display name.
+        args: Arguments after resolve_args().
+        config_name: The configuration as given, used for the fetch.
+        home_dir: User home directory, for the source's other dependents.
+        loaded: The configuration when the run has fetched it already, so
+            it is not fetched twice.
+
+    Returns:
+        The configuration to install and the refresh to perform, if any.
+    """
+    if args.origins.get('config') not in ('cli', 'env'):
+        config, config_source, config_version = load_dependent_config(source, profile_name)
+        return DependentConfiguration(config, config_source, config_version, [], None)
+    if loaded is None:
+        loaded = fetch_configuration(config_name, args.auth)
+    candidate, digest = replay_source_snapshot(loaded.config, source)
+    recorded = source.manifest.get('config_digest') if source.manifest is not None else None
+    if isinstance(recorded, str) and recorded == digest:
+        info(f'The configuration matches the {RESOLVED_CONFIG_FILENAME} of profile "{source.name}"; applying the snapshot')
+        config, config_source, config_version = load_dependent_config(source, profile_name)
+        return DependentConfiguration(config, config_source, config_version, [], None)
+    refresh = SourceRefresh(
+        source.name,
+        source.directory,
+        'missing' if not recorded else 'differs',
+        digest,
+        [profile.name for profile in dependents_except(content_dependents(home_dir, source.name), profile_name)],
+        bool(args.skip_install),
+        bool(args.run_all_commands),
+        candidate,
+    )
+    warning(f'Profile "{source.name}" is stale: {refresh.reason_text()}; it is refreshed before this profile installs')
+    # The snapshot the refreshed source records, shaped as a run by name
+    # installs it, so the manifest this run writes reads the same either way
+    return DependentConfiguration(
+        dependent_configuration_of(candidate), loaded.config_source, loaded.config_version,
+        list(loaded.inheritance_chain), refresh,
+    )
+
+
+def refresh_source_profile(refresh: SourceRefresh, this_profile: str) -> int:
+    """Re-run a stale source in its own child run and return its exit code.
+
+    The child runs ``--profile SOURCE --yes --child-run --for-dependent
+    THIS [--skip-install] --no-admin [--run-all-commands]`` through the same
+    program this run started from, with the environment
+    child_run_environment() builds: ``--child-run`` because this run reports
+    on the profiles the refresh covers, ``--for-dependent`` so the source's
+    Step 23 refreshes its other dependents and leaves this profile to
+    install itself, the parent's ``--skip-install`` so the binary is
+    installed where the parent would install it, ``--no-admin`` because the
+    parent decided elevation for both runs (SourceRefresh.elevation_reasons()),
+    and the parent's ``--run-all-commands``, which the child's environment
+    lost with its twin, so the other dependents the source's Step 23
+    refreshes receive it too.
+
+    Args:
+        refresh: The refresh to perform.
+        this_profile: This run's profile display name.
+
+    Returns:
+        The child's exit code; 1 when it cannot start.
+    """
+    launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
+    print()
+    print(f'{Colors.CYAN}=== Source profile {refresh.source} ==={Colors.NC}')
+    try:
+        return subprocess.run(
+            [*launch, *refresh.child_arguments(this_profile)], env=child_run_environment(), check=False,
+        ).returncode
+    except OSError as e:
+        error(f'Cannot start the run of profile "{refresh.source}": {e}')
+        return 1
+
+
+def source_refresh_recorded(refresh: SourceRefresh) -> bool:
+    """Report whether the refreshed source's manifest records the configuration this run was given.
+
+    Args:
+        refresh: The refresh the source's run just performed.
+
+    Returns:
+        True when the source's manifest holds the digest the refresh was
+        started for; False when the manifest is missing, unreadable, or
+        records another digest.
+    """
+    try:
+        manifest = read_profile_manifest(refresh.directory / MANIFEST_FILENAME)
+    except ValueError:
+        return False
+    return manifest is not None and manifest.get('config_digest') == refresh.digest
+
+
+def unrefreshed_siblings(refresh: SourceRefresh, home_dir: Path) -> list[str]:
+    """Name the source's other dependents its run did not bring to the refreshed snapshot.
+
+    A dependent records the digest of the snapshot without the components
+    registry (dependent_configuration_of()), so each sibling's manifest is
+    compared with that digest of the refreshed source's resolved-config.yaml;
+    a sibling whose manifest is missing, unreadable, or records another
+    digest was not refreshed.
+
+    Args:
+        refresh: The refresh the source's run just performed, with its
+            manifest recording the digest the refresh was started for.
+        home_dir: User home directory.
+
+    Returns:
+        The names of the dependents left behind, in the refresh's order.
+    """
+    snapshot = read_resolved_config_snapshot(refresh.directory)
+    if snapshot is None:
+        return list(refresh.dependents)
+    expected = config_digest_of(render_resolved_config(dependent_configuration_of(snapshot)))
+    left_behind: list[str] = []
+    for name in refresh.dependents:
+        try:
+            manifest = read_profile_manifest(home_dir / '.claude' / name / MANIFEST_FILENAME)
+        except ValueError:
+            manifest = None
+        if manifest is None or manifest.get('config_digest') != expected:
+            left_behind.append(name)
+    return left_behind
+
+
+def snapshot_origin_lines(source: LinkSource) -> list[str]:
+    """Attribute a dependent run's file list to its source's snapshot, with the remedy.
+
+    Args:
+        source: The profile whose resolved-config.yaml the run applies.
+
+    Returns:
+        Two lines: where the file list comes from and when the source
+        installed it, and how to refresh it.
+    """
+    installed_at = source.manifest.get('installed_at') if source.manifest is not None else None
+    return [
+        f'The file list comes from profile "{source.name}": this run applies its {RESOLVED_CONFIG_FILENAME} '
+        f'({source.directory / RESOLVED_CONFIG_FILENAME}), installed {installed_at or "at an unknown time"}, '
+        'not the configuration itself.',
+        f'Re-run the source first (--profile {source.name}; a source run also refreshes every profile already '
+        'linking content from it), then run this command again.',
+    ]
 
 
 # The configuration sections each linkable entry is installed from, so a
@@ -19502,10 +20039,11 @@ def main() -> None:
         action='store_true',
         help='In a profile that links content from another profile, install Claude Code, the IDE extension and '
         'Node.js and run every dependency command in this run too, instead of leaving the work the source '
-        "profile's run does for the machine to that run; --profile all and a source's refresh hand it to "
-        'every profile they run',
+        "profile's run does for the machine to that run; --profile all, a source's refresh of its dependents "
+        'and the refresh of a stale source hand it to every profile they run',
     )
     parser.add_argument(CHILD_RUN_FLAG, dest='child_run', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument(FOR_DEPENDENT_FLAG, dest='for_dependent', type=str, metavar='NAME', help=argparse.SUPPRESS)
     args = parser.parse_args()
     resolve_args(args)
 
@@ -19589,6 +20127,9 @@ def main() -> None:
             sys.exit(1)
         link_source: LinkSource | None = None
         dependent_of: LinkSource | None = None
+        # The refresh of a stale source this run performs after consent, when
+        # the configuration it was given is not the one the source installed
+        source_refresh: SourceRefresh | None = None
         config_version: str | None = None
         inheritance_chain: list[InheritanceChainEntry] = []
         if early_target is not None and link_spec.links_content:
@@ -19604,29 +20145,15 @@ def main() -> None:
                     error(err)
                 sys.exit(1)
             assert link_source is not None
-            config, config_source, config_version = load_dependent_config(link_source, early_target)
+            dependent = resolve_dependent_configuration(
+                link_source, early_target, args=args, config_name=config_name, home_dir=home_dir,
+            )
+            config, config_source, config_version, inheritance_chain, source_refresh = dependent
             dependent_of = link_source
         else:
             # Load configuration from source (URL, local file, or repository)
-            config, config_source = load_config_from_source(config_name, args.auth)
-
-            # Extract version from root config BEFORE inheritance resolution.
-            # The version field identifies THIS specific config file's version,
-            # not a behavioral setting inherited from parent configs.
-            raw_version = config.get('version')
-            if raw_version is not None:
-                version_str = str(raw_version).strip()
-                if version_str:
-                    config_version = version_str
-                    info(f'Configuration version: {config_version}')
-
-            # Resolve configuration inheritance if present
-            if INHERIT_KEY in config:
-                info('Configuration uses inheritance, resolving parent configs...')
-                config, inheritance_chain = resolve_config_inheritance(
-                    config, config_source, auth_param=args.auth,
-                )
-                success('Configuration inheritance resolved successfully')
+            # and resolve its inheritance
+            config, config_source, config_version, inheritance_chain = fetch_configuration(config_name, args.auth)
         # The current configuration is the last entry of the chain
         inheritance_chain.append(InheritanceChainEntry(
             source=config_source,
@@ -19667,13 +20194,20 @@ def main() -> None:
             if link_spec.links_content:
                 assert link_source is not None
                 assert target_profile is not None
-                config, config_source, config_version = load_dependent_config(link_source, target_profile)
-                inheritance_chain = [InheritanceChainEntry(
+                dependent = resolve_dependent_configuration(
+                    link_source, target_profile, args=args, config_name=config_name, home_dir=home_dir,
+                    loaded=LoadedConfiguration(config, config_source, config_version, inheritance_chain[:-1]),
+                )
+                config, config_source, config_version, inheritance_chain, source_refresh = dependent
+                inheritance_chain = [*inheritance_chain, InheritanceChainEntry(
                     source=config_source,
                     source_type=classify_config_source(config_source),
                     name=config.get('name', config_name),
                 )]
                 dependent_of = link_source
+        # A run that applies its source's snapshot as recorded attributes a
+        # file the snapshot lists and the run cannot fetch to the snapshot
+        snapshot_applied = dependent_of is not None and source_refresh is None
 
         components_list: list[dict[str, Any]] = [
             cast(dict[str, Any], c)
@@ -19774,6 +20308,9 @@ def main() -> None:
         guard_environment_name_change(args, effective_command_names, target_manifest, profile_name)
         guard_environment_link_change(args, link_spec, target_manifest, profile_name)
         dependents = content_dependents(home_dir, profile_name)
+        # The dependent whose run started this one to refresh its source
+        # installs itself afterwards, so Step 23 and the summary leave it out
+        dependents_to_refresh = dependents_except(dependents, args.for_dependent)
         if dependents and target_manifest is not None:
             recorded_link = manifest_link(target_manifest)
             recorded_dirs = [str(item) for item in cast(list[object], recorded_link['dirs'])] if recorded_link else []
@@ -19903,16 +20440,23 @@ def main() -> None:
         # every content entry leaves them: a tool that reads
         # CLAUDE_CONFIG_DIR, such as the skills CLI, writes into the profile
         # that runs it, so a profile holding some content directory for real
-        # needs every command to fill it
+        # needs every command to fill it. A run that refreshes a stale source
+        # first leaves the source the commands of the snapshot that refresh
+        # records
         leaves_work_to_source = dependent_of is not None and not args.run_all_commands
         skip_claude_install = args.skip_install or leaves_work_to_source
         commands_left_to_source: list[str] = []
+        source_profile_names: list[str] = []
+        if dependent_of is not None:
+            source_profile_names = [
+                dependent_of.name, *(profile.name for profile in installed if profile.name != LINK_SOURCE_BASE),
+            ]
         if dependent_of is not None and leaves_work_to_source and link_spec.links_every_content_entry:
             commands_left_to_source = leave_commands_to_source(
                 config.get('dependencies'),
                 source_run_commands(
-                    dependent_of, home_dir,
-                    [dependent_of.name, *(profile.name for profile in installed if profile.name != LINK_SOURCE_BASE)],
+                    dependent_of, home_dir, source_profile_names,
+                    snapshot=source_refresh.snapshot if source_refresh is not None else None,
                 ),
             )
 
@@ -19925,8 +20469,15 @@ def main() -> None:
             cast(list[Any], config.get('files-to-download') or []), target_config_dir, linked_entries,
         )
 
-        # Relaunch elevated on Windows when this configuration needs admin rights
-        request_admin_elevation_if_needed(config, args, skip_install=skip_claude_install)
+        # Relaunch elevated on Windows when this configuration needs admin
+        # rights. The refresh of a stale source starts with --no-admin, so
+        # this run decides elevation for the source's run too
+        request_admin_elevation_if_needed(
+            config, args, skip_install=skip_claude_install,
+            source_refresh_reasons=(
+                source_refresh.elevation_reasons(home_dir, source_profile_names) if source_refresh is not None else ()
+            ),
+        )
 
         environment_name = config.get('name', 'Development')
 
@@ -20002,9 +20553,13 @@ def main() -> None:
         # IDE extension controls that hold it at a pinned version are
         # machine-global. Read the profile manifests once to learn whether
         # any OTHER installed profile still pins a version; while one does,
-        # this run keeps the controls in place instead of removing them.
+        # this run keeps the controls in place instead of removing them. The
+        # stale source this run refreshes first, and the dependents that
+        # refresh covers, are rewritten to this configuration's pin before
+        # this profile installs, so their recorded pins are not read.
         profile_pin_scan = _other_profile_pins(
             get_real_user_home(), primary_command_name,
+            pending=frozenset(source_refresh.covered_profiles()) if source_refresh is not None else frozenset(),
         )
         other_profile_pinned = profile_pin_scan.other_profile_pinned
         machine_pinned = claude_code_version_normalized is not None or other_profile_pinned
@@ -20171,6 +20726,11 @@ def main() -> None:
             error('  2. The files exist at the specified locations')
             error('  3. You have necessary permissions (authentication tokens)')
             error('  4. Network connectivity to the sources')
+            if snapshot_applied:
+                assert dependent_of is not None
+                print()
+                for line in snapshot_origin_lines(dependent_of):
+                    error(line)
             sys.exit(1)
         else:
             success('All configuration files validated successfully!')
@@ -20193,7 +20753,8 @@ def main() -> None:
         plan.link_plan = link_plan
         plan.configured_link_dirs = configured_link_values['link_dirs'] if primary_command_name else None
         plan.linked_from = dependent_of.name if dependent_of is not None else None
-        plan.dependents = [profile.name for profile in dependents]
+        plan.source_refresh = source_refresh
+        plan.dependents = [profile.name for profile in dependents_to_refresh]
         plan.linked_downloads = linked_downloads
         plan.files_to_download = [
             cast(dict[str, Any], entry) for entry in downloads_to_process if isinstance(entry, dict)
@@ -20279,6 +20840,63 @@ def main() -> None:
             if sys.stdin.isatty() or _dev_tty_available():
                 sys.exit(0)
             sys.exit(1)
+
+        # A stale source is refreshed first, in its own run, so this profile
+        # installs the snapshot that run records. A run that exits non-zero
+        # without recording the digest of the configuration this run was given
+        # failed before its manifest, and this run stops with the source's
+        # retry; a run that exits 0 without it saw another configuration, so
+        # the configuration moved between the two fetches and this run stops
+        # rather than install something the source did not. A run that
+        # recorded the digest installed the configuration whatever it exits
+        # with: this profile installs from the fresh snapshot, and a non-zero
+        # exit (a download, a dependency or a dependent of the source that
+        # failed) ends this run with exit code 1, naming the source's run and
+        # every dependent it left behind.
+        source_refresh_failures: list[str] = []
+        source_refresh_code = 0
+        if source_refresh is not None:
+            print()
+            print(
+                f'{Colors.CYAN}Refreshing the source profile "{source_refresh.source}" before this profile '
+                f'installs...{Colors.NC}',
+            )
+            refresh_code = refresh_source_profile(source_refresh, profile_name)
+            recorded = source_refresh_recorded(source_refresh)
+            if refresh_code != 0 and not recorded:
+                print()
+                error(
+                    f'The refresh of profile "{source_refresh.source}" failed (exit code {refresh_code}); '
+                    f'profile "{profile_name}" was not installed.',
+                )
+                info(f'Retry the source with --profile {source_refresh.source}, then run this command again.')
+                sys.exit(1)
+            if not recorded:
+                print()
+                error(
+                    f'Profile "{source_refresh.source}" was refreshed, but its {RESOLVED_CONFIG_FILENAME} differs from '
+                    'the configuration this run fetched: the configuration changed in between.',
+                )
+                info('Run this command again to install from the refreshed snapshot.')
+                sys.exit(1)
+            print()
+            if refresh_code != 0:
+                source_refresh_code = refresh_code
+                source_refresh_failures = unrefreshed_siblings(source_refresh, home_dir)
+                warning(
+                    f'Profile "{source_refresh.source}" refreshed with errors (exit code {refresh_code}); '
+                    'review its output above',
+                )
+                if source_refresh_failures:
+                    warning(
+                        f'Its run could not refresh: {", ".join(source_refresh_failures)}',
+                    )
+                for name in source_refresh_failures:
+                    info(f'Retry it with --profile {name} after this run.')
+            success(
+                f'Profile "{source_refresh.source}" refreshed; installing "{profile_name}" from its '
+                f'{RESOLVED_CONFIG_FILENAME}',
+            )
 
         # Set up directories
         home = get_real_user_home()
@@ -20774,7 +21392,7 @@ def main() -> None:
 
             # Step 23: Refresh the profiles that link content from this one
             dependent_results = run_dependent_refresh_step(
-                dependents, source_name=profile_name, child_run=args.child_run,
+                dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
             )
@@ -20883,7 +21501,7 @@ def main() -> None:
 
             # Step 23: Refresh the profiles that link content from the base profile
             dependent_results = run_dependent_refresh_step(
-                dependents, source_name=profile_name, child_run=args.child_run,
+                dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
             )
@@ -20892,7 +21510,7 @@ def main() -> None:
 
         # Check for download, dependency and dependent failures and report accordingly
         dependent_failures = [result for result in dependent_results if result.code != 0]
-        if download_failures or dependency_failures or dependent_failures:
+        if download_failures or dependency_failures or dependent_failures or source_refresh_code:
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
@@ -20905,6 +21523,10 @@ def main() -> None:
                 print()
                 error('Some files are missing.')
                 error('Please check your network connection and authentication, then re-run the setup.')
+                if snapshot_applied:
+                    assert dependent_of is not None
+                    for line in snapshot_origin_lines(dependent_of):
+                        error(line)
                 print()
             if dependency_failures:
                 error('The following dependencies failed to install:')
@@ -20913,10 +21535,25 @@ def main() -> None:
                 print()
                 error('Review the dependency error messages above, then re-run the setup.')
                 print()
-            if dependent_failures:
+            if source_refresh_code:
+                assert source_refresh is not None
+                error(
+                    f'The run of profile "{source_refresh.source}" that refreshed the source of this profile ended '
+                    f'with exit code {source_refresh_code}.',
+                )
+                error(f'Review its output above, then retry it with --profile {source_refresh.source}.')
+                print()
+            if dependent_failures or source_refresh_failures:
+                assert source_refresh is not None or not source_refresh_failures
                 error('The following dependent profiles failed to refresh:')
                 for result in dependent_failures:
                     error(f'  - {result.line()}')
+                for name in source_refresh_failures:
+                    assert source_refresh is not None
+                    error(
+                        f'  - {name}: not refreshed by the run of profile "{source_refresh.source}"; '
+                        f'retry with --profile {name}',
+                    )
                 print()
                 error('Review the output of each failed dependent above, then retry it with its --profile command.')
                 print()
@@ -21036,6 +21673,13 @@ def main() -> None:
             print(f'   * {npm_headline} (setup left both copies unchanged):')
             for detail in npm_details:
                 print(f'       - {detail}')
+        # The source this run refreshed first, and the other dependents that
+        # refresh covered, count as refreshed by this run
+        refreshed_by_source: list[str] = []
+        if source_refresh is not None:
+            refreshed_by_source = source_refresh.covered_profiles()
+            also = f' (its run also refreshed {", ".join(source_refresh.dependents)})' if source_refresh.dependents else ''
+            print(f'   * Source profile refreshed before this run: {source_refresh.source}{also}')
         if dependent_results:
             print('   * Dependent profiles refreshed from this run:')
             for result in dependent_results:
@@ -21044,7 +21688,8 @@ def main() -> None:
         # it (--profile all, or the source whose Step 23 refreshes this
         # dependent) covers every installed profile
         unrefreshed = [] if args.child_run else unrefreshed_profile_lines(
-            get_real_user_home(), profile_name, frozenset(result.name for result in dependent_results),
+            get_real_user_home(), profile_name,
+            frozenset(result.name for result in dependent_results) | frozenset(refreshed_by_source),
         )
         if unrefreshed:
             print('   * Installed profiles this run did not refresh:')

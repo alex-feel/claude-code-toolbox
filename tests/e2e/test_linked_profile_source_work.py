@@ -5,23 +5,26 @@ content entry, with ``--link-from``) shares the one machine with it: the
 Claude Code binary, the IDE extension, Node.js and the tools the dependency
 commands install exist once, and the source's run installs them. Every run of
 such a dependent -- a standalone install, ``--profile NAME``, a ``--profile
-all`` child and a source's Step 23 refresh -- therefore skips the install and
-upgrade of Step 1 (the presence check stays), the IDE extension of Step 2 and
-the Node.js installation of Step 5. A dependent that links every content
-entry (``all``, or each content entry listed) also skips every dependency
-command whose text, after the run's re-rooting, equals a command the
-source's run executes; a command rewritten into the profile still runs. A
+all`` child, a source's Step 23 refresh and the install that follows the
+refresh of a stale source -- therefore skips the install and upgrade of
+Step 1 (the presence check stays), the IDE extension of Step 2 and the
+Node.js installation of Step 5. A dependent that links every content entry
+(``all``, or each content entry listed) also skips every dependency command
+whose text, after the run's re-rooting, equals a command the source's run
+executes -- after the refresh of a stale source, a command of the snapshot
+that refresh records; a command rewritten into the profile still runs. A
 dependent that links only some content entries runs every command, because
 a command may write into a content directory it holds for real (the skills
 CLI writes into ``CLAUDE_CONFIG_DIR``). A full copy, a profile that links
 only ``projects``, the base profile and a source run everything, and
 ``--run-all-commands`` (or ``CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS=1``) makes
-a dependent run everything too, also in the children ``--profile all`` and
-Step 23 start. The installation summary and ``--dry-run`` name each skipped
-item with its source, and the completion summary repeats them with the flag
-that forces the full run. On Windows the elevation gate reads the same
-decision: a dependent's dry run and real run list only the elevating work
-the dependent does itself.
+a dependent run everything too, also in the children ``--profile all``,
+Step 23 and the refresh of a stale source start. The installation summary
+and ``--dry-run`` name each skipped item with its source, and the
+completion summary repeats them with the flag that forces the full run. On
+Windows the elevation gate reads the same decision: a dependent's dry run
+and real run list only the elevating work the dependent does itself, plus
+the work of a stale source it refreshes first.
 
 Every test runs main() against YAML files on disk; the dependency commands
 run for real in bash (Linux, macOS) or PowerShell (Windows), in that
@@ -35,6 +38,7 @@ recorders, because no test installs a real binary.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 import subprocess
 import sys
@@ -48,7 +52,9 @@ import pytest
 
 from scripts import setup_environment
 from tests.e2e.profile_support import REPO_ROOT
+from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
+from tests.e2e.profile_support import write_child_runner
 from tests.e2e.profile_support import write_config
 
 IS_WINDOWS = sys.platform == 'win32'
@@ -1102,3 +1108,139 @@ class TestChildRuns:
         assert '* team-2 (--profile team-2 --yes --skip-install --no-admin --run-all-commands)' in output
         assert '* team-3 (--profile team-3 --yes --skip-install --no-admin --run-all-commands)' in output
         assert _runs(home) == []
+
+
+# A shared command the moved configuration adds: the stale snapshot of the
+# source lacks it, so a dependent that leaves it to its source can only have
+# read it from the snapshot the refresh records
+POSIX_FRESH = f'echo fresh >> "$HOME/{RUNS_LOG}"'
+WINDOWS_FRESH = f'Add-Content -Path "$env:USERPROFILE\\{RUNS_LOG}" -Value fresh -Encoding ascii'
+FRESH = WINDOWS_FRESH if IS_WINDOWS else POSIX_FRESH
+# One full run of the moved configuration appends these lines
+ONE_FRESH_RUN = ['platform', 'shared', 'fresh']
+SKIP_INSTALL = ['--skip-install', '--no-admin']
+
+
+def _moved_config() -> dict[str, Any]:
+    """The configuration after a change its source has not installed: a new theme and a new shared command."""
+    config = _config()
+    config['dependencies']['common'] = [SHARED, FRESH]
+    config['user-settings'] = {'theme': 'light'}
+    return config
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestStaleSourceRefresh:
+    """A dependent run that refreshes its stale source first leaves the refreshed source's work to that refresh.
+
+    The dependent run hands its own --run-all-commands to the source's child
+    run in argv, because the child's environment carries no argument twin;
+    without the flag, the dependent installs after the refresh and leaves to
+    the source every command of the snapshot the refresh records, including
+    one the stale snapshot lacked.
+    """
+
+    def _install_source_and_dependents(self, configs: Path, install_log: Path, *dependents: str) -> Path:
+        cfg = _install_source(configs, install_log)
+        for name in dependents:
+            assert _run([str(cfg), '--command-names', name, '--link-dirs', 'all', '--link-from', SOURCE], install_log) == 0
+        return cfg
+
+    @staticmethod
+    def _recording_run(argvs: list[list[str]], envs: list[dict[str, str]]) -> Callable[..., subprocess.CompletedProcess[Any]]:
+        """Record the argv and environment of every child run this process starts, and run it."""
+        real_run = setup_environment.subprocess.run
+
+        def _record(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+            if '--profile' in argv:
+                argvs.append(list(argv))
+                envs.append(dict(kwargs['env']))
+            return real_run(argv, **kwargs)
+
+        return _record
+
+    def test_dependent_installed_after_the_refresh_leaves_the_fresh_snapshots_commands_to_the_source(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """team-2 refreshes team-1 first; the shared commands, the new one included, run once, in team-1's run."""
+        home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
+        cfg = self._install_source_and_dependents(configs, install_log, DEPENDENT)
+        write_config(configs, 'team.yaml', _moved_config())
+        _reset(home, install_log)
+        runner = write_child_runner(tmp_path, monkeypatch)
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=self._recording_run(argvs, envs)):
+            code = run_main(
+                [str(cfg), *SKIP_INSTALL, '--yes', '--command-names', DEPENDENT], argv0=str(runner),
+            )
+
+        output = _fd_output(capfd)
+        assert code == 0, output
+        assert argvs == [[
+            sys.executable, str(runner), '--profile', SOURCE, '--yes', '--child-run', '--for-dependent', DEPENDENT,
+            '--skip-install', '--no-admin',
+        ]], 'the source refresh carries no --run-all-commands the dependent run was not given'
+        assert 'Profile "team-1" is stale' in output
+        assert '* command: --profile team-1 --yes --skip-install --no-admin' in output
+        assert _runs(home) == ONE_FRESH_RUN, 'every shared command ran once, in the source refresh'
+        for name in (SOURCE, DEPENDENT):
+            assert _marker(claude_dir, name).is_dir(), f'the re-rooted command ran in {name}'
+        assert f'[from source {SOURCE}] {FRESH}' in output, 'the summary reads the command from the fresh snapshot'
+        assert f'Left to source profile "{SOURCE}": {FRESH}' in output
+        assert f'Left to source profile "{SOURCE}": {SHARED}' in output
+        dependent_summary = output[output.rindex('Setup Complete!'):]
+        assert f'* Source profile refreshed before this run: {SOURCE}' in dependent_summary
+        assert f'* Left to source profile "{SOURCE}" (pass --run-all-commands to run them in this profile):' in (
+            dependent_summary
+        )
+        for name in (SOURCE, DEPENDENT):
+            config_json = json.loads((claude_dir / name / 'config.json').read_text(encoding='utf-8'))
+            assert config_json['theme'] == 'light', f'{name} installed the moved configuration'
+        assert read_manifest(claude_dir / DEPENDENT)['link']['dirs'], 'team-2 still links its content from team-1'
+
+    @pytest.mark.parametrize('given', ['flag', 'environment'])
+    def test_run_all_commands_reaches_the_source_refresh_and_its_other_dependents(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], given: str,
+    ) -> None:
+        """The flag, typed or from its twin, travels to the source refresh in argv and from there to team-3."""
+        home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
+        cfg = self._install_source_and_dependents(configs, install_log, DEPENDENT, 'team-3')
+        write_config(configs, 'team.yaml', _moved_config())
+        _reset(home, install_log)
+        runner = write_child_runner(tmp_path, monkeypatch)
+        flag = ['--run-all-commands'] if given == 'flag' else []
+        if given == 'environment':
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS', '1')
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=self._recording_run(argvs, envs)):
+            code = run_main(
+                [str(cfg), *SKIP_INSTALL, '--yes', '--command-names', DEPENDENT, *flag], argv0=str(runner),
+            )
+
+        output = _fd_output(capfd)
+        assert code == 0, output
+        assert argvs == [[
+            sys.executable, str(runner), '--profile', SOURCE, '--yes', '--child-run', '--for-dependent', DEPENDENT,
+            '--skip-install', '--no-admin', '--run-all-commands',
+        ]]
+        assert 'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS' not in envs[0], 'the flag, not the twin, reaches the child'
+        assert '* command: --profile team-1 --yes --skip-install --no-admin --run-all-commands' in output
+        assert '* team-3 (--profile team-3 --yes --skip-install --no-admin --run-all-commands)' in output, (
+            "the source refresh's Step 23 hands the flag to the other dependent"
+        )
+        assert (
+            'Step 23: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)'
+        ) in output
+        assert sorted(_runs(home)) == sorted(ONE_FRESH_RUN * 3), 'the source, team-3 and team-2 each ran everything'
+        for name in (SOURCE, DEPENDENT, 'team-3'):
+            assert _marker(claude_dir, name).is_dir(), name
+        assert 'from source' not in output
+        assert 'Left to source profile' not in output

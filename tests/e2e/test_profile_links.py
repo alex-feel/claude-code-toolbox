@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -954,17 +957,26 @@ class TestLinkRules:
         assert message in _output(capsys)
         assert not (e2e_isolated_home['claude_dir'] / 'team-2').exists()
 
-    def test_typed_configuration_for_a_dependent_is_an_identity_check_only(
+    def test_typed_configuration_for_a_dependent_is_checked_by_identity_before_any_fetch(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A dependent re-run with a configuration never loads it: a matching one proceeds, another one is refused."""
+        """A matching configuration is fetched once to compare with the snapshot; another one is refused unfetched."""
         cfg = _install_source(configs)
         _install_dependent(cfg, 'team-2')
         other = write_config(configs, 'other.yaml', _plain('Other'))
+        real_load = setup_environment.load_config_from_source
+        loaded: list[str] = []
+
+        def _recording_load(spec: str, auth_param: str | None = None) -> tuple[dict[str, Any], str]:
+            loaded.append(spec)
+            return real_load(spec, auth_param)
+
         capsys.readouterr()
 
-        with patch.object(setup_environment, 'load_config_from_source') as load:
+        with patch.object(setup_environment, 'load_config_from_source', side_effect=_recording_load):
             assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 0
+        assert loaded == [str(cfg)], 'the matching configuration is fetched exactly once, for the comparison'
+        with patch.object(setup_environment, 'load_config_from_source') as load:
             assert run_main(['--profile', 'team-2', *SKIP, '--yes']) == 0
             assert run_main([str(other), *SKIP, '--yes', '--command-names', 'team-2']) == 1
         load.assert_not_called()
@@ -1575,6 +1587,930 @@ class TestSourceRunRefreshesDependents:
         assert '- team-1 (--profile team-1)' in output
         assert '- team-3 (--profile team-3)' in output
         assert '- team-2 (--profile team-2)' not in output
+
+
+SOURCE_REFRESH_HEADER = 'Source refresh (profile "team-1" is re-run before this profile installs):'
+DIGEST_DIFFERS = 'reason: the configuration this run was given differs from the snapshot it installed'
+DIGEST_MISSING = 'reason: its manifest records no configuration digest'
+SOURCE_CHILD_ARGV = [
+    '--profile', 'team-1', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+]
+BASE_SOURCE_REFRESH_HEADER = 'Source refresh (profile "base" is re-run before this profile installs):'
+BASE_SOURCE_CHILD_ARGV = [
+    '--profile', 'base', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
+]
+STEP_3_BANNER = 'Step 3: Creating base configuration directory and profile links...'
+CONSENT_PROMPT = 'Proceed with installation? [y/N]'
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
+
+
+def _first_installation_summary(output: str) -> str:
+    """The installation summary a parent run printed before its children printed theirs.
+
+    The summary goes to stderr, which capfd returns after every line of
+    stdout, so the summaries of a run and its children follow each other at
+    the end of the combined output in the order the runs printed them.
+
+    Args:
+        output: Everything the run and its children printed.
+
+    Returns:
+        The first summary block, up to the next one.
+    """
+    marker = 'Installation Summary'
+    start = output.index(marker)
+    end = output.find(marker, start + len(marker))
+    return output[start:] if end < 0 else output[start:end]
+
+
+def _base_theme(claude_dir: Path) -> str:
+    """The theme the base profile's settings.json carries."""
+    return str(json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))['theme'])
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """Read a JSON object file."""
+    content: dict[str, Any] = json.loads(path.read_text(encoding='utf-8'))
+    return content
+
+
+def _install_base_with_dependents(configs: Path, *dependents: str) -> Path:
+    """Install the configuration as the base profile with profiles linking all from it; return the configuration path."""
+    cfg = write_config(configs, 'team.yaml', _team())
+    assert run_main([str(cfg), *SKIP, '--yes']) == 0
+    for name in dependents:
+        _install_dependent(cfg, name, source='base')
+    return cfg
+
+
+def _write_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Path:
+    """Write a runner that stands in for every child run of a parent and returns its path."""
+    runner = tmp_path / 'stub_runner.py'
+    runner.write_text(body, encoding='utf-8')
+    monkeypatch.setenv('PYTHONPATH', str(Path(__file__).resolve().parents[2]))
+    return runner
+
+
+def _recording_subprocess_run(
+    argvs: list[list[str]], envs: list[dict[str, str]],
+) -> Callable[..., subprocess.CompletedProcess[Any]]:
+    """Build a subprocess.run stand-in that records each child's argv and environment, then runs it."""
+    real_run = setup_environment.subprocess.run
+
+    def _run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        # The run also starts other processes, such as the npm probes of
+        # Step 5; only a child run starts the interpreter
+        if argv[0] == sys.executable:
+            argvs.append(list(argv))
+            envs.append(dict(kwargs['env']))
+        return real_run(argv, **kwargs)
+
+    return _run
+
+
+def _child_runs(run: MagicMock) -> list[Any]:
+    """Return the calls of a subprocess.run stand-in that started a child run of the interpreter."""
+    return [call for call in run.call_args_list if call.args and call.args[0][0] == sys.executable]
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestStaleSourceRefresh:
+    """A dependent run given a configuration its source has not installed yet refreshes the source first."""
+
+    def test_existing_dependent_refreshes_a_stale_source_first_and_is_installed_once(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """team-2 re-run with a moved configuration re-runs team-1, whose Step 23 refreshes team-3 and skips team-2."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        _install_dependent(cfg, 'team-3')
+        claude_dir = e2e_isolated_home['claude_dir']
+        stale_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_NO_ADMIN', '1')
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'leaked'))
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=_recording_subprocess_run(argvs, envs)):
+            code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert (
+            'Profile "team-1" is stale: the configuration this run was given differs from the snapshot it installed; '
+            'it is refreshed before this profile installs'
+        ) in output
+        assert SOURCE_REFRESH_HEADER in output
+        assert DIGEST_DIFFERS in output
+        assert '* command: --profile team-1 --yes --skip-install --no-admin' in output
+        assert '* other profiles its run refreshes: team-3' in output
+        assert '* this profile then installs from the fresh resolved-config.yaml' in output
+        assert (
+            'Configuration: applied from profile "team-1" (resolved-config.yaml) after its refresh, '
+            'components as installed there'
+        ) in output
+        assert 'Refreshing the source profile "team-1" before this profile installs...' in output
+        assert (
+            'Step 23: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)...'
+        ) in output
+        assert output.count('=== Dependent profile team-3 ===') == 1
+        assert '=== Dependent profile team-2 ===' not in output, 'the source never refreshes the profile that started it'
+        assert output.count('Step 3: Creating base configuration directory and profile links...') == 3, (
+            'team-1, team-3 and team-2 each install exactly once'
+        )
+        assert 'Profile "team-1" refreshed; installing "team-2" from its resolved-config.yaml' in output
+        assert [argv[1:] for argv in argvs] == [[str(runner), *SOURCE_CHILD_ARGV]]
+        assert argvs[0][0] == sys.executable
+        for variable in ('CLAUDE_CODE_TOOLBOX_NO_ADMIN', 'CLAUDE_CONFIG_DIR'):
+            assert variable not in envs[0], variable
+        fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        assert fresh_digest != stale_digest
+        for name in ('team-1', 'team-2', 'team-3'):
+            assert _theme(claude_dir / name) == 'light', name
+            assert read_manifest(claude_dir / name)['config_digest'] == fresh_digest, name
+        assert _links_to(claude_dir / 'team-2' / 'agents', claude_dir / 'team-1' / 'agents')
+        assert (claude_dir / 'team-1' / 'agents' / 'core.md').is_file()
+        dependent_summary = output[output.rindex('Setup Complete!'):]
+        assert '* Source profile refreshed before this run: team-1 (its run also refreshed team-3)' in dependent_summary
+        assert '* Installed profiles this run did not refresh:' not in dependent_summary, (
+            'the source and its other dependent were refreshed by this run'
+        )
+
+    def test_fresh_dependent_refreshes_a_stale_source_first(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A profile installed for the first time from a moved configuration refreshes its source before linking."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-3')
+        claude_dir = e2e_isolated_home['claude_dir']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(
+            [str(cfg), *SKIP, '--yes', '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1'],
+            argv0=str(runner),
+        )
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        assert DIGEST_DIFFERS in output
+        assert '* other profiles its run refreshes: team-3' in output
+        assert '=== Source profile team-1 ===' in output
+        assert output.count('=== Dependent profile team-3 ===') == 1
+        assert '=== Dependent profile team-2 ===' not in output, 'a fresh dependent has no manifest for Step 23 to find'
+        fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        for name in ('team-1', 'team-2', 'team-3'):
+            assert _theme(claude_dir / name) == 'light', name
+            assert read_manifest(claude_dir / name)['config_digest'] == fresh_digest, name
+        for entry in LINKABLE_PROFILE_DIRS:
+            assert _links_to(claude_dir / 'team-2' / entry, claude_dir / 'team-1' / entry), entry
+        assert read_manifest(claude_dir / 'team-2')['link']['source'] == 'team-1'
+
+    def test_source_without_a_recorded_digest_is_refreshed(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source whose manifest records no digest is refreshed although the configuration has not changed."""
+        cfg = _install_source(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        manifest_path = claude_dir / 'team-1' / 'manifest.json'
+        manifest = read_manifest(claude_dir / 'team-1')
+        manifest['config_digest'] = None
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(
+            [str(cfg), *SKIP, '--yes', '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1'],
+            argv0=str(runner),
+        )
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert 'Profile "team-1" is stale: its manifest records no configuration digest; it is refreshed' in output
+        assert SOURCE_REFRESH_HEADER in output
+        assert DIGEST_MISSING in output
+        assert '* no other installed profile links content from it' in output
+        assert '=== Source profile team-1 ===' in output
+        assert (
+            'Step 23: No other installed profile links content from "team-1" (profile "team-2" installs itself after this run)'
+        ) in output
+        fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        assert isinstance(fresh_digest, str)
+        assert fresh_digest
+        assert read_manifest(claude_dir / 'team-2')['config_digest'] == fresh_digest
+        assert '* Source profile refreshed before this run: team-1' in output[output.rindex('Setup Complete!'):]
+        assert 'its run also refreshed' not in output
+
+    def test_typed_configuration_equal_to_the_snapshot_proceeds_without_a_refresh(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The configuration is fetched once to compare, and an equal digest applies the snapshot as before."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        source_before = _installed_at(claude_dir / 'team-1')
+        capsys.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 0
+
+        assert _child_runs(run) == []
+        output = _output(capsys)
+        assert 'The configuration matches the resolved-config.yaml of profile "team-1"; applying the snapshot' in output
+        snapshot = claude_dir / 'team-1' / 'resolved-config.yaml'
+        assert f'Applying the configuration profile "team-1" installed ({snapshot})' in output
+        assert 'Source refresh' not in output
+        assert 'is stale' not in output
+        assert 'Configuration: applied from profile "team-1" (resolved-config.yaml), components as installed there' in output
+        assert _installed_at(claude_dir / 'team-1') == source_before, 'the source is not re-run'
+        assert '- team-1 (--profile team-1)' in output, 'the source is listed as not refreshed, like every other run'
+
+    def test_profile_rerun_without_a_configuration_applies_the_snapshot_whatever_the_file_says(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile NAME compares nothing: the snapshot is applied even when the configuration file moved on."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        source_before = _installed_at(claude_dir / 'team-1')
+        capsys.readouterr()
+
+        with (
+            patch.object(setup_environment, 'load_config_from_source') as load,
+            patch.object(setup_environment.subprocess, 'run') as run,
+        ):
+            assert run_main(['--profile', 'team-2', *SKIP, '--yes']) == 0
+
+        load.assert_not_called()
+        assert _child_runs(run) == []
+        assert 'Source refresh' not in _output(capsys)
+        assert _theme(claude_dir / 'team-2') == 'dark'
+        assert _installed_at(claude_dir / 'team-1') == source_before
+
+    def test_dry_run_names_the_stale_source_and_starts_no_child(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--dry-run shows the Source refresh block, runs no child and writes nothing."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        _install_dependent(cfg, 'team-3')
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main([str(cfg), *SKIP, '--dry-run', '--command-names', 'team-2']) == 0
+
+        assert _child_runs(run) == []
+        output = _output(capsys)
+        assert SOURCE_REFRESH_HEADER in output
+        assert DIGEST_DIFFERS in output
+        assert '* other profiles its run refreshes: team-3' in output
+        assert 'Dry run complete. No changes were made.' in output
+        assert '=== Source profile' not in output
+        assert home_state(e2e_isolated_home['home']) == before
+
+    def test_failed_source_refresh_stops_the_run_with_the_source_retry(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source refresh that exits non-zero stops the dependent's run before any of its own writes."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = _write_runner(tmp_path, monkeypatch, 'import sys\nprint("child failed")\nsys.exit(3)\n')
+        dependent_before = home_state(claude_dir / 'team-2')
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 1, output
+        assert '=== Source profile team-1 ===' in output
+        assert 'child failed' in output
+        assert 'The refresh of profile "team-1" failed (exit code 3); profile "team-2" was not installed.' in output
+        assert 'Retry the source with --profile team-1, then run this command again.' in output
+        assert 'Step 1:' not in output
+        assert home_state(claude_dir / 'team-2') == dependent_before
+        assert _theme(claude_dir / 'team-2') == 'dark'
+
+    def test_source_refresh_that_leaves_the_snapshot_stale_stops_the_run(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source run that exits 0 without recording the fetched configuration stops the dependent's run."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = _write_runner(tmp_path, monkeypatch, 'import sys\nprint("child wrote nothing")\nsys.exit(0)\n')
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 1, output
+        assert 'child wrote nothing' in output
+        assert (
+            'Profile "team-1" was refreshed, but its resolved-config.yaml differs from the configuration this run '
+            'fetched: the configuration changed in between.'
+        ) in output
+        assert 'Run this command again to install from the refreshed snapshot.' in output
+        assert 'Step 1:' not in output
+        assert _theme(claude_dir / 'team-2') == 'dark'
+
+    def test_configuration_declaring_content_links_refreshes_a_stale_source(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent installed by the configuration's own link keys compares and refreshes the same way."""
+        cfg = write_config(configs, 'team.yaml', {**_team(), 'link-dirs': ['all'], 'link-from': 'team-1'})
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1', '--link-dirs', 'none']) == 0
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 0, 'the YAML keys install a dependent'
+        write_config(configs, 'team.yaml', {
+            **_team(), 'link-dirs': ['all'], 'link-from': 'team-1', 'user-settings': {'theme': 'light'},
+        })
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        assert DIGEST_DIFFERS in output
+        assert '=== Source profile team-1 ===' in output
+        assert 'cannot link from itself' not in output
+        assert f"Links: none [remembered] (the configuration's link-dirs [{', '.join(LINKABLE_PROFILE_DIRS)}]" in output
+        assert not _is_link(claude_dir / 'team-1' / 'agents'), 'the source keeps its remembered none'
+        for name in ('team-1', 'team-2'):
+            assert _theme(claude_dir / name) == 'light', name
+        assert _links_to(claude_dir / 'team-2' / 'agents', claude_dir / 'team-1' / 'agents')
+        source_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        assert read_manifest(claude_dir / 'team-2')['config_digest'] == source_digest
+
+    def test_one_liner_variables_with_a_moved_configuration_refresh_the_source(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A configuration taken from CLAUDE_CODE_TOOLBOX_ENV_CONFIG counts as given, so the comparison runs."""
+        cfg = _install_source(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', str(cfg))
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'team-2')
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'all')
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_LINK_FROM', 'team-1')
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=_recording_subprocess_run(argvs, envs)):
+            code = run_main([*SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        assert [argv[1:] for argv in argvs] == [[str(runner), *SOURCE_CHILD_ARGV]]
+        for variable in (
+            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
+            'CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'CLAUDE_CODE_TOOLBOX_LINK_FROM',
+        ):
+            assert variable not in envs[0], variable
+        for name in ('team-1', 'team-2'):
+            assert _theme(claude_dir / name) == 'light', name
+        assert _links_to(claude_dir / 'team-2' / 'agents', claude_dir / 'team-1' / 'agents')
+
+    def test_source_component_selection_is_replayed_before_the_comparison(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """The digest is computed from the configuration as the source's remembered selection filters it."""
+        cfg = write_config(configs, 'components.yaml', _components())
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1', '--with', 'extra']) == 0
+        assert read_manifest(claude_dir / 'team-1')['components'] == {'select': None, 'with': 'extra', 'without': None}
+        _install_dependent(cfg, 'team-2')
+        source_before = _installed_at(claude_dir / 'team-1')
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 0
+
+        assert _child_runs(run) == []
+        output = _run_output(capfd)
+        assert 'The configuration matches the resolved-config.yaml of profile "team-1"; applying the snapshot' in output
+        assert 'Source refresh' not in output
+        assert _installed_at(claude_dir / 'team-1') == source_before
+        write_config(configs, 'components.yaml', {**_components(), 'rules': ['rules/rule.md']})
+        dependent_before = _installed_at(claude_dir / 'team-2')
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        assert (claude_dir / 'team-1' / 'rules' / 'rule.md').is_file()
+        assert (claude_dir / 'team-1' / 'agents' / 'extra.md').is_file(), 'the source keeps its remembered --with'
+        assert read_manifest(claude_dir / 'team-1')['components'] == {'select': None, 'with': 'extra', 'without': None}
+        assert _installed_at(claude_dir / 'team-2') != dependent_before, 'the dependent installed after the refresh'
+        assert _links_to(claude_dir / 'team-2' / 'rules', claude_dir / 'team-1' / 'rules')
+        assert (claude_dir / 'team-2' / 'rules' / 'rule.md').is_file(), 'the fresh rule reaches the dependent through the link'
+
+    def test_source_whose_remembered_selection_no_longer_applies_stops_the_run(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A remembered --with naming a component the configuration dropped is refused as the source's run refuses it."""
+        cfg = write_config(configs, 'components.yaml', _components())
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1', '--with', 'extra']) == 0
+        _install_dependent(cfg, 'team-2')
+        write_config(configs, 'components.yaml', {
+            **_components(), 'components': [{'name': 'core', 'includes': {'agents': ['agents/core.md']}}],
+        })
+        capsys.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 1
+
+        assert _child_runs(run) == []
+        output = _output(capsys)
+        assert (
+            f"components: the remembered selection of profile team-1 (recorded in {claude_dir / 'team-1' / 'manifest.json'}) "
+            "names 'extra' in --with, which the configuration no longer declares"
+        ) in output
+        assert (
+            'Profile "team-1" cannot be refreshed from this configuration until its remembered selection is replaced'
+        ) in output
+
+    def test_validation_failure_on_a_dependent_names_the_source_snapshot(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A file the source's snapshot lists that is no longer accessible is attributed to the snapshot, with the remedy."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        installed_at = _installed_at(claude_dir / 'team-1')
+        failure: tuple[bool, list[tuple[str, str, bool, str]]] = (False, [('rule', 'rules/rule.md', False, 'remote')])
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-2', *SKIP, '--yes'], validation_result=failure) == 1
+
+        output = _output(capsys)
+        assert 'Configuration validation failed!' in output
+        assert '- rule: rules/rule.md' in output
+        assert (
+            f'The file list comes from profile "team-1": this run applies its resolved-config.yaml '
+            f'({claude_dir / "team-1" / "resolved-config.yaml"}), installed {installed_at}, not the configuration itself.'
+        ) in output
+        assert (
+            'Re-run the source first (--profile team-1; a source run also refreshes every profile already linking '
+            'content from it), then run this command again.'
+        ) in output
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1'], validation_result=failure) == 1
+
+        assert 'The file list comes from profile' not in _output(capsys), 'a source run applies its own configuration'
+
+    def test_validation_failure_on_a_stale_source_refresh_is_not_attributed_to_the_snapshot(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When the fetched configuration itself fails validation, the snapshot is not blamed and no child starts."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        failure: tuple[bool, list[tuple[str, str, bool, str]]] = (False, [('rule', 'rules/rule.md', False, 'remote')])
+        capsys.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], validation_result=failure) == 1
+
+        assert _child_runs(run) == []
+        output = _output(capsys)
+        assert 'Configuration validation failed!' in output
+        assert 'The file list comes from profile' not in output
+
+    def test_download_failure_on_a_dependent_names_the_source_snapshot(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A download the snapshot asks for that fails is attributed to the snapshot in the errors block."""
+        (configs / 'files').mkdir()
+        (configs / 'files' / 'note.txt').write_text('note\n', encoding='utf-8')
+        cfg = write_config(configs, 'team.yaml', {
+            **_team(), 'files-to-download': [{'source': 'files/note.txt', 'dest': '~/.claude/notes/note.txt'}],
+        })
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert (claude_dir / 'team-2' / 'notes' / 'note.txt').is_file(), 'the destination is re-rooted outside every link'
+        installed_at = _installed_at(claude_dir / 'team-1')
+        capsys.readouterr()
+
+        with patch.object(setup_environment, 'process_file_downloads', return_value=False):
+            assert run_main(['--profile', 'team-2', *SKIP, '--yes']) == 1
+
+        output = _output(capsys)
+        assert 'The following resources failed to download:' in output
+        assert '- file downloads' in output
+        assert (
+            f'The file list comes from profile "team-1": this run applies its resolved-config.yaml '
+            f'({claude_dir / "team-1" / "resolved-config.yaml"}), installed {installed_at}, not the configuration itself.'
+        ) in output
+        assert 'Re-run the source first (--profile team-1;' in output
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='administrator elevation is a Windows concern')
+    def test_elevation_reasons_of_a_stale_dependent_run_cover_the_source_refresh(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The dependent run decides elevation for the source refresh from the configuration it installs.
+
+        team-2 links every content entry, so it leaves the shared global npm
+        commands to its source: with the snapshot applied as recorded it has
+        nothing to elevate for, and with a stale source its elevation reasons
+        are the refresh's, read from the fresh configuration rather than the
+        stale snapshot.
+        """
+        cfg = write_config(configs, 'team.yaml', {**_team(), 'dependencies': {'common': ['echo npm install -g fake']}})
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        _install_dependent(cfg, 'team-2')
+        capsys.readouterr()
+
+        with patch.object(setup_environment, 'is_admin', return_value=False):
+            assert run_main([str(cfg), '--skip-install', '--dry-run', '--command-names', 'team-2']) == 0
+
+        output = _output(capsys)
+        assert 'Source refresh' not in output, 'the unchanged configuration applies the snapshot'
+        assert 'Dry run: administrator elevation is not requested.' not in output, (
+            'the only elevating command belongs to the source run, which this run leaves it to'
+        )
+        assert '[from source team-1] echo npm install -g fake' in _ANSI_SEQUENCE.sub('', output)
+        assert 'echo npm install -g fresh' not in output
+        write_config(configs, 'team.yaml', {
+            **_team(), 'user-settings': {'theme': 'light'},
+            'dependencies': {'common': ['echo npm install -g fake', 'echo npm install -g fresh']},
+        })
+        capsys.readouterr()
+
+        with patch.object(setup_environment, 'is_admin', return_value=False):
+            assert run_main([str(cfg), '--skip-install', '--dry-run', '--command-names', 'team-2']) == 0
+
+        output = _output(capsys)
+        assert 'Dry run: administrator elevation is not requested.' in output
+        assert 'Global npm package: echo npm install -g fake' in output
+        assert 'Global npm package: echo npm install -g fresh' in output, (
+            'the reason the snapshot lacks proves the fresh configuration decides elevation'
+        )
+        assert SOURCE_REFRESH_HEADER in output
+        assert '* command: --profile team-1 --yes --skip-install --no-admin' in output
+        assert '[from source team-1] echo npm install -g fresh' in _ANSI_SEQUENCE.sub('', output), (
+            'the commands left to the source come from the snapshot the refresh records'
+        )
+
+    def test_existing_dependent_of_the_base_refreshes_the_stale_base_first(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """team-2 (all from base) re-run with a moved configuration re-runs the base, whose Step 23 refreshes team-3 only."""
+        cfg = _install_base_with_dependents(configs, 'team-2', 'team-3')
+        claude_dir = e2e_isolated_home['claude_dir']
+        stale_digest = read_manifest(claude_dir)['config_digest']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=_recording_subprocess_run(argvs, envs)):
+            code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert (
+            'Profile "base" is stale: the configuration this run was given differs from the snapshot it installed; '
+            'it is refreshed before this profile installs'
+        ) in output
+        assert BASE_SOURCE_REFRESH_HEADER in output
+        assert DIGEST_DIFFERS in output
+        assert '* command: --profile base --yes --skip-install --no-admin' in output
+        assert '* other profiles its run refreshes: team-3' in output
+        assert '=== Source profile base ===' in output
+        assert [argv[1:] for argv in argvs] == [[str(runner), *BASE_SOURCE_CHILD_ARGV]]
+        assert output.count(
+            'Step 23: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)...',
+        ) == 1
+        assert output.count('=== Dependent profile team-3 ===') == 1
+        assert '=== Dependent profile team-2 ===' not in output, 'the base never refreshes the profile that started it'
+        assert output.count(STEP_3_BANNER) == 3, 'the base, team-3 and team-2 each install exactly once'
+        assert 'Profile "base" refreshed; installing "team-2" from its resolved-config.yaml' in output
+        fresh_digest = read_manifest(claude_dir)['config_digest']
+        assert fresh_digest != stale_digest
+        assert _base_theme(claude_dir) == 'light'
+        for name in ('team-2', 'team-3'):
+            assert read_manifest(claude_dir / name)['config_digest'] == fresh_digest, name
+            assert _theme(claude_dir / name) == 'light', name
+            assert _links_to(claude_dir / name / 'agents', claude_dir / 'agents'), name
+        dependent_summary = output[output.rindex('Setup Complete!'):]
+        assert '* Source profile refreshed before this run: base (its run also refreshed team-3)' in dependent_summary
+        assert '* Installed profiles this run did not refresh:' not in dependent_summary, (
+            'the base and its other dependent were refreshed by this run'
+        )
+
+    def test_dry_run_of_a_dependent_of_the_base_names_the_base_refresh_and_starts_no_child(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--dry-run on a dependent of the base shows the base's Source refresh block, runs no child and writes nothing."""
+        cfg = _install_base_with_dependents(configs, 'team-2', 'team-3')
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main([str(cfg), *SKIP, '--dry-run', '--command-names', 'team-2']) == 0
+
+        assert _child_runs(run) == []
+        output = _output(capsys)
+        assert BASE_SOURCE_REFRESH_HEADER in output
+        assert DIGEST_DIFFERS in output
+        assert '* command: --profile base --yes --skip-install --no-admin' in output
+        assert '* other profiles its run refreshes: team-3' in output
+        assert 'Dry run complete. No changes were made.' in output
+        assert '=== Source profile' not in output
+        assert home_state(e2e_isolated_home['home']) == before
+
+    def test_declined_consent_starts_no_source_refresh(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """Answering n to the one consent prompt leaves the stale source and this profile exactly as they were."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        stale_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        before = home_state(e2e_isolated_home['home'])
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=_recording_subprocess_run(argvs, envs)):
+            code = run_main(
+                [str(cfg), *SKIP, '--command-names', 'team-2'], interactive=True, answers=['n'], argv0=str(runner),
+            )
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        assert 'Installation cancelled by user.' in output
+        assert argvs == [], 'no child started'
+        assert 'Refreshing the source profile' not in output
+        assert '=== Source profile' not in output
+        assert read_manifest(claude_dir / 'team-1')['config_digest'] == stale_digest
+        assert _theme(claude_dir / 'team-1') == 'dark'
+        assert _theme(claude_dir / 'team-2') == 'dark'
+        assert home_state(e2e_isolated_home['home']) == before
+
+    def test_consent_is_asked_once_before_the_source_refresh(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """One y answer, given after the Source refresh block, covers the source, its other dependent and this profile."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        _install_dependent(cfg, 'team-3')
+        claude_dir = e2e_isolated_home['claude_dir']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        argvs: list[list[str]] = []
+        envs: list[dict[str, str]] = []
+        prompts: list[str] = []
+        printed_before_prompt: list[str] = []
+        real_ask = setup_environment._ask_yes_no
+
+        def _ask(prompt: str) -> bool:
+            prompts.append(prompt)
+            printed_before_prompt.append(_run_output(capfd))
+            return real_ask(prompt)
+
+        capfd.readouterr()
+
+        with (
+            patch.object(setup_environment, '_ask_yes_no', side_effect=_ask),
+            patch.object(setup_environment.subprocess, 'run', side_effect=_recording_subprocess_run(argvs, envs)),
+        ):
+            code = run_main(
+                [str(cfg), *SKIP, '--command-names', 'team-2'], interactive=True, answers=['y'], argv0=str(runner),
+            )
+
+        after_prompt = _run_output(capfd)
+        assert code == 0, after_prompt
+        assert len(prompts) == 1, prompts
+        assert CONSENT_PROMPT in prompts[0]
+        before_prompt = printed_before_prompt[0]
+        assert SOURCE_REFRESH_HEADER in before_prompt, 'the refresh is named before the question'
+        assert '* other profiles its run refreshes: team-3' in before_prompt
+        assert 'Refreshing the source profile "team-1" before this profile installs...' not in before_prompt
+        assert '=== Source profile' not in before_prompt
+        assert 'Refreshing the source profile "team-1" before this profile installs...' in after_prompt
+        assert '=== Source profile team-1 ===' in after_prompt
+        assert [argv[1:] for argv in argvs] == [[str(runner), *SOURCE_CHILD_ARGV]], 'the child carries --yes'
+        output = before_prompt + after_prompt
+        assert output.count('Auto-confirmed via --yes flag') == 2, 'the source and its other dependent ask nothing'
+        assert output.count(STEP_3_BANNER) == 3, 'team-1, team-3 and team-2 each install exactly once'
+        for name in ('team-1', 'team-2', 'team-3'):
+            assert _theme(claude_dir / name) == 'light', name
+
+    def test_stale_path_installs_the_snapshot_shape_so_a_rerun_by_name_warns_about_nothing(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A configuration declaring command-names and link-dirs leaves no identity key in the dependent's record."""
+        cfg = write_config(configs, 'team.yaml', {**_team(), 'command-names': ['team-1', 't1'], 'link-dirs': ['projects']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        local_bin = e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0, 'the YAML names install team-1 with its alias'
+        assert wrappers_exist(local_bin, 't1')
+        assert run_main([
+            str(cfg), *SKIP, '--yes', '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1',
+        ]) == 0
+        snapshot_values = read_manifest(claude_dir / 'team-2')['yaml_values']
+        assert snapshot_values['command_names'] == [], 'a run applying the snapshot records no YAML names'
+        assert snapshot_values['link_dirs'] is None
+        assert snapshot_values['link_from'] is None
+        write_config(configs, 'team.yaml', {
+            **_team(), 'command-names': ['team-1', 't1'], 'link-dirs': ['projects'], 'user-settings': {'theme': 'light'},
+        })
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        manifest = read_manifest(claude_dir / 'team-2')
+        assert manifest['yaml_values'] == snapshot_values, 'the stale path records what a run by name records'
+        assert manifest['command_names'] == ['team-2']
+        assert manifest['config_digest'] == read_manifest(claude_dir / 'team-1')['config_digest']
+        assert _theme(claude_dir / 'team-2') == 'light'
+        assert wrappers_exist(local_bin, 'team-2')
+        assert not wrappers_exist(local_bin, 'team-2-t1')
+        capfd.readouterr()
+
+        assert run_main(['--profile', 'team-2', *SKIP, '--yes']) == 0
+
+        output = _run_output(capfd)
+        assert 'command-names changed' not in output
+        assert 'link-dirs changed' not in output
+        assert 'link-from changed' not in output
+        assert read_manifest(claude_dir / 'team-2')['yaml_values'] == snapshot_values
+
+    def test_removing_the_pin_on_a_dependent_run_removes_the_machine_wide_controls(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """The pins the refreshed source and its dependents still record are not read: this run unpins the machine."""
+        cfg = write_config(configs, 'team.yaml', {**_team(), 'claude-code-version': '2.1.280'})
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        _install_dependent(cfg, 'team-2')
+        _install_dependent(cfg, 'team-3')
+        for name in ('team-1', 'team-2', 'team-3'):
+            assert read_manifest(claude_dir / name)['claude_code_version'] == '2.1.280', name
+            assert _read_json(claude_dir / name / '.claude.json')['autoUpdates'] is False, name
+        write_config(configs, 'team.yaml', _team())
+        runner = write_child_runner(tmp_path, monkeypatch)
+        os_env_writes: list[dict[str, str | None]] = []
+        capfd.readouterr()
+
+        code = run_main(
+            [str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner), os_env_writes=os_env_writes,
+        )
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert SOURCE_REFRESH_HEADER in output
+        parent_steps = output[:output.index('=== Source profile team-1 ===')]
+        assert 'Another installed profile pins a Claude Code version' not in parent_steps, (
+            'the pins of the source and the dependents its refresh covers are about to be rewritten'
+        )
+        parent_summary = _first_installation_summary(output)
+        assert SOURCE_REFRESH_HEADER in parent_summary
+        assert 'Stale update controls in other profiles (not edited by this run):' in parent_summary
+        for name in ('team-1', 'team-3'):
+            assert (
+                f'{name}: {claude_dir / name / ".claude.json"} (autoUpdates, autoInstallIdeExtension) '
+                f'-- re-run with --profile {name}'
+            ) in parent_summary, name
+        assert 'Kept at' not in output
+        assert any(
+            write.get('DISABLE_AUTOUPDATER', '1') is None and write.get('DISABLE_UPDATES', '1') is None
+            for write in os_env_writes
+        ), os_env_writes
+        assert 'autoUpdates' not in _read_json(claude_dir / 'team-2' / '.claude.json')
+        for name in ('team-1', 'team-2', 'team-3'):
+            assert read_manifest(claude_dir / name)['claude_code_version'] is None, name
+        dependent_summary = output[output.rindex('Setup Complete!'):]
+        assert 'Stale update controls left in other profiles (re-run each with --profile to remove them):' in dependent_summary
+
+    def test_sibling_failure_in_the_source_refresh_installs_this_profile_and_exits_1(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source whose Step 23 fails on another dependent is refreshed: this profile installs and the sibling is named."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        _install_dependent(cfg, 'team-3')
+        claude_dir = e2e_isolated_home['claude_dir']
+        # A real agents directory with content in team-3 makes its remembered-value re-run
+        # refuse, because only a typed value converts it
+        agents = claude_dir / 'team-3' / 'agents'
+        setup_environment._remove_directory_link(agents)
+        agents.mkdir()
+        (agents / 'local.md').write_text('local', encoding='utf-8')
+        stale_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        write_config(configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}})
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 1, output
+        assert '=== Source profile team-1 ===' in output
+        assert '=== Dependent profile team-3 ===' in output
+        assert 'The refresh of profile "team-1" failed' not in output
+        assert 'Profile "team-1" refreshed with errors (exit code 1); review its output above' in output
+        assert 'Its run could not refresh: team-3' in output
+        assert 'Retry it with --profile team-3 after this run.' in output
+        assert 'Profile "team-1" refreshed; installing "team-2" from its resolved-config.yaml' in output
+        fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        assert fresh_digest != stale_digest
+        assert read_manifest(claude_dir / 'team-2')['config_digest'] == fresh_digest
+        assert read_manifest(claude_dir / 'team-3')['config_digest'] == stale_digest
+        for name in ('team-1', 'team-2'):
+            assert _theme(claude_dir / name) == 'light', name
+        assert _theme(claude_dir / 'team-3') == 'dark'
+        dependent_tail = output[output.rindex('Profile "team-1" refreshed; installing "team-2"'):]
+        assert 'Setup Completed with Errors' in dependent_tail
+        assert 'The following dependent profiles failed to refresh:' in dependent_tail
+        assert '- team-3: not refreshed by the run of profile "team-1"; retry with --profile team-3' in dependent_tail
+        assert 'Review the output of each failed dependent above, then retry it with its --profile command.' in dependent_tail
+        assert (
+            'The run of profile "team-1" that refreshed the source of this profile ended with exit code 1.'
+        ) in dependent_tail
+
+    def test_source_run_failing_after_recording_its_configuration_installs_this_profile_and_exits_1(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source run whose own dependency fails still records the configuration: this profile installs, exit 1."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        stale_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        write_config(
+            configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}, 'dependencies': {'common': ['exit 7']}},
+        )
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 1, output
+        assert '=== Source profile team-1 ===' in output
+        assert 'The refresh of profile "team-1" failed' not in output
+        assert 'Profile "team-1" refreshed with errors (exit code 1); review its output above' in output
+        assert 'Its run could not refresh' not in output
+        assert 'Profile "team-1" refreshed; installing "team-2" from its resolved-config.yaml' in output
+        fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        assert fresh_digest != stale_digest
+        assert read_manifest(claude_dir / 'team-2')['config_digest'] == fresh_digest
+        for name in ('team-1', 'team-2'):
+            assert _theme(claude_dir / name) == 'light', name
+        dependent_tail = output[output.rindex('Profile "team-1" refreshed; installing "team-2"'):]
+        assert 'Setup Completed with Errors' in dependent_tail
+        assert (
+            'The run of profile "team-1" that refreshed the source of this profile ended with exit code 1.'
+        ) in dependent_tail
+        assert 'Review its output above, then retry it with --profile team-1.' in dependent_tail
+        assert 'The following dependent profiles failed to refresh:' not in dependent_tail
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')

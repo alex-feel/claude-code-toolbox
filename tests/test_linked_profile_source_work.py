@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from scripts import setup_environment
@@ -95,6 +96,22 @@ class TestSourceRunCommands:
     def test_missing_snapshot_means_no_commands(self, tmp_path: Path) -> None:
         source = LinkSource('team-1', tmp_path / 'home' / '.claude' / 'team-1', {'name': 'team-1'})
         assert setup_environment.source_run_commands(source, tmp_path / 'home', ['team-1']) == frozenset()
+
+    def test_snapshot_of_a_pending_refresh_replaces_the_stale_file(self, tmp_path: Path) -> None:
+        """A run that refreshes the source first reads the commands of the snapshot that refresh records."""
+        home = tmp_path / 'home'
+        source_dir = home / '.claude' / 'team-1'
+        _write_snapshot(source_dir, {'common': ['npm install -g old']})
+        source = LinkSource('team-1', source_dir, {'name': 'team-1'})
+        refreshed: dict[str, Any] = {
+            'name': 'Team', 'dependencies': {'common': ['npm install -g new', 'rm -rf ~/.claude/statsig']},
+        }
+
+        with patch.object(setup_environment.platform, 'system', return_value='Linux'):
+            commands = setup_environment.source_run_commands(source, home, ['team-1'], snapshot=refreshed)
+
+        assert commands == frozenset({'npm install -g new', 'rm -rf ~/.claude/team-1/statsig'})
+        assert refreshed['dependencies']['common'][1] == 'rm -rf ~/.claude/statsig', 'the snapshot stays as authored'
 
 
 class TestCoversEveryContentEntry:
@@ -325,6 +342,30 @@ class TestElevationReasonsOverride:
         with patch.object(setup_environment, 'admin_elevation_reasons', return_value=[]) as reasons:
             setup_environment.request_admin_elevation_if_needed({'x': 1}, args, skip_install=True)
         reasons.assert_called_once_with({'x': 1}, args, skip_install=True)
+
+    def test_source_refresh_reasons_come_first_and_count_for_a_run_with_none_of_its_own(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent that leaves its work to the source still elevates for the refresh of that source."""
+        args = setup_environment.argparse.Namespace(skip_install=False, no_admin=False, dry_run=True)
+        refresh_reasons = ['Installing Claude Code (includes Node.js and Git)', 'Global npm package: npm install -g x']
+        own = {'dependencies': {'windows': ['npm install -g x', 'npm install -g own']}}
+        with (
+            patch.object(setup_environment.platform, 'system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+        ):
+            setup_environment.request_admin_elevation_if_needed(
+                own, args, skip_install=True, source_refresh_reasons=refresh_reasons,
+            )
+            listed = capsys.readouterr().out
+            setup_environment.request_admin_elevation_if_needed({}, args, skip_install=True)
+            nothing = capsys.readouterr().out
+        assert [line.split('  - ', 1)[1] for line in listed.splitlines() if '  - ' in line] == [
+            'Installing Claude Code (includes Node.js and Git)',
+            'Global npm package: npm install -g x',
+            'Global npm package: npm install -g own',
+        ], 'the refresh reasons first, then the reasons of this run without repeating one'
+        assert nothing == '', 'without a refresh, a run with no work of its own requests nothing'
 
 
 def test_run_all_commands_flag_and_twin() -> None:
