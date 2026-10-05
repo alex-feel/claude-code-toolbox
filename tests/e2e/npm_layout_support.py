@@ -10,8 +10,10 @@ run: the npm.cmd shim of Node.js on Windows runs the global-prefix copy
 whenever its bin/npm-cli.js exists and the bundled copy otherwise, the
 npm.cmd shim in the prefix runs the prefix copy, and a POSIX bin/npm runs the
 package it belongs to. Every npm invocation is appended to a log, so a test
-can prove which npm commands setup ran. Nothing outside the temporary
-directory is read or changed.
+can prove which npm commands setup ran. FAKE_NPM_FAIL makes an invocation
+exit 1 and FAKE_NPM_DELAY stalls it for the given seconds: every invocation,
+or only the one whose space-joined arguments equal FAKE_NPM_ONLY_ARGS when
+that is set. Nothing outside the temporary directory is read or changed.
 """
 
 from __future__ import annotations
@@ -38,9 +40,11 @@ from pathlib import Path
 role, location, *args = sys.argv[1:]
 with open(os.environ['FAKE_NPM_LOG'], 'a', encoding='utf-8') as log:
     log.write(json.dumps(args) + '\\n')
-time.sleep(float(os.environ.get('FAKE_NPM_DELAY', '0')))
-if os.environ.get('FAKE_NPM_FAIL'):
-    sys.exit(1)
+only_args = os.environ.get('FAKE_NPM_ONLY_ARGS')
+if only_args is None or only_args == ' '.join(args):
+    time.sleep(float(os.environ.get('FAKE_NPM_DELAY', '0')))
+    if os.environ.get('FAKE_NPM_FAIL'):
+        sys.exit(1)
 
 configured = os.environ.get('NPM_CONFIG_PREFIX')
 # Without a configured prefix, the builtin npmrc of the Windows Node.js
@@ -76,6 +80,7 @@ class NpmLayout:
         prefix_bin_dir: The directory holding the prefix copy's npm entry.
         prefix_dir: The package directory a prefix copy occupies.
         log: The file every npm invocation is appended to.
+        stub: The npm stand-in script every npm entry runs.
     """
 
     node_root: Path
@@ -85,6 +90,7 @@ class NpmLayout:
     prefix_bin_dir: Path
     prefix_dir: Path
     log: Path
+    stub: Path
 
     def npm_calls(self) -> list[list[str]]:
         """The argument lists of every npm invocation so far, in order."""
@@ -124,6 +130,22 @@ def _write_entry(directory: Path, name: str, argv: list[str]) -> None:
     entry = directory / name
     entry.write_text(f'#!/bin/sh\nexec {quoted} "$@"\n', encoding='utf-8')
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def write_npm_entry(directory: Path, package_dir: Path, stub: Path) -> None:
+    """Write an npm entry that runs the npm package in package_dir.
+
+    The entry stands for an npm outside both the Node.js installation and the
+    npm global prefix, such as one a Node.js version manager puts first on
+    PATH: it reports the version package_dir declares, and the global prefix
+    npm would use.
+
+    Args:
+        directory: The directory to write the entry into.
+        package_dir: The npm package directory the entry runs.
+        stub: The npm stand-in script of a layout (NpmLayout.stub).
+    """
+    _write_entry(directory, 'npm', [sys.executable, str(stub), 'posix-bin', str(package_dir)])
 
 
 def _write_node(directory: Path) -> None:
@@ -170,8 +192,9 @@ def build_npm_layout(
         prefix_bin_dir=_template('prefix_bin_dir', node_root, npm_prefix),
         prefix_dir=_template('prefix_npm', node_root, npm_prefix),
         log=root / 'npm-calls.log',
+        stub=root / 'fake_npm.py',
     )
-    stub = root / 'fake_npm.py'
+    stub = layout.stub
     stub.write_text(FAKE_NPM, encoding='utf-8')
     _write_node(layout.node_bin_dir)
     if bundled_version is not None:
@@ -194,24 +217,32 @@ def build_npm_layout(
     return layout
 
 
-def path_with(*directories: Path, keep_npm: bool = True) -> str:
+def path_with(*directories: Path, keep_npm: bool = True, keep_node: bool = True) -> str:
     """Build a PATH that puts the directories first, then the current PATH.
 
     Args:
         *directories: The directories to put first, in order.
         keep_npm: Whether entries of the current PATH that hold an npm stay;
             False drops them so that npm resolves only from the directories.
+        keep_node: Whether entries of the current PATH that hold a node stay;
+            False drops them so that node resolves only from the directories.
 
     Returns:
         The PATH value.
     """
-    current = [entry for entry in os.environ.get('PATH', '').split(os.pathsep) if entry]
-    if not keep_npm:
-        current = [entry for entry in current if not _holds_npm(Path(entry))]
+    dropped = [name for name, keep in (('npm', keep_npm), ('node', keep_node)) if not keep]
+    current = [
+        entry
+        for entry in os.environ.get('PATH', '').split(os.pathsep)
+        if entry and not any(_holds(Path(entry), name) for name in dropped)
+    ]
     return os.pathsep.join([*(str(directory) for directory in directories), *current])
 
 
-def _holds_npm(directory: Path) -> bool:
-    """Report whether a PATH entry holds an npm executable."""
-    names = ('npm.cmd', 'npm.exe', 'npm.bat', 'npm.ps1', 'npm') if sys.platform == 'win32' else ('npm',)
-    return any((directory / name).exists() for name in names)
+def _holds(directory: Path, name: str) -> bool:
+    """Report whether a PATH entry holds an executable of the given name."""
+    if sys.platform == 'win32':
+        candidates = (f'{name}.cmd', f'{name}.exe', f'{name}.bat', f'{name}.ps1', name)
+    else:
+        candidates = (name,)
+    return any((directory / candidate).exists() for candidate in candidates)

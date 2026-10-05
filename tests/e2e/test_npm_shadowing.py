@@ -6,18 +6,20 @@ Windows, ``<prefix>/lib/node_modules/npm`` with ``<prefix>/bin/npm`` on Linux
 and macOS. The npm.cmd shim of Node.js runs that copy whenever it exists, and
 a POSIX shell runs it when the prefix bin directory comes first on PATH, so
 the newer npm each Node.js upgrade bundles never runs. Setup checks for that
-in Step 5, after its Node.js step and before any step runs npm: it warns with
-both versions, both package directories and the commands that remove or
-update the prefix copy, repeats the warning in the block that closes the run,
-and changes nothing. A copy that is newer or equal, npm that follows the
-bundled copy, and every check that cannot determine a version print nothing
-and leave the run's outcome alone.
+in Step 5, after its Node.js step and before the Step 6 dependency commands:
+it warns with both versions, both package directories and the commands that
+remove or update the prefix copy, repeats the warning in the block that
+closes the run, and changes nothing. A copy that is newer or equal, npm that
+follows the bundled copy, an older npm that is not the global-prefix copy,
+and every check that cannot determine a version print nothing and leave the
+run's outcome alone.
 
 Every test runs main() against a configuration on disk in the isolated home,
 with a Node.js installation and an npm global prefix the test builds in the
-platform's layout (tests/e2e/npm_layout_support.py) first on PATH; the npm
-and node entries there are stand-ins that answer the probes, so the
-machine's own npm is never run or changed.
+platform's layout (tests/e2e/npm_layout_support.py) first on PATH, or, for a
+machine without Node.js, a PATH that holds no node; the npm and node entries
+there are stand-ins that answer the probes, so the machine's own npm is
+never run or changed.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from tests.e2e.expected import EXPECTED_NPM_LAYOUT
 from tests.e2e.npm_layout_support import NpmLayout
 from tests.e2e.npm_layout_support import build_npm_layout
 from tests.e2e.npm_layout_support import path_with
+from tests.e2e.npm_layout_support import write_npm_entry
 from tests.e2e.npm_layout_support import write_package
 from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_config
@@ -104,6 +107,7 @@ def _use(
     directories: tuple[Path, ...] | None = None,
     *,
     keep_npm: bool = True,
+    keep_node: bool = True,
 ) -> None:
     """Put the layout first on PATH and point npm at its global prefix."""
     monkeypatch.setenv('FAKE_NPM_LOG', str(layout.log))
@@ -112,7 +116,7 @@ def _use(
     else:
         monkeypatch.setenv('NPM_CONFIG_PREFIX', str(layout.npm_prefix))
     order = directories if directories is not None else _shadowing_order(layout)
-    monkeypatch.setenv('PATH', path_with(*order, keep_npm=keep_npm))
+    monkeypatch.setenv('PATH', path_with(*order, keep_npm=keep_npm, keep_node=keep_node))
 
 
 def _run(
@@ -256,6 +260,39 @@ class TestNoWarning:
         assert not errors, '\n'.join(errors)
         assert layout.npm_calls() == [['--version']]
 
+    @pytest.mark.parametrize('prefix_version', [None, '11.10.0'], ids=['no-prefix-copy', 'prefix-copy-of-another-version'])
+    def test_older_npm_that_is_not_the_prefix_copy(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        prefix_version: str | None,
+    ) -> None:
+        """An older npm first on PATH that the global prefix does not hold is not reported.
+
+        npm reports the older version, so the check asks npm for its global
+        prefix; the prefix holds no copy, or a copy of another version, so
+        the older npm is not the prefix copy and nothing is named.
+        """
+        layout = build_npm_layout(
+            tmp_path, _npm_prefix(e2e_isolated_home), bundled_version=BUNDLED, prefix_version=prefix_version,
+        )
+        other_package = tmp_path / 'other-npm'
+        other_bin_dir = tmp_path / 'other-bin'
+        write_package(other_package, STALE)
+        write_npm_entry(other_bin_dir, other_package, layout.stub)
+        _use(monkeypatch, layout, (other_bin_dir, *_shadowing_order(layout)))
+        before = layout.package_bytes()
+
+        code, output = _run(tmp_path, capsys)
+
+        assert code == 0, output
+        errors = validate_no_npm_shadowing_report(output)
+        assert not errors, '\n'.join(errors)
+        assert layout.npm_calls() == [['--version'], ['config', 'get', 'prefix']]
+        assert layout.package_bytes() == before
+
 
 def _assert_silent_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Run setup and require exit 0 with no shadowing warning."""
@@ -307,6 +344,26 @@ class TestUndeterminedChecksLeaveTheRunAlone:
         assert layout.npm_calls() == []
 
         _use(monkeypatch, layout, (layout.node_bin_dir, layout.prefix_bin_dir), keep_npm=False)
+        _assert_reported_run(tmp_path, capsys, layout)
+
+    def test_no_node_on_path(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A machine without Node.js on PATH has no bundled npm to compare with."""
+        layout = build_npm_layout(
+            tmp_path, _npm_prefix(e2e_isolated_home), bundled_version=BUNDLED, prefix_version=STALE,
+        )
+        _use(monkeypatch, layout, (), keep_npm=False, keep_node=False)
+        assert shutil.which('node') is None, 'a PATH entry still resolves node'
+
+        _assert_silent_run(tmp_path, capsys)
+        assert layout.npm_calls() == []
+
+        _use(monkeypatch, layout)
         _assert_reported_run(tmp_path, capsys, layout)
 
     def test_node_without_a_bundled_npm(
@@ -403,6 +460,51 @@ class TestUndeterminedChecksLeaveTheRunAlone:
         assert layout.npm_calls() == [['--version']]
 
         monkeypatch.delenv('FAKE_NPM_DELAY')
+        _assert_reported_run(tmp_path, capsys, layout)
+
+    def test_npm_prefix_probe_fails(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """npm reports an older version, then fails to report its global prefix."""
+        layout = build_npm_layout(
+            tmp_path, _npm_prefix(e2e_isolated_home), bundled_version=BUNDLED, prefix_version=STALE,
+        )
+        _use(monkeypatch, layout)
+        monkeypatch.setenv('FAKE_NPM_FAIL', '1')
+        monkeypatch.setenv('FAKE_NPM_ONLY_ARGS', 'config get prefix')
+
+        _assert_silent_run(tmp_path, capsys)
+        assert layout.npm_calls() == [['--version'], ['config', 'get', 'prefix']]
+
+        monkeypatch.delenv('FAKE_NPM_FAIL')
+        monkeypatch.delenv('FAKE_NPM_ONLY_ARGS')
+        _assert_reported_run(tmp_path, capsys, layout)
+
+    def test_npm_prefix_probe_times_out(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """npm reports an older version, then runs past the timeout asked for its global prefix."""
+        layout = build_npm_layout(
+            tmp_path, _npm_prefix(e2e_isolated_home), bundled_version=BUNDLED, prefix_version=STALE,
+        )
+        _use(monkeypatch, layout)
+        monkeypatch.setenv('FAKE_NPM_DELAY', '3')
+        monkeypatch.setenv('FAKE_NPM_ONLY_ARGS', 'config get prefix')
+        monkeypatch.setattr(setup_environment, 'NPM_PROBE_TIMEOUT_SECONDS', 1)
+
+        _assert_silent_run(tmp_path, capsys)
+        assert layout.npm_calls() == [['--version'], ['config', 'get', 'prefix']]
+
+        monkeypatch.delenv('FAKE_NPM_DELAY')
+        monkeypatch.delenv('FAKE_NPM_ONLY_ARGS')
         _assert_reported_run(tmp_path, capsys, layout)
 
 
