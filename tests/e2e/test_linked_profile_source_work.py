@@ -6,11 +6,15 @@ Claude Code binary, the IDE extension, Node.js and the tools the dependency
 commands install exist once, and the source's run installs them. Every run of
 such a dependent -- a standalone install, ``--profile NAME``, a ``--profile
 all`` child and a source's Step 23 refresh -- therefore skips the install and
-upgrade of Step 1 (the presence check stays), the IDE extension of Step 2,
-the Node.js installation of Step 5 and every dependency command whose text,
-after the run's re-rooting, equals a command the source's run executes; a
-command rewritten into the profile still runs. A full copy, a profile that
-links only ``projects``, the base profile and a source run everything, and
+upgrade of Step 1 (the presence check stays), the IDE extension of Step 2 and
+the Node.js installation of Step 5. A dependent that links every content
+entry (``all``, or each content entry listed) also skips every dependency
+command whose text, after the run's re-rooting, equals a command the
+source's run executes; a command rewritten into the profile still runs. A
+dependent that links only some content entries runs every command, because
+a command may write into a content directory it holds for real (the skills
+CLI writes into ``CLAUDE_CONFIG_DIR``). A full copy, a profile that links
+only ``projects``, the base profile and a source run everything, and
 ``--run-all-commands`` (or ``CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS=1``) makes
 a dependent run everything too, also in the children ``--profile all`` and
 Step 23 start. The installation summary and ``--dry-run`` name each skipped
@@ -68,6 +72,13 @@ PLATFORM_COMMAND = WINDOWS_PLATFORM if IS_WINDOWS else POSIX_PLATFORM
 MARKER_COMMAND = WINDOWS_MARKER if IS_WINDOWS else POSIX_MARKER
 # One full run appends the platform list first, then the common list
 ONE_RUN = ['platform', 'shared']
+# A command that writes into the skills/ of the profile running it, the way
+# the skills CLI does: it reads the CLAUDE_CONFIG_DIR the setup exports, so
+# its text names no config home and is the same in every isolated run
+POSIX_SKILL_WRITE = 'mkdir -p "$CLAUDE_CONFIG_DIR/skills/e2e-skill"'
+WINDOWS_SKILL_WRITE = 'New-Item -ItemType Directory -Force -Path "$env:CLAUDE_CONFIG_DIR\\skills\\e2e-skill" | Out-Null'
+SKILL_WRITE = WINDOWS_SKILL_WRITE if IS_WINDOWS else POSIX_SKILL_WRITE
+EVERY_CONTENT_ENTRY = ','.join(setup_environment.CONTENT_PROFILE_DIRS)
 
 RECORDING_RUNNER = '''\
 """Child runner: setup_environment.main() with the machine-wide installers recorded instead of run."""
@@ -145,6 +156,13 @@ def _rerooted_marker(profile: str) -> str:
     return MARKER_COMMAND.replace('\\.claude\\dep-marker', f'\\.claude\\{profile}\\dep-marker').replace(
         '/.claude/dep-marker', f'/.claude/{profile}/dep-marker',
     )
+
+
+def _config_with_skill_write() -> dict[str, Any]:
+    """The configuration plus the command that writes into the running profile's skills/."""
+    config = _config()
+    config['dependencies']['common'] = [SHARED, SKILL_WRITE]
+    return config
 
 
 def _record_label(log: Path, label: str) -> Callable[..., bool]:
@@ -307,22 +325,58 @@ class TestDependentLeavesWorkToSource:
         assert not _marker(claude_dir, SOURCE).exists(), 'a dependent run writes nothing into the source'
         assert _from_source_rows(output, SOURCE) == ['Claude Code install or upgrade', PLATFORM_COMMAND, SHARED]
 
-    def test_partial_content_link_leaves_the_same_work_to_the_source(
+    def test_partial_content_link_leaves_the_installs_to_the_source_and_runs_every_command(
         self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Linking one content entry makes the profile a dependent, so the source's work is left to it."""
+        """Linking one content entry leaves the binary to the source; every command runs, one into this profile's own skills/."""
         home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
-        cfg = _install_source(configs, install_log)
+        cfg = _install_source(configs, install_log, _config_with_skill_write())
+        assert (claude_dir / SOURCE / 'skills' / 'e2e-skill').is_dir(), 'the source run wrote into its own skills/'
         capsys.readouterr()
 
         code = _run([str(cfg), '--command-names', DEPENDENT, '--link-dirs', 'agents', '--link-from', SOURCE], install_log)
 
         output = _output(capsys)
         assert code == 0, output
+        assert _installs(install_log) == ['install_claude'], 'the binary install is left to the source'
+        assert _runs(home) == ONE_RUN + ONE_RUN, 'the shared and platform commands ran again in the dependent'
+        assert _marker(claude_dir, DEPENDENT).is_dir()
+        assert setup_environment._is_directory_link(claude_dir / DEPENDENT / 'agents')
+        dependent_skills = claude_dir / DEPENDENT / 'skills'
+        assert dependent_skills.is_dir()
+        assert not setup_environment._is_directory_link(dependent_skills), 'skills/ is this profile\'s own directory'
+        assert (dependent_skills / 'e2e-skill').is_dir(), 'the same-text command ran here and wrote into this profile'
+        assert _from_source_rows(output, SOURCE) == ['Claude Code install or upgrade']
+        assert f'Step 1: Skipping Claude Code installation (left to source profile "{SOURCE}")' in output
+        assert _dependency_rows(output) == [
+            SHARED, SKILL_WRITE, PLATFORM_COMMAND, f'{_rerooted_marker(DEPENDENT)} [re-rooted]',
+        ]
+        assert f'Running: {SHARED}' in output
+        assert f'Running: {SKILL_WRITE}' in output
+        assert f'Left to source profile "{SOURCE}": ' not in output, 'Step 6 leaves no command to the source'
+
+    def test_every_content_entry_listed_leaves_the_same_work_to_the_source(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Listing each content entry links every content directory, so the shared commands are left to the source."""
+        home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
+        cfg = _install_source(configs, install_log, _config_with_skill_write())
+        capsys.readouterr()
+
+        code = _run(
+            [str(cfg), '--command-names', DEPENDENT, '--link-dirs', EVERY_CONTENT_ENTRY, '--link-from', SOURCE], install_log,
+        )
+
+        output = _output(capsys)
+        assert code == 0, output
         assert _installs(install_log) == ['install_claude']
         assert _runs(home) == ONE_RUN
         assert _marker(claude_dir, DEPENDENT).is_dir()
-        assert _from_source_rows(output, SOURCE) == ['Claude Code install or upgrade', PLATFORM_COMMAND, SHARED]
+        assert setup_environment._is_directory_link(claude_dir / DEPENDENT / 'skills')
+        assert (claude_dir / DEPENDENT / 'skills' / 'e2e-skill').is_dir(), 'the skill the source wrote shows through the link'
+        assert f'Running: {SKILL_WRITE}' not in output
+        assert _from_source_rows(output, SOURCE) == ['Claude Code install or upgrade', PLATFORM_COMMAND, SHARED, SKILL_WRITE]
+        assert _dependency_rows(output) == [f'{_rerooted_marker(DEPENDENT)} [re-rooted]']
 
     def test_projects_only_link_runs_everything(
         self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],

@@ -14030,6 +14030,25 @@ def link_source_errors(name: str, source: str) -> list[str]:
     return command_name_errors([name], source)
 
 
+def covers_every_content_entry(entries: Iterable[str]) -> bool:
+    """Report whether linked entries cover every content entry of the profile.
+
+    A profile that links every content entry (``all``, or each entry of
+    CONTENT_PROFILE_DIRS listed) holds no content directory of its own, so a
+    dependency command with the same text as its source's can write nothing
+    the profile would miss; a profile that links only some content entries
+    holds the rest for real and runs every command itself.
+
+    Args:
+        entries: The linked entries, in any order and case.
+
+    Returns:
+        True when every CONTENT_PROFILE_DIRS entry is among them.
+    """
+    linked = {str(entry).casefold() for entry in entries}
+    return all(entry in linked for entry in CONTENT_PROFILE_DIRS)
+
+
 class LinkSpec(NamedTuple):
     """The links of a run and where each value came from.
 
@@ -14061,6 +14080,11 @@ class LinkSpec(NamedTuple):
     def links_content(self) -> bool:
         """Whether the profile takes its configuration from the source."""
         return bool(self.content_dirs)
+
+    @property
+    def links_every_content_entry(self) -> bool:
+        """Whether the profile holds no content directory of its own (see covers_every_content_entry())."""
+        return covers_every_content_entry(self.dirs)
 
     @property
     def typed(self) -> bool:
@@ -15702,9 +15726,9 @@ def refresh_dependents(
     Args:
         dependents: The profiles to refresh, from content_dependents().
         source_commands: The dependency commands this run executes on this
-            platform, which a dependent leaves out unless the flag is given;
-            a failed dependent's elevation remedy is judged on the commands
-            it runs itself.
+            platform, which a dependent that links every content entry
+            leaves out unless the flag is given; a failed dependent's
+            elevation remedy is judged on the commands it runs itself.
         run_all_commands: Whether this run was given --run-all-commands.
 
     Returns:
@@ -18546,15 +18570,19 @@ class SourceWork(NamedTuple):
     dependency command installs exist once, and the source's run installs
     them. The dependent's run therefore skips the install and upgrade of
     Step 1 (the presence check stays), the IDE extension of Step 2, the
-    Node.js installation of Step 5 and, in Step 6, every dependency command
-    whose text after this run's re-rooting equals a command the source's run
-    executes; a command rewritten into this profile still runs. The flag
-    --run-all-commands makes the run do all of it itself.
+    Node.js installation of Step 5 and, when the profile links every content
+    entry, in Step 6 every dependency command whose text after this run's
+    re-rooting equals a command the source's run executes; a command
+    rewritten into this profile still runs, and a profile that links only
+    some content entries runs every command, because a command may write
+    into a content directory it holds for real. The flag --run-all-commands
+    makes the run do all of it itself.
 
     Attributes:
         source: The source profile's display name.
         commands: This run's dependency commands the source's run also
-            executes, in run order; they are left out of this run.
+            executes, in run order; they are left out of this run. Empty
+            for a profile that links only some content entries.
         pinned_version: The Claude Code version the configuration pins, or
             None, which decides whether Step 2 had an IDE extension to install.
         install_nodejs: Whether the configuration requests Node.js.
@@ -18672,12 +18700,13 @@ def dependent_run_snapshot(profile: InstalledProfile, *, source_commands: frozen
     Args:
         profile: The dependent.
         source_commands: The commands its source's run executes, which the
-            dependent leaves out; None when --run-all-commands makes it run
-            every command.
+            dependent leaves out when its manifest links every content entry;
+            None when --run-all-commands makes it run every command.
 
     Returns:
         The dependent's snapshot, its dependency commands re-rooted into its
-        profile and minus the source's; empty when the snapshot is missing.
+        profile and, for a dependent that links every content entry, minus
+        the source's; empty when the snapshot is missing.
     """
     snapshot = read_resolved_config_snapshot(profile.directory)
     if snapshot is None:
@@ -18685,7 +18714,12 @@ def dependent_run_snapshot(profile: InstalledProfile, *, source_commands: frozen
     home_dir = get_real_user_home()
     names = [profile.name, *(other.name for other in installed_profiles(home_dir) if other.name != LINK_SOURCE_BASE)]
     ConfigHomeReroot(profile.directory, home_dir, names).apply(snapshot)
-    if source_commands is not None:
+    record = manifest_link(profile.manifest)
+    if (
+        source_commands is not None
+        and record is not None
+        and covers_every_content_entry(str(entry) for entry in cast(list[object], record['dirs']))
+    ):
         leave_commands_to_source(snapshot.get('dependencies'), source_commands)
     return snapshot
 
@@ -19460,11 +19494,15 @@ def main() -> None:
         # unless --run-all-commands asks for it. The shared dependency
         # commands come out of the lists here, before the elevation reasons,
         # the summary and Step 6 read them; a command rewritten into this
-        # profile is this profile's own and stays
+        # profile is this profile's own and stays. Only a profile that links
+        # every content entry leaves them: a tool that reads
+        # CLAUDE_CONFIG_DIR, such as the skills CLI, writes into the profile
+        # that runs it, so a profile holding some content directory for real
+        # needs every command to fill it
         leaves_work_to_source = dependent_of is not None and not args.run_all_commands
         skip_claude_install = args.skip_install or leaves_work_to_source
         commands_left_to_source: list[str] = []
-        if dependent_of is not None and leaves_work_to_source:
+        if dependent_of is not None and leaves_work_to_source and link_spec.links_every_content_entry:
             commands_left_to_source = leave_commands_to_source(
                 config.get('dependencies'),
                 source_run_commands(

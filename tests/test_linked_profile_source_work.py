@@ -5,10 +5,12 @@ the Claude Code binary, the IDE extension, Node.js and the tools the
 dependency commands install exist once, and the source's run installs them.
 The dependent's run therefore leaves that work out -- the Step 1 install
 (the presence check stays), the Step 2 IDE extension, the Step 5 Node.js
-installation and every dependency command whose text, after this run's
-re-rooting, equals a command the source's run executes -- unless
-``--run-all-commands`` asks for the full run. These tests cover the helpers
-that compute and render that work.
+installation and, when the profile links every content entry, every
+dependency command whose text, after this run's re-rooting, equals a command
+the source's run executes -- unless ``--run-all-commands`` asks for the full
+run. A profile that links only some content entries runs every command,
+because a command may write into a content directory it holds for real.
+These tests cover the helpers that compute and render that work.
 """
 
 from __future__ import annotations
@@ -93,6 +95,35 @@ class TestSourceRunCommands:
     def test_missing_snapshot_means_no_commands(self, tmp_path: Path) -> None:
         source = LinkSource('team-1', tmp_path / 'home' / '.claude' / 'team-1', {'name': 'team-1'})
         assert setup_environment.source_run_commands(source, tmp_path / 'home', ['team-1']) == frozenset()
+
+
+class TestCoversEveryContentEntry:
+    """covers_every_content_entry() tells a profile holding no content directory from one holding some."""
+
+    def test_all_and_the_full_content_list_cover_every_entry(self) -> None:
+        assert setup_environment.covers_every_content_entry(setup_environment.LINKABLE_PROFILE_DIRS)
+        assert setup_environment.covers_every_content_entry(setup_environment.CONTENT_PROFILE_DIRS)
+        assert setup_environment.covers_every_content_entry(
+            [entry.upper() for entry in setup_environment.CONTENT_PROFILE_DIRS],
+        ), 'entries are matched without regard to case, as the manifest and the flag spell them'
+
+    def test_a_partial_list_and_a_projects_only_link_do_not(self) -> None:
+        assert not setup_environment.covers_every_content_entry(['agents'])
+        assert not setup_environment.covers_every_content_entry(['projects'])
+        assert not setup_environment.covers_every_content_entry(
+            [entry for entry in setup_environment.CONTENT_PROFILE_DIRS if entry != 'skills'],
+        ), 'a profile holding skills/ for real needs the commands that write into it'
+        assert not setup_environment.covers_every_content_entry([])
+
+    def test_link_spec_property_follows_the_helper(self) -> None:
+        full = setup_environment.LinkSpec(list(setup_environment.LINKABLE_PROFILE_DIRS), 'team-1', 'cli', 'cli')
+        content_only = setup_environment.LinkSpec(list(setup_environment.CONTENT_PROFILE_DIRS), 'team-1', 'cli', 'cli')
+        partial = setup_environment.LinkSpec(['agents', 'projects'], 'team-1', 'cli', 'cli')
+        assert full.links_every_content_entry
+        assert content_only.links_every_content_entry
+        assert partial.links_content
+        assert not partial.links_every_content_entry
+        assert not setup_environment.NO_LINKS.links_every_content_entry
 
 
 class TestLeaveCommandsToSource:
@@ -220,11 +251,18 @@ class TestSummaryRendering:
 class TestDependentRunSnapshot:
     """dependent_run_snapshot() spells what a dependent's run executes, for the elevation hint."""
 
-    def test_snapshot_is_rerooted_and_loses_the_commands_the_source_runs(self, tmp_path: Path) -> None:
-        home = tmp_path / 'home'
+    @staticmethod
+    def _profile(home: Path, link_dirs: list[str] | None) -> setup_environment.InstalledProfile:
         dependent_dir = home / '.claude' / 'team-2'
         _write_snapshot(dependent_dir, {'common': ['npm install -g x', 'rm -rf ~/.claude/statsig']})
-        profile = setup_environment.InstalledProfile('team-2', dependent_dir, dependent_dir / 'manifest.json', None)
+        manifest: dict[str, Any] | None = None
+        if link_dirs is not None:
+            manifest = {'name': 'team-2', 'link': {'dirs': link_dirs, 'source': 'team-1'}}
+        return setup_environment.InstalledProfile('team-2', dependent_dir, dependent_dir / 'manifest.json', manifest)
+
+    def test_snapshot_is_rerooted_and_loses_the_commands_the_source_runs(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        profile = self._profile(home, list(setup_environment.LINKABLE_PROFILE_DIRS))
 
         with (
             patch.object(setup_environment, 'get_real_user_home', return_value=home),
@@ -235,6 +273,32 @@ class TestDependentRunSnapshot:
 
         assert trimmed['dependencies'] == {'common': ['rm -rf ~/.claude/team-2/statsig']}
         assert full['dependencies'] == {'common': ['npm install -g x', 'rm -rf ~/.claude/team-2/statsig']}
+
+    def test_partial_content_link_keeps_every_command(self, tmp_path: Path) -> None:
+        """A dependent holding some content directory for real runs every command, so its remedy counts them."""
+        home = tmp_path / 'home'
+        profile = self._profile(home, ['agents'])
+
+        with (
+            patch.object(setup_environment, 'get_real_user_home', return_value=home),
+            patch.object(setup_environment.platform, 'system', return_value='Linux'),
+        ):
+            snapshot = setup_environment.dependent_run_snapshot(profile, source_commands=frozenset({'npm install -g x'}))
+
+        assert snapshot['dependencies'] == {'common': ['npm install -g x', 'rm -rf ~/.claude/team-2/statsig']}
+
+    def test_unreadable_manifest_keeps_every_command(self, tmp_path: Path) -> None:
+        """Without the link record the run cannot know what the dependent leaves out, so nothing is dropped."""
+        home = tmp_path / 'home'
+        profile = self._profile(home, None)
+
+        with (
+            patch.object(setup_environment, 'get_real_user_home', return_value=home),
+            patch.object(setup_environment.platform, 'system', return_value='Linux'),
+        ):
+            snapshot = setup_environment.dependent_run_snapshot(profile, source_commands=frozenset({'npm install -g x'}))
+
+        assert snapshot['dependencies'] == {'common': ['npm install -g x', 'rm -rf ~/.claude/team-2/statsig']}
 
     def test_missing_snapshot_is_empty(self, tmp_path: Path) -> None:
         profile = setup_environment.InstalledProfile('team-2', tmp_path / 'team-2', tmp_path / 'team-2' / 'm.json', None)
