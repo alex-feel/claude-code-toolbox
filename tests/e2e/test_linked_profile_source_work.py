@@ -19,7 +19,9 @@ only ``projects``, the base profile and a source run everything, and
 a dependent run everything too, also in the children ``--profile all`` and
 Step 23 start. The installation summary and ``--dry-run`` name each skipped
 item with its source, and the completion summary repeats them with the flag
-that forces the full run.
+that forces the full run. On Windows the elevation gate reads the same
+decision: a dependent's dry run and real run list only the elevating work
+the dependent does itself.
 
 Every test runs main() against YAML files on disk; the dependency commands
 run for real in bash (Linux, macOS) or PowerShell (Windows), in that
@@ -50,6 +52,7 @@ from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_config
 
 IS_WINDOWS = sys.platform == 'win32'
+windows_only = pytest.mark.skipif(not IS_WINDOWS, reason='UAC elevation exists only on Windows')
 NO_ADMIN = ['--no-admin']
 SOURCE = 'team-1'
 DEPENDENT = 'team-2'
@@ -79,6 +82,17 @@ POSIX_SKILL_WRITE = 'mkdir -p "$CLAUDE_CONFIG_DIR/skills/e2e-skill"'
 WINDOWS_SKILL_WRITE = 'New-Item -ItemType Directory -Force -Path "$env:CLAUDE_CONFIG_DIR\\skills\\e2e-skill" | Out-Null'
 SKILL_WRITE = WINDOWS_SKILL_WRITE if IS_WINDOWS else POSIX_SKILL_WRITE
 EVERY_CONTENT_ENTRY = ','.join(setup_environment.CONTENT_PROFILE_DIRS)
+# Commands whose text the Windows elevation gate lists (a global npm install
+# and a machine-scope winget install), spelled as PowerShell output so a run
+# installs nothing; the winget one names the config home, so each isolated
+# run re-roots it into its own profile
+NPM_LIKE = 'Write-Output "npm install -g e2e-fake-cli"'
+WINGET_LIKE = 'Write-Output "winget install --scope machine --log $env:USERPROFILE\\.claude\\winget.log"'
+INSTALL_REASON = 'Installing Claude Code (includes Node.js and Git)'
+DRY_RUN_HEADLINE = 'Dry run: administrator elevation is not requested.'
+BANNER_TITLE = 'Administrator Privileges Required'
+REASON_PREFIXES = ('Installing Claude Code', 'System-wide installation: ', 'Global npm package: ')
+IDE_WRITE_ROW = f'IDE extension {setup_environment.IDE_EXTENSION_ID} 1.2.3: installed into code (used by every profile)'
 
 RECORDING_RUNNER = '''\
 """Child runner: setup_environment.main() with the machine-wide installers recorded instead of run."""
@@ -158,11 +172,47 @@ def _rerooted_marker(profile: str) -> str:
     )
 
 
+def _rerooted_winget(profile: str) -> str:
+    """Spell the winget-like command the way an isolated run of the given profile rewrites it."""
+    return WINGET_LIKE.replace('\\.claude\\winget.log', f'\\.claude\\{profile}\\winget.log')
+
+
 def _config_with_skill_write() -> dict[str, Any]:
     """The configuration plus the command that writes into the running profile's skills/."""
     config = _config()
     config['dependencies']['common'] = [SHARED, SKILL_WRITE]
     return config
+
+
+def _elevating_config(*, winget: bool = True) -> dict[str, Any]:
+    """The configuration plus the commands the Windows elevation gate lists.
+
+    Args:
+        winget: Whether the Windows list carries the machine-scope winget
+            command, the one elevating command a dependent runs itself
+            because its text is re-rooted into the profile.
+
+    Returns:
+        The configuration dictionary.
+    """
+    config = _config()
+    config['dependencies']['common'] = [SHARED, NPM_LIKE]
+    if winget:
+        config['dependencies']['windows'] = [WINDOWS_PLATFORM, WINDOWS_MARKER, WINGET_LIKE]
+    return config
+
+
+def _elevation_reasons(output: str) -> list[str]:
+    """The reasons the elevation gate listed, in order, from a dry run's report or a real run's banner."""
+    reasons: list[str] = []
+    for line in output.splitlines():
+        marker = line.find('  - ')
+        if marker == -1:
+            continue
+        reason = line[marker + 4:]
+        if reason.startswith(REASON_PREFIXES):
+            reasons.append(reason)
+    return reasons
 
 
 def _record_label(log: Path, label: str) -> Callable[..., bool]:
@@ -328,7 +378,7 @@ class TestDependentLeavesWorkToSource:
     def test_partial_content_link_leaves_the_installs_to_the_source_and_runs_every_command(
         self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Linking one content entry leaves the binary to the source; every command runs, one into this profile's own skills/."""
+        """Linking one content entry leaves the binary to the source; every command runs, one into this profile's skills/."""
         home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
         cfg = _install_source(configs, install_log, _config_with_skill_write())
         assert (claude_dir / SOURCE / 'skills' / 'e2e-skill').is_dir(), 'the source run wrote into its own skills/'
@@ -344,7 +394,7 @@ class TestDependentLeavesWorkToSource:
         assert setup_environment._is_directory_link(claude_dir / DEPENDENT / 'agents')
         dependent_skills = claude_dir / DEPENDENT / 'skills'
         assert dependent_skills.is_dir()
-        assert not setup_environment._is_directory_link(dependent_skills), 'skills/ is this profile\'s own directory'
+        assert not setup_environment._is_directory_link(dependent_skills), "skills/ is this profile's own directory"
         assert (dependent_skills / 'e2e-skill').is_dir(), 'the same-text command ran here and wrote into this profile'
         assert _from_source_rows(output, SOURCE) == ['Claude Code install or upgrade']
         assert f'Step 1: Skipping Claude Code installation (left to source profile "{SOURCE}")' in output
@@ -456,26 +506,45 @@ class TestDependentLeavesWorkToSource:
     def test_pinned_dependent_leaves_the_ide_extension_to_the_source(
         self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A pinned configuration installs the IDE extension from the source's run only."""
-        cfg = _install_source(configs, install_log, _config(**{'claude-code-version': '1.2.3'}))
-        assert _installs(install_log) == ['install_claude', 'install_ide_extensions']
-        capsys.readouterr()
+        """A pinned configuration installs the IDE extension from the source's run only.
 
-        code = _run([str(cfg), '--command-names', DEPENDENT, '--link-dirs', 'all', '--link-from', SOURCE], install_log)
+        IDE detection is stubbed to find one IDE, so the machine-wide row
+        that names it is present where Step 2 installs and absent where the
+        dependent leaves the install to the source; the stub also records
+        that a run which leaves Step 2 to the source never probes the IDEs.
+        """
+        with patch.object(setup_environment, '_detect_vscode_family_ides', return_value=[('code', '/usr/bin/code')]) as detect:
+            cfg = _install_source(configs, install_log, _config(**{'claude-code-version': '1.2.3'}))
+            dependent = [str(cfg), '--command-names', DEPENDENT, '--link-dirs', 'all', '--link-from', SOURCE]
+            source_output = _output(capsys)
+            assert _installs(install_log) == ['install_claude', 'install_ide_extensions']
+            assert IDE_WRITE_ROW in source_output, 'the source names the IDE write among its machine-wide ones'
+            assert detect.call_count == 1, 'the source probes the IDEs once, for the summary row'
+            detect.reset_mock()
 
-        output = _output(capsys)
-        assert code == 0, output
-        assert _installs(install_log) == ['install_claude', 'install_ide_extensions']
-        assert _from_source_rows(output, SOURCE) == [
-            'Claude Code install or upgrade',
-            f'IDE extension {setup_environment.IDE_EXTENSION_ID} v1.2.3',
-            PLATFORM_COMMAND,
-            SHARED,
-        ]
-        assert f'Step 2: Skipping IDE extensions (left to source profile "{SOURCE}")' in output
-        assert 'IDE extension anthropic.claude-code 1.2.3: installed into' not in output, (
-            'the dependent names no IDE write among the machine-wide ones'
-        )
+            code = _run(dependent, install_log)
+
+            output = _output(capsys)
+            assert code == 0, output
+            assert _installs(install_log) == ['install_claude', 'install_ide_extensions']
+            assert _from_source_rows(output, SOURCE) == [
+                'Claude Code install or upgrade',
+                f'IDE extension {setup_environment.IDE_EXTENSION_ID} v1.2.3',
+                PLATFORM_COMMAND,
+                SHARED,
+            ]
+            assert f'Step 2: Skipping IDE extensions (left to source profile "{SOURCE}")' in output
+            assert IDE_WRITE_ROW not in output, 'the dependent names no IDE write among the machine-wide ones'
+            assert detect.call_count == 0, 'a run that leaves Step 2 to the source never probes the IDEs'
+
+            code = _run([*dependent, '--run-all-commands'], install_log)
+
+            output = _output(capsys)
+            assert code == 0, output
+            assert _installs(install_log) == ['install_claude', 'install_ide_extensions'] * 2
+            assert IDE_WRITE_ROW in output, 'with the flag the dependent installs the extension and names the write'
+            assert 'Step 2: Installing IDE extensions...' in output
+            assert detect.call_count == 1, 'with the flag the dependent probes the IDEs for its own summary row'
 
     def test_dependent_leaves_the_nodejs_installation_to_the_source(
         self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
@@ -611,6 +680,136 @@ class TestRunAllCommands:
         assert _installs(install_log) == ['install_claude']
         assert _runs(home) == ONE_RUN
         assert 'from source' not in _output(capsys)
+
+
+@windows_only
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestDependentElevationDecision:
+    """The Windows elevation gate counts only the work a dependent does itself.
+
+    The gate reads the install decision and the dependency lists after the
+    shared commands came out of them, so a dependent that leaves the binary
+    install and a global npm install to its source is never elevated for
+    them, while the machine-scope winget command re-rooted into the profile
+    is the profile's own and still counts. Every run here goes without
+    ``--no-admin``, with the privilege probe reporting a non-elevated
+    terminal.
+    """
+
+    DEPENDENT_ARGS = ('--command-names', DEPENDENT, '--link-dirs', 'all', '--link-from', SOURCE)
+
+    def _dry_run(self, argv: list[str], install_log: Path) -> int:
+        """Run main() with --dry-run and without --no-admin in a non-elevated terminal."""
+        with _recorded_installers(install_log), patch.object(setup_environment, 'is_admin', return_value=False):
+            return run_main([*argv, '--dry-run'])
+
+    def test_dry_run_of_a_dependent_lists_only_the_rerooted_winget_command(
+        self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The binary install and the shared npm install are the source's; the re-rooted winget command is this profile's."""
+        cfg = _install_source(configs, install_log, _elevating_config())
+        capsys.readouterr()
+
+        code = self._dry_run([str(cfg), *self.DEPENDENT_ARGS], install_log)
+
+        output = _output(capsys)
+        assert code == 0, output
+        assert DRY_RUN_HEADLINE in output
+        assert _elevation_reasons(output) == [f'System-wide installation: {_rerooted_winget(DEPENDENT)}']
+        assert INSTALL_REASON not in output
+        assert f'Global npm package: {NPM_LIKE}' not in output
+        assert _from_source_rows(output, SOURCE) == ['Claude Code install or upgrade', WINDOWS_PLATFORM, SHARED, NPM_LIKE]
+
+    def test_dry_run_of_a_dependent_whose_elevating_work_is_all_shared_reports_nothing(
+        self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With the binary and the global npm install left to the source, nothing needs elevation here."""
+        cfg = _install_source(configs, install_log, _elevating_config(winget=False))
+        capsys.readouterr()
+
+        code = self._dry_run([str(cfg), *self.DEPENDENT_ARGS], install_log)
+
+        output = _output(capsys)
+        assert code == 0, output
+        assert DRY_RUN_HEADLINE not in output
+        assert _elevation_reasons(output) == []
+        assert 'Dry run complete. No changes were made.' in output
+
+    def test_dry_run_with_the_flag_lists_every_reason_in_installation_order(
+        self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--run-all-commands makes the dependent's run elevate for the binary, the winget command and the npm install."""
+        cfg = _install_source(configs, install_log, _elevating_config())
+        capsys.readouterr()
+
+        code = self._dry_run([str(cfg), *self.DEPENDENT_ARGS, '--run-all-commands'], install_log)
+
+        output = _output(capsys)
+        assert code == 0, output
+        assert DRY_RUN_HEADLINE in output
+        assert _elevation_reasons(output) == [
+            INSTALL_REASON,
+            f'System-wide installation: {_rerooted_winget(DEPENDENT)}',
+            f'Global npm package: {NPM_LIKE}',
+        ]
+
+    def test_dry_run_of_a_full_copy_lists_every_reason(
+        self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A second full profile follows no source, so its run elevates for everything."""
+        cfg = _install_source(configs, install_log, _elevating_config())
+        capsys.readouterr()
+
+        code = self._dry_run([str(cfg), '--command-names', DEPENDENT], install_log)
+
+        output = _output(capsys)
+        assert code == 0, output
+        assert DRY_RUN_HEADLINE in output
+        assert _elevation_reasons(output) == [
+            INSTALL_REASON,
+            f'System-wide installation: {_rerooted_winget(DEPENDENT)}',
+            f'Global npm package: {NPM_LIKE}',
+        ]
+        assert 'from source' not in output
+
+    def test_real_run_requests_elevation_only_for_the_work_the_dependent_does_itself(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """No banner opens for work left to the source; with the flag the banner lists it and the relaunch is requested."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        cfg = _install_source(configs, install_log, _elevating_config(winget=False))
+        capsys.readouterr()
+
+        with (
+            _recorded_installers(install_log),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as relaunch,
+        ):
+            code = run_main([str(cfg), *self.DEPENDENT_ARGS, '--yes'])
+
+        output = _output(capsys)
+        assert code == 0, output
+        relaunch.assert_not_called()
+        assert BANNER_TITLE not in output
+        assert _installs(install_log) == ['install_claude'], 'the dependent installed no binary'
+        assert _marker(claude_dir, DEPENDENT).is_dir(), 'the run completed in the non-elevated process'
+        capsys.readouterr()
+
+        with (
+            _recorded_installers(install_log),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as relaunch,
+        ):
+            code = run_main([str(cfg), *self.DEPENDENT_ARGS, '--yes', '--run-all-commands'])
+
+        output = _output(capsys)
+        # The recorder returns instead of relaunching, which the gate reads as a denied elevation
+        assert code == 1, output
+        relaunch.assert_called_once_with()
+        assert BANNER_TITLE in output
+        assert _elevation_reasons(output) == [INSTALL_REASON, f'Global npm package: {NPM_LIKE}']
+        assert 'Administrator elevation was denied' in output
+        assert _installs(install_log) == ['install_claude'], 'the gate stopped the run before Step 1'
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
@@ -770,6 +969,121 @@ class TestChildRuns:
         assert '* team-2 (--profile team-2 --yes --skip-install --no-admin --run-all-commands)' in output
         assert sorted(_runs(home)) == sorted(ONE_RUN * 3)
         assert 'from source' not in output
+
+    def _install_base_and_a_dependent(
+        self, configs: Path, install_log: Path, config: dict[str, Any] | None = None,
+    ) -> Path:
+        """Install the configuration as the base profile and team-2 as a dependent linking all from it."""
+        cfg = write_config(configs, 'team.yaml', config or _config())
+        assert _run([str(cfg)], install_log) == 0
+        assert _run([str(cfg), '--command-names', DEPENDENT, '--link-dirs', 'all', '--link-from', 'base'], install_log) == 0
+        return cfg
+
+    def test_base_source_step_23_leaves_the_shared_commands_to_the_base_run(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile base refreshes its dependent, which skips the commands the base runs as authored and runs its own."""
+        home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
+        self._install_base_and_a_dependent(configs, install_log)
+        _reset(home, install_log)
+        runner = _write_recording_runner(tmp_path, monkeypatch)
+        argvs: list[list[str]] = []
+        capfd.readouterr()
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=self._recording_run(argvs)),
+            _recorded_installers(install_log),
+        ):
+            code = run_main(['--profile', 'base', *NO_ADMIN, '--yes'], argv0=str(runner))
+
+        output = _fd_output(capfd)
+        assert code == 0, output
+        assert f'Step 23: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
+        assert [argv[argv.index('--profile') + 1] for argv in argvs] == [DEPENDENT]
+        assert argvs[0][-1] == '--no-admin', argvs
+        assert '--run-all-commands' not in argvs[0], 'the child carries no flag the base run was not given'
+        assert f'* {DEPENDENT} (--profile {DEPENDENT} --yes --skip-install --no-admin)' in output
+        assert _installs(install_log) == ['install_claude'], 'the base installed the binary; its child skips it'
+        assert _runs(home) == ONE_RUN, 'the shared and platform commands ran once, in the base'
+        assert (claude_dir / 'dep-marker').is_dir(), 'the base ran its marker command as authored'
+        assert _marker(claude_dir, DEPENDENT).is_dir(), 'the child ran its re-rooted marker command'
+        assert f'Left to source profile "base": {SHARED}' in output
+        assert f'Left to source profile "base": {PLATFORM_COMMAND}' in output
+        assert output.count('Left to source profile "base": ') == 2, 'only the two same-text commands are left to the base'
+        assert f'Running: {_rerooted_marker(DEPENDENT)}' in output
+        assert f'- {DEPENDENT}: ok' in output
+
+    def test_base_source_step_23_hands_the_flag_to_its_dependent(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """--run-all-commands on a --profile base run reaches the child in argv, and the child runs every command itself."""
+        home, claude_dir = e2e_isolated_home['home'], e2e_isolated_home['claude_dir']
+        self._install_base_and_a_dependent(configs, install_log)
+        _reset(home, install_log)
+        runner = _write_recording_runner(tmp_path, monkeypatch)
+        argvs: list[list[str]] = []
+        capfd.readouterr()
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=self._recording_run(argvs)),
+            _recorded_installers(install_log),
+        ):
+            code = run_main(['--profile', 'base', *NO_ADMIN, '--yes', '--run-all-commands'], argv0=str(runner))
+
+        output = _fd_output(capfd)
+        assert code == 0, output
+        assert [argv[argv.index('--profile') + 1] for argv in argvs] == [DEPENDENT]
+        assert argvs[0][-2:] == ['--no-admin', '--run-all-commands'], argvs
+        assert f'* {DEPENDENT} (--profile {DEPENDENT} --yes --skip-install --no-admin --run-all-commands)' in output
+        assert _installs(install_log) == ['install_claude'], '--skip-install keeps the child from installing the binary'
+        assert sorted(_runs(home)) == sorted(ONE_RUN * 2), 'the child ran the shared and platform commands too'
+        assert (claude_dir / 'dep-marker').is_dir()
+        assert _marker(claude_dir, DEPENDENT).is_dir()
+        assert 'from source' not in output
+        assert 'Left to source profile' not in output
+
+    @windows_only
+    @pytest.mark.parametrize(
+        ('source_flags', 'remedy_expected'),
+        [
+            pytest.param([], False, id='npm-install-left-to-the-base'),
+            pytest.param(['--run-all-commands'], True, id='run-all-commands'),
+        ],
+    )
+    def test_base_source_judges_a_failed_dependents_remedy_on_the_commands_it_runs_itself(
+        self, source_flags: list[str], remedy_expected: bool, e2e_isolated_home: dict[str, Path], configs: Path,
+        install_log: Path, tmp_path: Path, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """The elevated-terminal remedy names a global npm install only when the dependent's own run executes it.
+
+        The base runs the same command, so the dependent leaves it to the base
+        and needs no elevation for it; with --run-all-commands the dependent
+        runs it itself, and the remedy says so.
+        """
+        home = e2e_isolated_home['home']
+        self._install_base_and_a_dependent(configs, install_log, _elevating_config(winget=False))
+        _reset(home, install_log)
+        runner = tmp_path / 'failing_runner.py'
+        runner.write_text('import sys\nprint("child failed")\nsys.exit(1)\n', encoding='utf-8')
+        capfd.readouterr()
+
+        with patch.object(setup_environment, 'is_admin', return_value=False), _recorded_installers(install_log):
+            code = run_main(['--profile', 'base', *NO_ADMIN, '--yes', *source_flags], argv0=str(runner))
+
+        output = _fd_output(capfd)
+        assert code == 1, output
+        assert 'child failed' in output
+        remedy = (
+            f'- {DEPENDENT}: failed (exit code 1); retry with --profile {DEPENDENT} from an elevated terminal '
+            '(a global npm install needs administrator rights the run could not request)'
+        )
+        if remedy_expected:
+            assert remedy in output
+        else:
+            assert remedy not in output
+            assert f'- {DEPENDENT}: failed (exit code 1); retry with --profile {DEPENDENT}' in output
 
     def test_dry_run_of_a_source_shows_the_flag_in_the_dependents_rows_and_starts_none(
         self, e2e_isolated_home: dict[str, Path], configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
