@@ -48,6 +48,7 @@ def _args(
     no_admin: bool = False,
     link_dirs: str | None = None,
     link_from: str | None = None,
+    run_all_commands: bool = False,
 ) -> argparse.Namespace:
     """Build resolved arguments the way main() does."""
     namespace = argparse.Namespace(
@@ -67,6 +68,7 @@ def _args(
         child_run=False,
         link_dirs=link_dirs,
         link_from=link_from,
+        run_all_commands=run_all_commands,
     )
     cleared = {
         twin.variable: '' for twin in setup_environment.ENV_TWINS
@@ -1139,6 +1141,18 @@ class TestRefreshAllProfiles:
             (
                 _args(profile='all', dry_run=True, no_admin=True),
                 ['--yes', '--child-run', '--dry-run', '--no-admin'],
+            ),
+            (
+                _args(profile='all', yes=True, run_all_commands=True),
+                ['--yes', '--child-run', '--no-admin', '--run-all-commands'],
+            ),
+            (
+                _args(profile='all', yes=True, env={'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'}),
+                ['--yes', '--child-run', '--no-admin', '--run-all-commands'],
+            ),
+            (
+                _args(profile='all', yes=True, env={'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': 'true'}),
+                ['--yes', '--child-run', '--no-admin'],
             ),
         ],
     )

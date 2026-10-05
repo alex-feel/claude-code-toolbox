@@ -43,7 +43,7 @@ def _args(
     namespace = argparse.Namespace(
         config=None, yes=True, dry_run=False, skip_install=True, no_admin=True, env_vars=None,
         select=select, with_=None, without=None, list_components=False, command_names=None, profile=None,
-        switch_config=False, child_run=False, link_dirs=link_dirs, link_from=link_from,
+        switch_config=False, child_run=False, link_dirs=link_dirs, link_from=link_from, run_all_commands=False,
     )
     cleared = {twin.variable: '' for twin in setup_environment.ENV_TWINS}
     with patch.dict(os.environ, {**cleared, **(env or {})}, clear=False):
@@ -936,23 +936,58 @@ class TestRefreshDependents:
             '--skip-install', '--no-admin',
         ]]
 
+    def test_run_all_commands_is_forwarded_to_every_child(self, tmp_path: Path) -> None:
+        """A source run given --run-all-commands hands it to each dependent, whose environment lost the twin."""
+        calls: list[list[str]] = []
+
+        def _run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=_run),
+            patch('sys.argv', ['/repo/scripts/setup_environment.py', '--profile', 'team-1', '--run-all-commands']),
+        ):
+            setup_environment.refresh_dependents(self._dependents(tmp_path), run_all_commands=True)
+        script = '/repo/scripts/setup_environment.py'
+        assert calls == [
+            [sys.executable, script, '--profile', name, '--yes', '--child-run', '--skip-install', '--no-admin',
+             '--run-all-commands']
+            for name in ('team-2', 'team-3')
+        ]
+
     def test_unstartable_child_and_elevation_remedy(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """The remedy names the elevated terminal only for a global npm install the dependent's run itself executes."""
         dependents = self._dependents(tmp_path)[:1]
         (dependents[0].directory / 'resolved-config.yaml').write_text(
             'name: Team\ndependencies:\n  common:\n  - npm install -g some-cli\n', encoding='utf-8',
+        )
+        remedy = (
+            'team-2: failed (exit code 1); retry with --profile team-2 from an elevated terminal '
+            '(a global npm install needs administrator rights the run could not request)'
         )
         with (
             patch.object(setup_environment.subprocess, 'run', side_effect=OSError('no interpreter')),
             patch.object(setup_environment.platform, 'system', return_value='Windows'),
             patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'get_real_user_home', return_value=tmp_path),
             patch('sys.argv', ['/repo/scripts/setup_environment.py']),
         ):
-            results = setup_environment.refresh_dependents(dependents)
-        assert results == [setup_environment.DependentResult('team-2', 1, True)]
-        assert results[0].line() == (
-            'team-2: failed (exit code 1); retry with --profile team-2 from an elevated terminal '
-            '(a global npm install needs administrator rights the run could not request)'
-        )
+            # The source runs the same command, so the dependent leaves it out and needs no elevation for it
+            left_to_source = setup_environment.refresh_dependents(
+                dependents, source_commands=frozenset({'npm install -g some-cli'}),
+            )
+            # The source runs something else: the dependent runs the install itself
+            own_install = setup_environment.refresh_dependents(dependents, source_commands=frozenset({'uv tool install x'}))
+            # --run-all-commands makes the dependent run every command, the shared one included
+            forced = setup_environment.refresh_dependents(
+                dependents, source_commands=frozenset({'npm install -g some-cli'}), run_all_commands=True,
+            )
+        assert left_to_source == [setup_environment.DependentResult('team-2', 1, False)]
+        assert left_to_source[0].line() == 'team-2: failed (exit code 1); retry with --profile team-2'
+        assert own_install == [setup_environment.DependentResult('team-2', 1, True)]
+        assert own_install[0].line() == remedy
+        assert forced == [setup_environment.DependentResult('team-2', 1, True)]
         assert 'Cannot start the run of profile "team-2": no interpreter' in capsys.readouterr().err
 
 
@@ -978,8 +1013,18 @@ class TestDependentRefreshStep:
         expected = [setup_environment.DependentResult('d', 0, False)]
         with patch.object(setup_environment, 'refresh_dependents', return_value=expected) as refresh:
             assert setup_environment.run_dependent_refresh_step([dep], source_name='s', child_run=False) == expected
-        refresh.assert_called_once_with([dep])
+        refresh.assert_called_once_with([dep], source_commands=frozenset(), run_all_commands=False)
         assert 'Step 23: Refreshing 1 dependent profile(s): d...' in capsys.readouterr().out
+
+    def test_source_commands_and_the_flag_reach_the_children(self) -> None:
+        """The source's own commands and --run-all-commands travel to refresh_dependents()."""
+        dep = setup_environment.InstalledProfile('d', Path('/d'), Path('/d/manifest.json'), None)
+        with patch.object(setup_environment, 'refresh_dependents', return_value=[]) as refresh:
+            setup_environment.run_dependent_refresh_step(
+                [dep], source_name='s', child_run=False,
+                source_commands=frozenset({'npm install -g x'}), run_all_commands=True,
+            )
+        refresh.assert_called_once_with([dep], source_commands=frozenset({'npm install -g x'}), run_all_commands=True)
 
 
 class TestUnrefreshedLines:

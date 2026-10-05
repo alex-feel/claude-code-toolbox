@@ -19,6 +19,10 @@
 
     To re-run an installed profile from its manifest, no configuration needed (same as --profile):
       $env:CLAUDE_CODE_TOOLBOX_PROFILE='<name>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+    To make a profile that links content from another profile install Claude Code, the IDE extension and Node.js
+    and run every dependency command itself, instead of leaving that work to its source's run (same as --run-all-commands):
+      $env:CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS='1'
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Installation script needs console output')]

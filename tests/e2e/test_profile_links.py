@@ -1404,10 +1404,23 @@ class TestSourceRunRefreshesDependents:
         assert _installed_at(claude_dir / 'team-3') != before, 'the other dependent still ran'
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='administrator rights are a Windows concern')
-    def test_failed_dependent_with_a_global_npm_install_gets_the_elevated_terminal_remedy(
-        self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    @pytest.mark.parametrize(
+        ('source_flags', 'remedy_expected'),
+        [
+            pytest.param([], False, id='shared-install-left-to-the-source'),
+            pytest.param(['--run-all-commands'], True, id='run-all-commands'),
+        ],
+    )
+    def test_failed_dependent_with_a_global_npm_install_gets_the_elevated_terminal_remedy_only_when_it_runs_it(
+        self, source_flags: list[str], remedy_expected: bool, configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """A dependent whose snapshot installs a global npm package fails on a non-elevated source run with the remedy."""
+        """The remedy names the elevated terminal only when the dependent's own run executes the global npm install.
+
+        The source runs the same command, so a dependent leaves it to the
+        source and needs no elevation for it; with --run-all-commands the
+        dependent runs it itself, and the remedy says so.
+        """
         cfg = write_config(configs, 'team.yaml', {**_team(), 'dependencies': {'common': ['echo npm install -g fake']}})
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
         _install_dependent(cfg, 'team-2')
@@ -1417,15 +1430,20 @@ class TestSourceRunRefreshesDependents:
         capfd.readouterr()
 
         with patch.object(setup_environment, 'is_admin', return_value=False):
-            code = run_main(['--profile', 'team-1', *SKIP, '--yes'], argv0=str(runner))
+            code = run_main(['--profile', 'team-1', *SKIP, '--yes', *source_flags], argv0=str(runner))
 
         output = _run_output(capfd)
         assert code == 1, output
         assert 'child failed' in output
-        assert (
+        remedy = (
             '- team-2: failed (exit code 1); retry with --profile team-2 from an elevated terminal (a global npm '
             'install needs administrator rights the run could not request)'
-        ) in output
+        )
+        if remedy_expected:
+            assert remedy in output
+        else:
+            assert remedy not in output
+            assert '- team-2: failed (exit code 1); retry with --profile team-2' in output
 
     def test_dry_run_lists_the_dependents_and_starts_none(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
