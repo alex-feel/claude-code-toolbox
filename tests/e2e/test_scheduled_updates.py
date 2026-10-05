@@ -17,7 +17,6 @@ where CI says so.
 from __future__ import annotations
 
 import email.message
-import json
 import os
 import subprocess
 import sys
@@ -1421,4 +1420,3 @@ def test_real_scheduler_registers_queries_and_removes_a_job(tmp_path: Path) -> N
     for path in registration.files:
         if path.suffix == '.plist' or path.parent.name == 'user':
             assert not path.exists(), f'{path} was left behind'
-    (tmp_path / 'state' / 'done').write_text(json.dumps({'job': name}), encoding='utf-8')
