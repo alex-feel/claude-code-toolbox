@@ -37,3 +37,15 @@ EXPECTED_PATHS: Final[dict[str, str]] = {
     'commands_dir': '{claude_dir}/{cmd}/commands',
     'skills_dir': '{claude_dir}/{cmd}/skills',
 }
+
+# Where a Node.js installation and the npm global prefix keep their npm copies:
+# node and the bundled npm's bin/npm entry sit in {node_root}/bin with the bundled
+# npm in {node_root}/lib/node_modules; npm install -g npm writes its copy into
+# {npm_prefix}/lib/node_modules and links {npm_prefix}/bin/npm to it, so that copy
+# runs when {npm_prefix}/bin comes first on PATH
+EXPECTED_NPM_LAYOUT: Final[dict[str, str]] = {
+    'node_bin_dir': '{node_root}/bin',
+    'bundled_npm': '{node_root}/lib/node_modules/npm',
+    'prefix_bin_dir': '{npm_prefix}/bin',
+    'prefix_npm': '{npm_prefix}/lib/node_modules/npm',
+}

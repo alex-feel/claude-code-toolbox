@@ -11147,6 +11147,184 @@ def needs_sudo_for_npm() -> bool:
     return False
 
 
+# Seconds one npm probe of the shadowing check may take before the check gives up
+NPM_PROBE_TIMEOUT_SECONDS = 30
+# npm configuration of the probes: no update check against the registry and no
+# debug log file in the npm cache
+NPM_PROBE_ENVIRONMENT = {'NPM_CONFIG_UPDATE_NOTIFIER': 'false', 'NPM_CONFIG_LOGS_MAX': '0'}
+
+
+class ShadowingNpm(NamedTuple):
+    """An npm copy in the npm global prefix that runs instead of the newer npm bundled with Node.js.
+
+    Attributes:
+        prefix_version: Version of the global-prefix copy, the version npm reports.
+        prefix_dir: Package directory of the global-prefix copy.
+        bundled_version: Version of the npm the Node.js on PATH bundles.
+        bundled_dir: Package directory of the bundled copy.
+    """
+
+    prefix_version: str
+    prefix_dir: Path
+    bundled_version: str
+    bundled_dir: Path
+
+    def lines(self) -> list[str]:
+        """Render the warning: a headline, both copies, and the commands that resolve it."""
+        return [
+            (
+                f'npm {self.prefix_version} in the npm global prefix runs instead of the npm '
+                f'{self.bundled_version} bundled with Node.js'
+            ),
+            f'Global prefix copy: {self.prefix_dir}',
+            f'Bundled copy: {self.bundled_dir}',
+            'To run the bundled copy, remove the global prefix copy: npm uninstall -g npm',
+            f'Or update the global prefix copy to the bundled version: npm install -g npm@{self.bundled_version}',
+        ]
+
+
+def _npm_package_version(package_dir: Path) -> str | None:
+    """Read the version an npm package directory's package.json declares.
+
+    Args:
+        package_dir: The package directory.
+
+    Returns:
+        The version when package.json is readable and declares a numeric
+        version, otherwise None.
+    """
+    try:
+        manifest = json.loads((package_dir / 'package.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    version = manifest.get('version') if isinstance(manifest, dict) else None
+    if isinstance(version, str) and _parse_node_version(version) is not None:
+        return version
+    return None
+
+
+def _bundled_npm_dir(node_path: str) -> Path:
+    """Return the npm package directory of the Node.js installation holding node_path.
+
+    A Windows installation keeps npm in node_modules beside node.exe; a Linux
+    or macOS installation keeps it in lib/node_modules beside the bin
+    directory that holds node.
+
+    Args:
+        node_path: The node executable PATH resolves.
+
+    Returns:
+        The package directory the installation's layout places npm in.
+    """
+    node_dir = Path(node_path).parent
+    if sys.platform == 'win32':
+        return node_dir / 'node_modules' / 'npm'
+    return node_dir.parent / 'lib' / 'node_modules' / 'npm'
+
+
+def _global_prefix_npm_dir(prefix: Path) -> Path:
+    """Return the package directory ``npm install -g npm`` writes into a global prefix.
+
+    Args:
+        prefix: The npm global prefix.
+
+    Returns:
+        ``<prefix>/node_modules/npm`` on Windows, ``<prefix>/lib/node_modules/npm`` elsewhere.
+    """
+    if sys.platform == 'win32':
+        return prefix / 'node_modules' / 'npm'
+    return prefix / 'lib' / 'node_modules' / 'npm'
+
+
+def _npm_probe(*args: str) -> str | None:
+    """Run npm with the arguments and return its trimmed output.
+
+    Args:
+        *args: The npm arguments.
+
+    Returns:
+        The output of a successful run, or None when npm is missing, fails,
+        prints nothing, or runs longer than NPM_PROBE_TIMEOUT_SECONDS.
+    """
+    try:
+        result = run_command(
+            ['npm', *args],
+            timeout=NPM_PROBE_TIMEOUT_SECONDS,
+            env={**os.environ, **NPM_PROBE_ENVIRONMENT},
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    return result.stdout.strip() or None
+
+
+def find_shadowing_global_npm() -> ShadowingNpm | None:
+    """Find an older npm in the npm global prefix that runs instead of the npm Node.js bundles.
+
+    ``npm install -g npm@<version>`` puts a separate npm copy into the npm
+    global prefix. On Windows the npm.cmd shim of Node.js runs that copy
+    whenever it exists; on Linux and macOS it runs when the prefix bin
+    directory comes first on PATH. Each Node.js upgrade then brings a newer
+    bundled npm that never runs. The check compares the version npm reports
+    with the npm bundled beside the Node.js on PATH; when npm reports an
+    older version and the global-prefix copy declares exactly that version,
+    it returns both copies. It reads package.json files and runs
+    ``npm --version`` and, only for an older version, ``npm config get
+    prefix``; it installs, removes and updates nothing.
+
+    Returns:
+        The two copies, or None when npm runs a copy at least as new as the
+        bundled one, the older npm is not the global-prefix copy, or a
+        version or path cannot be determined.
+    """
+    node_path = shutil.which('node')
+    if node_path is None:
+        return None
+    bundled_dir = _bundled_npm_dir(node_path)
+    bundled_version = _npm_package_version(bundled_dir)
+    if bundled_version is None:
+        return None
+    reported = _npm_probe('--version')
+    reported_parts = _parse_node_version(reported) if reported else None
+    bundled_parts = _parse_node_version(bundled_version)
+    if reported is None or reported_parts is None or bundled_parts is None or reported_parts >= bundled_parts:
+        return None
+    prefix = _npm_probe('config', 'get', 'prefix')
+    if prefix is None:
+        return None
+    prefix_dir = _global_prefix_npm_dir(Path(prefix))
+    if _npm_package_version(prefix_dir) != reported:
+        return None
+    return ShadowingNpm(reported, prefix_dir, bundled_version, bundled_dir)
+
+
+def print_shadowing_npm_warning(shadow: ShadowingNpm) -> None:
+    """Print the shadowing-npm warning, one warning line per line of the report.
+
+    Args:
+        shadow: The two npm copies.
+    """
+    headline, *details = shadow.lines()
+    warning(headline)
+    for detail in details:
+        warning(f'  {detail}')
+
+
+def report_shadowing_global_npm() -> ShadowingNpm | None:
+    """Warn when an older npm in the npm global prefix runs instead of the bundled one.
+
+    Returns:
+        The two copies for the completion summary, or None when there is
+        nothing to report.
+    """
+    shadow = find_shadowing_global_npm()
+    if shadow is not None:
+        print_shadowing_npm_warning(shadow)
+        info('Setup leaves both copies unchanged')
+    return shadow
+
+
 def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]:
     """Install dependencies from configuration.
 
@@ -19686,11 +19864,14 @@ def main() -> None:
         else:
             info('No custom files to download')
 
-        # Step 5: Install Node.js if requested (before dependencies)
+        # Step 5: Install Node.js if requested (before dependencies), then warn,
+        # before any step runs npm, when an older npm in the global prefix runs
+        # instead of the npm Node.js bundles
         print()
         print(f'{Colors.CYAN}Step 5: Checking Node.js installation...{Colors.NC}')
         if not install_nodejs_if_requested(config):
             raise Exception('Node.js installation failed')
+        shadowing_npm = report_shadowing_global_npm()
 
         # Step 6: Install dependencies (after Claude Code which provides tools)
         print()
@@ -20174,6 +20355,9 @@ def main() -> None:
                 print()
                 error('Review the output of each failed dependent above, then retry it with its --profile command.')
                 print()
+            if shadowing_npm is not None:
+                print_shadowing_npm_warning(shadowing_npm)
+                print()
             error('Configuration steps were completed, but some components are missing.')
             print()
 
@@ -20271,6 +20455,11 @@ def main() -> None:
             print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
+        if shadowing_npm is not None:
+            npm_headline, *npm_details = shadowing_npm.lines()
+            print(f'   * {npm_headline} (setup left both copies unchanged):')
+            for detail in npm_details:
+                print(f'       - {detail}')
         if dependent_results:
             print('   * Dependent profiles refreshed from this run:')
             for result in dependent_results:

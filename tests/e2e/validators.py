@@ -13,6 +13,7 @@ Design principles:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -2253,3 +2254,97 @@ def validate_launcher_profile_spelling(
                 expect_only_profile(content, bash_wrapper, '$HOME', posix_dir)
 
     return errors
+
+
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
+_NPM_SHADOWING_MARKER = 'in the npm global prefix runs instead of the npm'
+
+
+def _npm_shadowing_lines(
+    prefix_version: str, prefix_dir: Path, bundled_version: str, bundled_dir: Path,
+) -> list[str]:
+    """The lines a run prints for an npm copy shadowing the bundled one, in order."""
+    return [
+        f'npm {prefix_version} {_NPM_SHADOWING_MARKER} {bundled_version} bundled with Node.js',
+        f'Global prefix copy: {prefix_dir}',
+        f'Bundled copy: {bundled_dir}',
+        'To run the bundled copy, remove the global prefix copy: npm uninstall -g npm',
+        f'Or update the global prefix copy to the bundled version: npm install -g npm@{bundled_version}',
+    ]
+
+
+def _missing_in_order(text: str, lines: list[str], where: str) -> list[str]:
+    """Report each line that does not follow the previous one in the text."""
+    errors: list[str] = []
+    position = 0
+    for line in lines:
+        found = text.find(line, position)
+        if found < 0:
+            errors.append(f'{where}: missing (in order) {line!r}')
+            continue
+        position = found + len(line)
+    return errors
+
+
+def validate_npm_shadowing_report(
+    output: str,
+    *,
+    prefix_version: str,
+    prefix_dir: Path,
+    bundled_version: str,
+    bundled_dir: Path,
+) -> list[str]:
+    """Validate that a run reported an npm copy in the global prefix shadowing the bundled npm.
+
+    Step 5 (the text between the Step 5 and Step 6 headers) must warn with
+    both versions, both package directories and the commands that remove or
+    update the prefix copy, and state that setup left both copies unchanged.
+    The block that closes the run -- the success summary, or the errors block
+    of a run that completed with errors -- must repeat every line.
+
+    Args:
+        output: The run's combined stdout and stderr.
+        prefix_version: The version of the global-prefix copy.
+        prefix_dir: The global-prefix copy's package directory.
+        bundled_version: The version of the bundled npm.
+        bundled_dir: The bundled npm's package directory.
+
+    Returns:
+        Every missing or misplaced line, empty when the report is complete.
+    """
+    text = _ANSI_SEQUENCE.sub('', output)
+    lines = _npm_shadowing_lines(prefix_version, prefix_dir, bundled_version, bundled_dir)
+    errors: list[str] = []
+    step_start = text.find('Step 5: Checking Node.js installation')
+    step_end = text.find('Step 6: Installing dependencies')
+    if step_start < 0 or step_end < step_start:
+        return [f'Step 5 and Step 6 headers not found in order in the output:\n{text}']
+    step = text[step_start:step_end]
+    errors.extend(_missing_in_order(step, lines, 'Step 5'))
+    if f'WARN: {lines[0]}' not in step:
+        errors.append(f'Step 5: the headline is not a warning: {lines[0]!r}')
+    if 'Setup leaves both copies unchanged' not in step:
+        errors.append('Step 5: missing the note that setup leaves both copies unchanged')
+    closing = max(text.rfind('Setup Complete!'), text.rfind('Setup Completed with Errors'))
+    if closing < step_end:
+        errors.append('closing block not found after Step 6')
+        return errors
+    errors.extend(_missing_in_order(text[closing:], lines, 'closing block'))
+    return errors
+
+
+def validate_no_npm_shadowing_report(output: str) -> list[str]:
+    """Validate that a run printed no npm shadowing warning anywhere.
+
+    Args:
+        output: The run's combined stdout and stderr.
+
+    Returns:
+        An error quoting each line that reports a shadowing npm.
+    """
+    text = _ANSI_SEQUENCE.sub('', output)
+    return [
+        f'unexpected npm shadowing report: {line.strip()!r}'
+        for line in text.splitlines()
+        if _NPM_SHADOWING_MARKER in line or 'npm uninstall -g npm' in line
+    ]
