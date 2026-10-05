@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,8 @@ import pytest
 from scripts import setup_environment
 from tests.e2e.profile_support import run_main
 
+# Color codes the setup's summary rows can carry, stripped before text assertions
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / 'scripts'
 
@@ -257,7 +260,7 @@ class TestUnixWrapperRunAllCommands:
             tmp_path, _unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'], {},
         )
 
-        output = result.stdout + result.stderr
+        output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
         assert result.returncode == 0, output
         assert '[from source team-1] echo shared' in output
 
@@ -270,7 +273,7 @@ class TestUnixWrapperRunAllCommands:
             ['--profile', 'team-2', '--skip-install', '--dry-run', '--run-all-commands'], {},
         )
 
-        output = result.stdout + result.stderr
+        output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
         assert result.returncode == 0, output
         assert 'from source' not in output
         assert '$ echo shared' in output
@@ -284,7 +287,7 @@ class TestUnixWrapperRunAllCommands:
             {'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'},
         )
 
-        output = result.stdout + result.stderr
+        output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
         assert result.returncode == 0, output
         assert 'from source' not in output
         assert '$ echo shared' in output
