@@ -373,10 +373,11 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
 fi
 
 # Claude Code tells the home folder's .claude, the base profile, apart from a
-# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
 # whose account name is longer than eight characters as C:\Users\CHRIST~1) the
 # base profile's skills, agents and commands would load as a project's. Start
-# in the long spelling of the same directory.
+# in the long spelling of the same directory, wherever the session started.
 LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
 if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
   cd "$LONG_PWD" || true
@@ -429,10 +430,11 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
 fi
 
 # Claude Code tells the home folder's .claude, the base profile, apart from a
-# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
 # whose account name is longer than eight characters as C:\Users\CHRIST~1) the
 # base profile's skills, agents and commands would load as a project's. Start
-# in the long spelling of the same directory.
+# in the long spelling of the same directory, wherever the session started.
 LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
 if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
   cd "$LONG_PWD" || true
@@ -568,10 +570,11 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
 fi
 
 # Claude Code tells the home folder's .claude, the base profile, apart from a
-# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
 # whose account name is longer than eight characters as C:\Users\CHRIST~1) the
 # base profile's skills, agents and commands would load as a project's. Start
-# in the long spelling of the same directory.
+# in the long spelling of the same directory, wherever the session started.
 LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
 if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
   cd "$LONG_PWD" || true

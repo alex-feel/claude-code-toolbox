@@ -925,9 +925,10 @@ def validate_launcher_starts_in_the_long_working_directory(launch_sh: Path, *, w
     name is longer than eight characters short in %TEMP% and %TMP%, so the
     Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD once,
     before any line that starts claude: it changes to the long spelling of
-    the working directory when cygpath names the same directory. Linux and
-    macOS have one spelling per directory, and their launch.sh carries no
-    such change.
+    the working directory when cygpath names the same directory. The block
+    carries no condition on where the session starts, so it runs below the
+    home and outside it alike. Linux and macOS have one spelling per
+    directory, and their launch.sh carries no such change.
 
     Args:
         launch_sh: The generated launch.sh.

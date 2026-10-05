@@ -16771,19 +16771,28 @@ fi
 
 '''
 
-# Block every Windows launch.sh runs before the home-folder guard. Claude Code
-# tells the home folder's .claude (the base profile) apart from a project's
-# .claude by spelling, and Windows spells a home whose account name is longer
-# than eight characters by its 8.3 short name in %TEMP% and %TMP%, so a session
-# started under such a path would load the base profile's skills, agents and
-# commands as a project's. cygpath -lm gives the long spelling of the working
-# directory in mixed form; -ef confirms it names the same directory before the
-# change, and a failed cygpath or cd leaves the working directory as it was.
+# Block every Windows launch.sh runs before the home-folder guard, with no
+# condition on where the session starts. Claude Code tells the home folder's
+# .claude (the base profile) apart from a project's .claude by spelling and
+# reports the working directory it is handed letter for letter, and Windows
+# spells a home whose account name is longer than eight characters by its 8.3
+# short name in %TEMP% and %TMP%, so a session started under such a path would
+# load the base profile's skills, agents and commands as a project's. cygpath
+# -lm gives the long spelling of the working directory in mixed form: each 8.3
+# component comes back as the long name the filesystem holds, letter case
+# included, and the drive letter comes back uppercase, while a component given
+# with its long name in another letter case keeps that case, which the case
+# classes of the base exclusions cover. -ef confirms the long spelling names
+# the same directory before the change, and a failed cygpath or cd leaves the
+# working directory as it was. Outside the home the base profile is no
+# ancestor of the session, and the block runs there too, so one folder reaches
+# Claude Code as one spelling however the shell spelled it.
 WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD = '''# Claude Code tells the home folder's .claude, the base profile, apart from a
-# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
 # whose account name is longer than eight characters as C:\\Users\\CHRIST~1) the
 # base profile's skills, agents and commands would load as a project's. Start
-# in the long spelling of the same directory.
+# in the long spelling of the same directory, wherever the session started.
 LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
 if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
   cd "$LONG_PWD" || true
@@ -16840,10 +16849,11 @@ def create_launcher_script(
     the calling cmd.exe), so they reference no loader and leave that shell's
     environment as it was; start.cmd keeps its own variables behind setlocal.
 
-    The Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD, so a
-    session started under an 8.3 short name begins in the long spelling of
-    its working directory, and WINDOWS_SLASH_ARGUMENTS_GUARD before it starts
-    claude, so Git Bash hands slash commands to claude.exe unchanged.
+    The Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD with
+    no condition on where the session starts, so every session begins in the
+    long spelling of its working directory, below the home and outside it
+    alike, and WINDOWS_SLASH_ARGUMENTS_GUARD before it starts claude, so Git
+    Bash hands slash commands to claude.exe unchanged.
 
     Args:
         config_base_dir: The profile directory (e.g., ~/.claude/{cmd}/, or the
