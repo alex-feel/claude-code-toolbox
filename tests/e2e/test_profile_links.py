@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1415,10 +1416,23 @@ class TestSourceRunRefreshesDependents:
         assert _installed_at(claude_dir / 'team-3') != before, 'the other dependent still ran'
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='administrator rights are a Windows concern')
-    def test_failed_dependent_with_a_global_npm_install_gets_the_elevated_terminal_remedy(
-        self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    @pytest.mark.parametrize(
+        ('source_flags', 'remedy_expected'),
+        [
+            pytest.param([], False, id='shared-install-left-to-the-source'),
+            pytest.param(['--run-all-commands'], True, id='run-all-commands'),
+        ],
+    )
+    def test_failed_dependent_with_a_global_npm_install_gets_the_elevated_terminal_remedy_only_when_it_runs_it(
+        self, source_flags: list[str], remedy_expected: bool, configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """A dependent whose snapshot installs a global npm package fails on a non-elevated source run with the remedy."""
+        """The remedy names the elevated terminal only when the dependent's own run executes the global npm install.
+
+        The source runs the same command, so a dependent leaves it to the
+        source and needs no elevation for it; with --run-all-commands the
+        dependent runs it itself, and the remedy says so.
+        """
         cfg = write_config(configs, 'team.yaml', {**_team(), 'dependencies': {'common': ['echo npm install -g fake']}})
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
         _install_dependent(cfg, 'team-2')
@@ -1428,15 +1442,20 @@ class TestSourceRunRefreshesDependents:
         capfd.readouterr()
 
         with patch.object(setup_environment, 'is_admin', return_value=False):
-            code = run_main(['--profile', 'team-1', *SKIP, '--yes'], argv0=str(runner))
+            code = run_main(['--profile', 'team-1', *SKIP, '--yes', *source_flags], argv0=str(runner))
 
         output = _run_output(capfd)
         assert code == 1, output
         assert 'child failed' in output
-        assert (
+        remedy = (
             '- team-2: failed (exit code 1); retry with --profile team-2 from an elevated terminal (a global npm '
             'install needs administrator rights the run could not request)'
-        ) in output
+        )
+        if remedy_expected:
+            assert remedy in output
+        else:
+            assert remedy not in output
+            assert '- team-2: failed (exit code 1); retry with --profile team-2' in output
 
     def test_dry_run_lists_the_dependents_and_starts_none(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
@@ -1582,6 +1601,7 @@ BASE_SOURCE_CHILD_ARGV = [
 ]
 STEP_3_BANNER = 'Step 3: Creating base configuration directory and profile links...'
 CONSENT_PROMPT = 'Proceed with installation? [y/N]'
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
 
 
 def _first_installation_summary(output: str) -> str:
@@ -2117,7 +2137,14 @@ class TestStaleSourceRefresh:
     def test_elevation_reasons_of_a_stale_dependent_run_cover_the_source_refresh(
         self, configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The dependent run decides elevation from the fetched configuration the source refresh installs, not the snapshot."""
+        """The dependent run decides elevation for the source refresh from the configuration it installs.
+
+        team-2 links every content entry, so it leaves the shared global npm
+        commands to its source: with the snapshot applied as recorded it has
+        nothing to elevate for, and with a stale source its elevation reasons
+        are the refresh's, read from the fresh configuration rather than the
+        stale snapshot.
+        """
         cfg = write_config(configs, 'team.yaml', {**_team(), 'dependencies': {'common': ['echo npm install -g fake']}})
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
         _install_dependent(cfg, 'team-2')
@@ -2127,8 +2154,11 @@ class TestStaleSourceRefresh:
             assert run_main([str(cfg), '--skip-install', '--dry-run', '--command-names', 'team-2']) == 0
 
         output = _output(capsys)
-        assert 'Global npm package: echo npm install -g fake' in output
         assert 'Source refresh' not in output, 'the unchanged configuration applies the snapshot'
+        assert 'Dry run: administrator elevation is not requested.' not in output, (
+            'the only elevating command belongs to the source run, which this run leaves it to'
+        )
+        assert '[from source team-1] echo npm install -g fake' in _ANSI_SEQUENCE.sub('', output)
         assert 'echo npm install -g fresh' not in output
         write_config(configs, 'team.yaml', {
             **_team(), 'user-settings': {'theme': 'light'},
@@ -2147,6 +2177,9 @@ class TestStaleSourceRefresh:
         )
         assert SOURCE_REFRESH_HEADER in output
         assert '* command: --profile team-1 --yes --skip-install --no-admin' in output
+        assert '[from source team-1] echo npm install -g fresh' in _ANSI_SEQUENCE.sub('', output), (
+            'the commands left to the source come from the snapshot the refresh records'
+        )
 
     def test_existing_dependent_of_the_base_refreshes_the_stale_base_first(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

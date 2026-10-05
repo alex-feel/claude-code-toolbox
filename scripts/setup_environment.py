@@ -37,6 +37,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
@@ -688,6 +689,7 @@ ENV_TWINS: tuple[EnvTwin, ...] = (
     EnvTwin('CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG', 'switch_config', 'switch'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'link_dirs', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_LINK_FROM', 'link_from', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS', 'run_all_commands', 'switch'),
 )
 
 # Twins a child run started by --profile all keeps: the repository credential
@@ -902,12 +904,17 @@ def _contains_shell_control_chars(command: str) -> bool:
     return any(char in command for char in ';&|<>$`\n')
 
 
-def admin_elevation_reasons(config: dict[str, Any], args: argparse.Namespace) -> list[str]:
+def admin_elevation_reasons(
+    config: dict[str, Any], args: argparse.Namespace, *, skip_install: bool | None = None,
+) -> list[str]:
     """List the operations of this run that need administrator rights on Windows.
 
     Args:
         config: Configuration dictionary.
         args: Command line arguments.
+        skip_install: Whether Step 1 skips the Claude Code install; None
+            reads ``args.skip_install``. A run that leaves the install to
+            its link source passes True without the flag being given.
 
     Returns:
         One description per operation that needs elevation, in installation
@@ -917,7 +924,7 @@ def admin_elevation_reasons(config: dict[str, Any], args: argparse.Namespace) ->
         return []
 
     reasons: list[str] = []
-    if not args.skip_install:
+    if not (args.skip_install if skip_install is None else skip_install):
         # Installing Node.js and Git typically requires admin on Windows
         reasons.append('Installing Claude Code (includes Node.js and Git)')
 
@@ -937,7 +944,13 @@ def admin_elevation_reasons(config: dict[str, Any], args: argparse.Namespace) ->
     return reasons
 
 
-def request_admin_elevation_if_needed(config: dict[str, Any], args: argparse.Namespace) -> None:
+def request_admin_elevation_if_needed(
+    config: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    skip_install: bool | None = None,
+    source_refresh_reasons: Sequence[str] = (),
+) -> None:
     """Relaunch through UAC when this run needs administrator rights it lacks.
 
     This is the only place a run requests elevation: the installation steps
@@ -949,10 +962,20 @@ def request_admin_elevation_if_needed(config: dict[str, Any], args: argparse.Nam
     Args:
         config: Configuration dictionary.
         args: Command line arguments.
+        skip_install: Whether Step 1 skips the Claude Code install; None
+            reads ``args.skip_install`` (see admin_elevation_reasons()).
+        source_refresh_reasons: What the refresh of a stale source this run
+            starts with ``--no-admin`` needs elevation for
+            (SourceRefresh.elevation_reasons()); listed first, because that
+            run comes first, and this run's own reasons follow without
+            repeating any of them.
     """
     if args.no_admin:
         return
-    reasons = admin_elevation_reasons(config, args)
+    reasons = list(source_refresh_reasons)
+    reasons.extend(
+        reason for reason in admin_elevation_reasons(config, args, skip_install=skip_install) if reason not in reasons
+    )
     if not reasons or is_admin():
         return
 
@@ -1165,6 +1188,12 @@ class InstallationPlan:
     # files-to-download destinations inside a linked entry, each with the
     # entry: the source's run wrote them, so this run leaves them to the link
     linked_downloads: list[tuple[str, str]] = field(default_factory=lambda: list[tuple[str, str]]())
+    # The machine-wide work a run that links content leaves to its source's
+    # run, each item a [from source NAME] row; None for every other run
+    source_work: 'SourceWork | None' = None
+    # Whether this run was given --run-all-commands, which its dependents'
+    # child runs and the refresh of its stale source receive too
+    run_all_commands: bool = False
     # The refresh of a stale source a dependent run performs after consent
     # and before its own installation; None when the run applies the
     # source's snapshot as recorded
@@ -9715,21 +9744,27 @@ def display_installation_summary(
 
     # Claude Code installation
     _print()
+    source_work = plan.source_work
     if plan.skip_install:
         _print('  * Claude Code: skip (--skip-install)')
+    elif source_work is not None:
+        _print(f'  * Claude Code: skip (left to source profile "{source_work.source}")')
     elif plan.keep_installed_claude:
         _print(f'  * Claude Code: keep the installed version {plan.claude_code_version} ({plan.claude_install_reason})')
     else:
         version_str = plan.claude_code_version or 'latest'
         reason_str = f' ({plan.claude_install_reason})' if plan.claude_install_reason else ''
         _print(f'  * Claude Code: install (version: {version_str}){reason_str}')
-    if not plan.skip_install and plan.claude_install_warning:
+    if not plan.skip_install and source_work is None and plan.claude_install_warning:
         _print(f'    {Colors.YELLOW}Warning: {plan.claude_install_warning}{Colors.NC}')
     # An isolated run lists its pin among the machine-wide writes below
     if plan.pin_effect and not plan.command_names:
         _print(f'  * {plan.pin_effect}')
     if plan.install_nodejs:
-        _print('  * Node.js: install if needed')
+        if source_work is not None:
+            _print(f'  * Node.js: left to source profile "{source_work.source}"')
+        else:
+            _print('  * Node.js: install if needed')
 
     # Settings
     settings_items: list[str] = []
@@ -9824,8 +9859,9 @@ def display_installation_summary(
     if plan.dependents:
         _print()
         _print(f'{Colors.BOLD}Dependents (profiles linking content from this one, refreshed after this run):{Colors.NC}')
+        child_flags = f'--yes --skip-install --no-admin{" " + RUN_ALL_COMMANDS_FLAG if plan.run_all_commands else ""}'
         for name in plan.dependents:
-            _print(f'  * {name} (--profile {name} --yes --skip-install --no-admin)')
+            _print(f'  * {name} (--profile {name} {child_flags})')
 
     # Dependency commands (highlighted in yellow -- most dangerous); a
     # command re-rooted into the profile is marked, and the block below
@@ -9841,6 +9877,19 @@ def display_installation_summary(
             for cmd in cmds:
                 marker = f' {Colors.GREEN}[re-rooted]{Colors.NC}' if (platform_key, cmd) in rerooted_commands else ''
                 _print(f'    $ {cmd}{marker}')
+
+    # The machine-wide work a run that links content leaves to its source:
+    # the source's run installs the binary, the IDE extension, Node.js and
+    # the tools once for the machine, so this run names each item and the
+    # flag that makes it do the work itself
+    if source_work is not None:
+        _print()
+        _print(
+            f'{Colors.CYAN}{Colors.BOLD}Left to source profile "{source_work.source}" (its run does this work for '
+            f'the machine; {RUN_ALL_COMMANDS_FLAG} repeats it in this profile):{Colors.NC}',
+        )
+        for row in source_work_rows(source_work):
+            _print(f'  {Colors.CYAN}[from source {source_work.source}]{Colors.NC} {row}')
 
     # Base config-home paths an isolated run moved into its profile (green)
     if plan.rerooted_paths:
@@ -13989,10 +14038,17 @@ PROFILE_SOURCES: dict[str, str] = {
 ALL_PROFILES = 'all'
 
 # The hidden argument a parent run passes to every child it starts -- the
-# children of --profile all, and the dependents a source's Step 23 refreshes:
-# the parent's report covers every installed profile, so a child lists none
-# as unrefreshed and leaves the dependent refresh to the parent
+# children of --profile all, the dependents a source's Step 23 refreshes, and
+# the stale source a dependent run refreshes first: the parent's report covers
+# the profiles its children run, so a child lists none as unrefreshed and
+# leaves the dependent refresh to the parent
 CHILD_RUN_FLAG = '--child-run'
+
+# Makes a run that links content from a source do the machine-wide work its
+# source's run already does (the Claude Code install, the IDE extension,
+# Node.js, the shared dependency commands); the parent of a child run hands it
+# on in argv, because child_run_environment() strips its twin
+RUN_ALL_COMMANDS_FLAG = '--run-all-commands'
 
 # The hidden argument a dependent run adds, beside --child-run, to the
 # refresh of its stale source: the named dependent installs itself once the
@@ -14382,6 +14438,25 @@ def link_source_errors(name: str, source: str) -> list[str]:
     return command_name_errors([name], source)
 
 
+def covers_every_content_entry(entries: Iterable[str]) -> bool:
+    """Report whether linked entries cover every content entry of the profile.
+
+    A profile that links every content entry (``all``, or each entry of
+    CONTENT_PROFILE_DIRS listed) holds no content directory of its own, so a
+    dependency command with the same text as its source's can write nothing
+    the profile would miss; a profile that links only some content entries
+    holds the rest for real and runs every command itself.
+
+    Args:
+        entries: The linked entries, in any order and case.
+
+    Returns:
+        True when every CONTENT_PROFILE_DIRS entry is among them.
+    """
+    linked = {str(entry).casefold() for entry in entries}
+    return all(entry in linked for entry in CONTENT_PROFILE_DIRS)
+
+
 class LinkSpec(NamedTuple):
     """The links of a run and where each value came from.
 
@@ -14413,6 +14488,11 @@ class LinkSpec(NamedTuple):
     def links_content(self) -> bool:
         """Whether the profile takes its configuration from the source."""
         return bool(self.content_dirs)
+
+    @property
+    def links_every_content_entry(self) -> bool:
+        """Whether the profile holds no content directory of its own (see covers_every_content_entry())."""
+        return covers_every_content_entry(self.dirs)
 
     @property
     def typed(self) -> bool:
@@ -16031,7 +16111,12 @@ class DependentResult(NamedTuple):
         return f'{self.name}: failed (exit code {self.code}); {remedy}'
 
 
-def refresh_dependents(dependents: list[InstalledProfile]) -> list[DependentResult]:
+def refresh_dependents(
+    dependents: list[InstalledProfile],
+    *,
+    source_commands: frozenset[str] = frozenset(),
+    run_all_commands: bool = False,
+) -> list[DependentResult]:
     """Re-run every profile that links content from this one, each in its own child run.
 
     A child runs ``--profile <dependent> --yes --child-run --skip-install
@@ -16042,32 +16127,38 @@ def refresh_dependents(dependents: list[InstalledProfile]) -> list[DependentResu
     ``--child-run`` because this run's summary reports on every installed
     profile, so the child lists none as unrefreshed; ``--skip-install``
     because the source just installed the one binary; ``--no-admin`` so no
-    child relaunches through UAC and exits 0 unobserved. Every dependent runs
-    whatever the others returned.
+    child relaunches through UAC and exits 0 unobserved; ``--run-all-commands``
+    when this run was given it, because the child's environment lost the
+    twin. Every dependent runs whatever the others returned.
 
     Args:
         dependents: The profiles to refresh, from content_dependents().
+        source_commands: The dependency commands this run executes on this
+            platform, which a dependent that links every content entry
+            leaves out unless the flag is given; a failed dependent's
+            elevation remedy is judged on the commands it runs itself.
+        run_all_commands: Whether this run was given --run-all-commands.
 
     Returns:
         One result per dependent, in order.
     """
     launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
+    child_flags = ['--yes', CHILD_RUN_FLAG, '--skip-install', '--no-admin']
+    if run_all_commands:
+        child_flags.append(RUN_ALL_COMMANDS_FLAG)
     env = child_run_environment()
     results: list[DependentResult] = []
     for profile in dependents:
         print()
         print(f'{Colors.CYAN}=== Dependent profile {profile.name} ==={Colors.NC}')
         try:
-            code = subprocess.run(
-                [*launch, '--profile', profile.name, '--yes', CHILD_RUN_FLAG, '--skip-install', '--no-admin'],
-                env=env, check=False,
-            ).returncode
+            code = subprocess.run([*launch, '--profile', profile.name, *child_flags], env=env, check=False).returncode
         except OSError as e:
             error(f'Cannot start the run of profile "{profile.name}": {e}')
             code = 1
         needs_elevation = False
         if code != 0 and platform.system() == 'Windows' and not is_admin():
-            snapshot = read_resolved_config_snapshot(profile.directory) or {}
+            snapshot = dependent_run_snapshot(profile, source_commands=None if run_all_commands else source_commands)
             needs_elevation = bool(admin_elevation_reasons(snapshot, argparse.Namespace(skip_install=True)))
         results.append(DependentResult(profile.name, code, needs_elevation))
     return results
@@ -18842,7 +18933,13 @@ def dependents_except(dependents: list[InstalledProfile], name: str | None) -> l
 
 
 def run_dependent_refresh_step(
-    dependents: list[InstalledProfile], *, source_name: str, child_run: bool, for_dependent: str | None = None,
+    dependents: list[InstalledProfile],
+    *,
+    source_name: str,
+    child_run: bool,
+    for_dependent: str | None = None,
+    source_commands: frozenset[str] = frozenset(),
+    run_all_commands: bool = False,
 ) -> list[DependentResult]:
     """Run Step 23: refresh every profile that links content from this one.
 
@@ -18856,6 +18953,10 @@ def run_dependent_refresh_step(
             its stale source: it installs itself afterwards, so this step
             refreshes every other dependent and leaves it out, whatever
             ``child_run`` says.
+        source_commands: The dependency commands this run executes on this
+            platform (see refresh_dependents()).
+        run_all_commands: Whether this run was given --run-all-commands,
+            which every child receives in argv.
 
     Returns:
         One result per dependent refreshed; empty when none ran.
@@ -18869,7 +18970,7 @@ def run_dependent_refresh_step(
             return []
         names = ', '.join(profile.name for profile in others)
         print(f'{Colors.CYAN}Step 23: Refreshing {len(others)} other dependent profile(s): {names} {note}...{Colors.NC}')
-        return refresh_dependents(others)
+        return refresh_dependents(others, source_commands=source_commands, run_all_commands=run_all_commands)
     if child_run:
         print(f'{Colors.CYAN}Step 23: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
         return []
@@ -18878,7 +18979,7 @@ def run_dependent_refresh_step(
         return []
     names = ', '.join(profile.name for profile in dependents)
     print(f'{Colors.CYAN}Step 23: Refreshing {len(dependents)} dependent profile(s): {names}...{Colors.NC}')
-    return refresh_dependents(dependents)
+    return refresh_dependents(dependents, source_commands=source_commands, run_all_commands=run_all_commands)
 
 
 def child_run_environment() -> dict[str, str]:
@@ -18952,6 +19053,202 @@ def load_dependent_config(source: LinkSource, profile_name: str) -> tuple[dict[s
     version = source.manifest.get('version')
     info(f'Applying the configuration profile "{source.name}" installed ({source.directory / RESOLVED_CONFIG_FILENAME})')
     return config, source_config, str(version) if version is not None else None
+
+
+class SourceWork(NamedTuple):
+    """The machine-wide work a run that links content leaves to its source's run.
+
+    A profile that links content from a source shares the one machine with
+    it: the Claude Code binary, the IDE extension, Node.js and every tool a
+    dependency command installs exist once, and the source's run installs
+    them. The dependent's run therefore skips the install and upgrade of
+    Step 1 (the presence check stays), the IDE extension of Step 2, the
+    Node.js installation of Step 5 and, when the profile links every content
+    entry, in Step 6 every dependency command whose text after this run's
+    re-rooting equals a command the source's run executes; a command
+    rewritten into this profile still runs, and a profile that links only
+    some content entries runs every command, because a command may write
+    into a content directory it holds for real. The flag --run-all-commands
+    makes the run do all of it itself.
+
+    Attributes:
+        source: The source profile's display name.
+        commands: This run's dependency commands the source's run also
+            executes, in run order; they are left out of this run. Empty
+            for a profile that links only some content entries.
+        pinned_version: The Claude Code version the configuration pins, or
+            None, which decides whether Step 2 had an IDE extension to install.
+        install_nodejs: Whether the configuration requests Node.js.
+    """
+
+    source: str
+    commands: tuple[str, ...]
+    pinned_version: str | None
+    install_nodejs: bool
+
+
+def dependency_commands_for_this_platform(dependencies: object) -> list[str]:
+    """List the dependency commands install_dependencies() runs on this platform, in its order.
+
+    Args:
+        dependencies: The resolved ``dependencies`` section, or anything
+            else, which yields nothing.
+
+    Returns:
+        This platform's list followed by the common list.
+    """
+    if not isinstance(dependencies, dict):
+        return []
+    lists = cast(dict[str, Any], dependencies)
+    platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
+    commands: list[str] = []
+    for key in ([platform_key] if platform_key else []) + ['common']:
+        items = lists.get(key)
+        if isinstance(items, list):
+            commands.extend(str(command) for command in cast(list[object], items))
+    return commands
+
+
+def source_run_dependencies(
+    snapshot: dict[str, Any], *, source: str, directory: Path, home_dir: Path, profile_names: Iterable[str],
+) -> dict[str, Any]:
+    """Spell a source's dependency lists the way the source's run executes them.
+
+    A snapshot holds the commands as authored; an isolated source's run
+    rewrites the ones that name the base config home into its own profile
+    directory (see ConfigHomeReroot), the base profile's run executes them as
+    written.
+
+    Args:
+        snapshot: The source's resolved-config.yaml content.
+        source: The source profile's display name.
+        directory: Its profile directory.
+        home_dir: The user's home directory.
+        profile_names: The directory names whose paths a rewrite keeps as
+            written (the source's name and the installed profiles).
+
+    Returns:
+        A configuration holding only a copy of the ``dependencies`` section,
+        rewritten for the source's run.
+    """
+    config: dict[str, Any] = {'dependencies': deepcopy(snapshot.get('dependencies'))}
+    if source != LINK_SOURCE_BASE:
+        ConfigHomeReroot(directory, home_dir, profile_names).apply(config)
+    return config
+
+
+def source_run_commands(
+    source: LinkSource,
+    home_dir: Path,
+    profile_names: Iterable[str],
+    *,
+    snapshot: dict[str, Any] | None = None,
+) -> frozenset[str]:
+    """Spell the dependency commands the source's run executes on this platform.
+
+    Args:
+        source: The profile this run links content from.
+        home_dir: The user's home directory.
+        profile_names: The directory names whose paths a rewrite keeps as
+            written (the source's name and the installed profiles).
+        snapshot: The snapshot the source's run executes when this run
+            refreshes a stale source first (SourceRefresh.snapshot), which
+            its resolved-config.yaml holds only once that refresh ran; None
+            reads the resolved-config.yaml.
+
+    Returns:
+        The commands, as the source's run executes them (see
+        source_run_dependencies()); empty when the source has no readable
+        snapshot.
+    """
+    if snapshot is None:
+        snapshot = read_resolved_config_snapshot(source.directory) or {}
+    dependencies = source_run_dependencies(
+        snapshot, source=source.name, directory=source.directory, home_dir=home_dir, profile_names=profile_names,
+    )['dependencies']
+    return frozenset(dependency_commands_for_this_platform(dependencies))
+
+
+def leave_commands_to_source(dependencies: object, source_commands: frozenset[str]) -> list[str]:
+    """Drop from this run's platform and common lists every command the source's run executes.
+
+    Args:
+        dependencies: This run's resolved ``dependencies`` section, after its
+            re-rooting; its lists are shortened in place.
+        source_commands: The commands the source's run executes
+            (source_run_commands()).
+
+    Returns:
+        The commands left out, in the order install_dependencies() would
+        have run them.
+    """
+    if not isinstance(dependencies, dict) or not source_commands:
+        return []
+    lists = cast(dict[str, Any], dependencies)
+    platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
+    skipped: list[str] = []
+    for key in ([platform_key] if platform_key else []) + ['common']:
+        items = lists.get(key)
+        if not isinstance(items, list):
+            continue
+        command_list = cast(list[Any], items)
+        kept: list[Any] = []
+        for command in command_list:
+            if isinstance(command, str) and command in source_commands:
+                skipped.append(command)
+            else:
+                kept.append(command)
+        command_list[:] = kept
+    return skipped
+
+
+def source_work_rows(work: SourceWork) -> list[str]:
+    """Name every item a run leaves to its source, in step order.
+
+    Args:
+        work: The work left to the source.
+
+    Returns:
+        One row per item: the binary install, the IDE extension of a pinned
+        run, the requested Node.js installation, then each command.
+    """
+    rows = ['Claude Code install or upgrade']
+    if work.pinned_version is not None:
+        rows.append(f'IDE extension {IDE_EXTENSION_ID} v{work.pinned_version}')
+    if work.install_nodejs:
+        rows.append('Node.js installation')
+    rows.extend(work.commands)
+    return rows
+
+
+def dependent_run_snapshot(profile: InstalledProfile, *, source_commands: frozenset[str] | None) -> dict[str, Any]:
+    """Spell the configuration a dependent's run executes, for the elevation remedy of a failed one.
+
+    Args:
+        profile: The dependent.
+        source_commands: The commands its source's run executes, which the
+            dependent leaves out when its manifest links every content entry;
+            None when --run-all-commands makes it run every command.
+
+    Returns:
+        The dependent's snapshot, its dependency commands re-rooted into its
+        profile and, for a dependent that links every content entry, minus
+        the source's; empty when the snapshot is missing.
+    """
+    snapshot = read_resolved_config_snapshot(profile.directory)
+    if snapshot is None:
+        return {}
+    home_dir = get_real_user_home()
+    names = [profile.name, *(other.name for other in installed_profiles(home_dir) if other.name != LINK_SOURCE_BASE)]
+    ConfigHomeReroot(profile.directory, home_dir, names).apply(snapshot)
+    record = manifest_link(profile.manifest)
+    if (
+        source_commands is not None
+        and record is not None
+        and covers_every_content_entry(str(entry) for entry in cast(list[object], record['dirs']))
+    ):
+        leave_commands_to_source(snapshot.get('dependencies'), source_commands)
+    return snapshot
 
 
 class LoadedConfiguration(NamedTuple):
@@ -19092,6 +19389,14 @@ class SourceRefresh(NamedTuple):
             source's Step 23 refreshes.
         skip_install: Whether this run skips the Claude Code installation,
             forwarded to the source's run.
+        run_all_commands: Whether this run was given --run-all-commands,
+            forwarded to the source's run, whose Step 23 hands it to every
+            other dependent.
+        snapshot: The resolved-config.yaml the source's run records for the
+            configuration this run was given (replay_source_snapshot()), the
+            snapshot whose digest is ``digest``; the commands this run leaves
+            to the source are read from it, because the source's file holds
+            it only once the refresh ran.
     """
 
     source: str
@@ -19100,6 +19405,8 @@ class SourceRefresh(NamedTuple):
     digest: str
     dependents: list[str]
     skip_install: bool
+    run_all_commands: bool
+    snapshot: dict[str, Any]
 
     def covered_profiles(self) -> list[str]:
         """Name the profiles the refresh rewrites to this run's configuration: the source, then its other dependents."""
@@ -19120,16 +19427,42 @@ class SourceRefresh(NamedTuple):
 
         Returns:
             ``--profile SOURCE --yes --child-run --for-dependent THIS``, the
-            parent's ``--skip-install`` when it has one, and ``--no-admin``.
+            parent's ``--skip-install`` when it has one, ``--no-admin``, and
+            the parent's ``--run-all-commands`` when it has one.
         """
         return [
             '--profile', self.source, '--yes', CHILD_RUN_FLAG, FOR_DEPENDENT_FLAG, this_profile,
             *(['--skip-install'] if self.skip_install else []), '--no-admin',
+            *([RUN_ALL_COMMANDS_FLAG] if self.run_all_commands else []),
         ]
+
+    def elevation_reasons(self, home_dir: Path, profile_names: Iterable[str]) -> list[str]:
+        """List what the source's run needs administrator rights for.
+
+        The source's run starts with ``--no-admin``, because the dependent's
+        run decides elevation for both: its Claude Code install unless
+        ``--skip-install``, and every command of the refreshed snapshot.
+
+        Args:
+            home_dir: The user's home directory.
+            profile_names: The directory names whose paths a rewrite keeps as
+                written (the source's name and the installed profiles).
+
+        Returns:
+            The reasons, in installation order; empty off Windows.
+        """
+        config = source_run_dependencies(
+            self.snapshot, source=self.source, directory=self.directory, home_dir=home_dir,
+            profile_names=profile_names,
+        )
+        return admin_elevation_reasons(config, argparse.Namespace(skip_install=self.skip_install))
 
     def rows(self) -> list[str]:
         """Render the rows of the installation summary's Source refresh block."""
-        command = f'--profile {self.source} --yes' + (' --skip-install' if self.skip_install else '') + ' --no-admin'
+        command = (
+            f'--profile {self.source} --yes' + (' --skip-install' if self.skip_install else '') + ' --no-admin'
+            + (f' {RUN_ALL_COMMANDS_FLAG}' if self.run_all_commands else '')
+        )
         others = (
             f'other profiles its run refreshes: {", ".join(self.dependents)}' if self.dependents
             else 'no other installed profile links content from it'
@@ -19216,6 +19549,8 @@ def resolve_dependent_configuration(
         digest,
         [profile.name for profile in dependents_except(content_dependents(home_dir, source.name), profile_name)],
         bool(args.skip_install),
+        bool(args.run_all_commands),
+        candidate,
     )
     warning(f'Profile "{source.name}" is stale: {refresh.reason_text()}; it is refreshed before this profile installs')
     # The snapshot the refreshed source records, shaped as a run by name
@@ -19230,14 +19565,17 @@ def refresh_source_profile(refresh: SourceRefresh, this_profile: str) -> int:
     """Re-run a stale source in its own child run and return its exit code.
 
     The child runs ``--profile SOURCE --yes --child-run --for-dependent
-    THIS [--skip-install] --no-admin`` through the same program this run
-    started from, with the environment child_run_environment() builds:
-    ``--child-run`` because this run reports on the profiles the refresh
-    covers, ``--for-dependent`` so the source's Step 23 refreshes its other
-    dependents and leaves this profile to install itself, the parent's
-    ``--skip-install`` so the binary is installed where the parent would
-    install it, and ``--no-admin`` because the parent decided elevation for
-    both runs.
+    THIS [--skip-install] --no-admin [--run-all-commands]`` through the same
+    program this run started from, with the environment
+    child_run_environment() builds: ``--child-run`` because this run reports
+    on the profiles the refresh covers, ``--for-dependent`` so the source's
+    Step 23 refreshes its other dependents and leaves this profile to
+    install itself, the parent's ``--skip-install`` so the binary is
+    installed where the parent would install it, ``--no-admin`` because the
+    parent decided elevation for both runs (SourceRefresh.elevation_reasons()),
+    and the parent's ``--run-all-commands``, which the child's environment
+    lost with its twin, so the other dependents the source's Step 23
+    refreshes receive it too.
 
     Args:
         refresh: The refresh to perform.
@@ -19546,6 +19884,7 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         ('--dry-run', args.dry_run),
         ('--skip-install', args.skip_install),
         ('--no-admin', args.no_admin or not args.dry_run),
+        (RUN_ALL_COMMANDS_FLAG, args.run_all_commands),
     ):
         if present:
             child_flags.append(flag)
@@ -19694,6 +20033,14 @@ def main() -> None:
         metavar='SOURCE',
         help='The profile the linked entries come from: base for ~/.claude (the default), or the '
         'primary command name of an installed isolated profile',
+    )
+    parser.add_argument(
+        RUN_ALL_COMMANDS_FLAG,
+        action='store_true',
+        help='In a profile that links content from another profile, install Claude Code, the IDE extension and '
+        'Node.js and run every dependency command in this run too, instead of leaving the work the source '
+        "profile's run does for the machine to that run; --profile all, a source's refresh of its dependents "
+        'and the refresh of a stale source hand it to every profile they run',
     )
     parser.add_argument(CHILD_RUN_FLAG, dest='child_run', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument(FOR_DEPENDENT_FLAG, dest='for_dependent', type=str, metavar='NAME', help=argparse.SUPPRESS)
@@ -20083,6 +20430,36 @@ def main() -> None:
         # records and the removal plan)
         rerooted_paths = reroot.apply(config, deselected) if reroot is not None else []
 
+        # A run that links content shares the machine with its source, whose
+        # run installs the binary, the IDE extension, Node.js and the tools
+        # once for every profile: this run leaves that work to the source
+        # unless --run-all-commands asks for it. The shared dependency
+        # commands come out of the lists here, before the elevation reasons,
+        # the summary and Step 6 read them; a command rewritten into this
+        # profile is this profile's own and stays. Only a profile that links
+        # every content entry leaves them: a tool that reads
+        # CLAUDE_CONFIG_DIR, such as the skills CLI, writes into the profile
+        # that runs it, so a profile holding some content directory for real
+        # needs every command to fill it. A run that refreshes a stale source
+        # first leaves the source the commands of the snapshot that refresh
+        # records
+        leaves_work_to_source = dependent_of is not None and not args.run_all_commands
+        skip_claude_install = args.skip_install or leaves_work_to_source
+        commands_left_to_source: list[str] = []
+        source_profile_names: list[str] = []
+        if dependent_of is not None:
+            source_profile_names = [
+                dependent_of.name, *(profile.name for profile in installed if profile.name != LINK_SOURCE_BASE),
+            ]
+        if dependent_of is not None and leaves_work_to_source and link_spec.links_every_content_entry:
+            commands_left_to_source = leave_commands_to_source(
+                config.get('dependencies'),
+                source_run_commands(
+                    dependent_of, home_dir, source_profile_names,
+                    snapshot=source_refresh.snapshot if source_refresh is not None else None,
+                ),
+            )
+
         # A destination inside a linked entry belongs to the source's run,
         # which wrote it into the shared directory; this run leaves it to the
         # link. The split reads the rewritten destinations, so a base
@@ -20092,8 +20469,15 @@ def main() -> None:
             cast(list[Any], config.get('files-to-download') or []), target_config_dir, linked_entries,
         )
 
-        # Relaunch elevated on Windows when this configuration needs admin rights
-        request_admin_elevation_if_needed(config, args)
+        # Relaunch elevated on Windows when this configuration needs admin
+        # rights. The refresh of a stale source starts with --no-admin, so
+        # this run decides elevation for the source's run too
+        request_admin_elevation_if_needed(
+            config, args, skip_install=skip_claude_install,
+            source_refresh_reasons=(
+                source_refresh.elevation_reasons(home_dir, source_profile_names) if source_refresh is not None else ()
+            ),
+        )
 
         environment_name = config.get('name', 'Development')
 
@@ -20147,6 +20531,17 @@ def main() -> None:
         if claude_code_version_normalized is not None:
             os.environ[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
 
+        # What this run leaves to its source, named in the summaries and at
+        # each step it skips; None for every run that does its own work
+        source_work: SourceWork | None = None
+        if dependent_of is not None and leaves_work_to_source:
+            source_work = SourceWork(
+                dependent_of.name,
+                tuple(commands_left_to_source),
+                pinned_version=claude_code_version_normalized,
+                install_nodejs=bool(config.get('install-nodejs')),
+            )
+
         # Record which managed control keys the resolved YAML itself declares
         # with a value the Step 16 unpinned sweep must keep. Computed BEFORE
         # injection so auto-injected values are excluded.
@@ -20178,7 +20573,7 @@ def main() -> None:
             profile_pin_scan,
             installed_version=(
                 _installed_claude_version()
-                if claude_code_version_normalized is None and other_profile_pinned and not args.skip_install
+                if claude_code_version_normalized is None and other_profile_pinned and not skip_claude_install
                 else None
             ),
         )
@@ -20370,6 +20765,8 @@ def main() -> None:
         if claude_install_decision.note_is_warning:
             plan.claude_install_warning = claude_install_decision.note
         plan.rerooted_paths = rerooted_paths
+        plan.source_work = source_work
+        plan.run_all_commands = args.run_all_commands
 
         # A pin holds or moves the one binary the other installed profiles
         # use, so the summary names them; the installed version is probed
@@ -20378,7 +20775,7 @@ def main() -> None:
         if claude_code_version_normalized is not None:
             plan.pin_effect = pin_effect_line(
                 claude_code_version_normalized,
-                _installed_claude_version() if other_profile_names and not args.skip_install else None,
+                _installed_claude_version() if other_profile_names and not skip_claude_install else None,
                 other_profile_names,
             )
 
@@ -20394,11 +20791,11 @@ def main() -> None:
             # Step 2 installs the extension only for a pinned run without
             # --skip-install; detection is read-only, so the summary can name
             # the IDEs Step 2 will write into
-            step_2_runs = claude_code_version_normalized is not None and not args.skip_install
+            step_2_runs = claude_code_version_normalized is not None and not skip_claude_install
             plan.machine_wide_writes = collect_machine_wide_writes(
                 profile_dir=target_config_dir,
                 command_names=command_names or [],
-                skip_install=args.skip_install,
+                skip_install=skip_claude_install,
                 install_version=claude_install_decision.version,
                 keep_installed=claude_install_decision.kept,
                 pinned_version=claude_code_version_normalized,
@@ -20545,8 +20942,10 @@ def main() -> None:
         hooks_dir = artifact_base_dir / 'hooks'
         skills_dir = artifact_base_dir / 'skills'
 
-        # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
-        if not args.skip_install:
+        # Step 1: Install Claude Code if needed (MUST be first - provides uv,
+        # git bash, node). A run that leaves the install to its source only
+        # checks that the binary is present.
+        if not skip_claude_install:
             if claude_install_decision.kept:
                 print(f'{Colors.CYAN}Step 1: Keeping the installed Claude Code...{Colors.NC}')
             else:
@@ -20559,16 +20958,28 @@ def main() -> None:
             if not install_claude(claude_install_decision.version, keep_installed=claude_install_decision.kept):
                 raise Exception('Claude Code installation failed')
         else:
-            print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
+            if args.skip_install or source_work is None:
+                print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
+            else:
+                print(
+                    f'{Colors.CYAN}Step 1: Skipping Claude Code installation '
+                    f'(left to source profile "{source_work.source}"){Colors.NC}',
+                )
 
             # Verify Claude Code is available
             if not find_command('claude'):
                 error('Claude Code is not available in PATH')
-                info('Please install Claude Code first or remove the --skip-install flag')
+                if args.skip_install or source_work is None:
+                    info('Please install Claude Code first or remove the --skip-install flag')
+                else:
+                    info(
+                        f'Re-run the source profile first (--profile {source_work.source}), or pass '
+                        f'{RUN_ALL_COMMANDS_FLAG} to install Claude Code from this profile',
+                    )
                 raise Exception('Claude Code not found')
 
         # Step 2: Install IDE extensions (version-pinned)
-        if claude_code_version_normalized is not None and not args.skip_install:
+        if claude_code_version_normalized is not None and not skip_claude_install:
             print()
             print(f'{Colors.CYAN}Step 2: Installing IDE extensions...{Colors.NC}')
             if not install_ide_extensions(claude_code_version_normalized):
@@ -20577,8 +20988,13 @@ def main() -> None:
             print()
             if claude_code_version_normalized is None:
                 print(f'{Colors.CYAN}Step 2: Skipping IDE extensions (no version pinned){Colors.NC}')
-            else:
+            elif args.skip_install or source_work is None:
                 print(f'{Colors.CYAN}Step 2: Skipping IDE extensions (skip-install mode){Colors.NC}')
+            else:
+                print(
+                    f'{Colors.CYAN}Step 2: Skipping IDE extensions '
+                    f'(left to source profile "{source_work.source}"){Colors.NC}',
+                )
 
         # Step 3: Create the base configuration directory and the profile's
         # links. Every link exists before any content step, so a linked entry
@@ -20619,18 +21035,26 @@ def main() -> None:
         else:
             info('No custom files to download')
 
-        # Step 5: Install Node.js if requested (before dependencies), then warn,
-        # before the Step 6 dependency commands run npm, when an older npm in the
-        # global prefix runs instead of the npm Node.js bundles
+        # Step 5: Install Node.js if requested (before dependencies; a run that
+        # leaves the work to its source installs nothing here), then warn, before
+        # the Step 6 dependency commands run npm, when an older npm in the global
+        # prefix runs instead of the npm Node.js bundles
         print()
         print(f'{Colors.CYAN}Step 5: Checking Node.js installation...{Colors.NC}')
-        if not install_nodejs_if_requested(config):
+        if source_work is not None and source_work.install_nodejs:
+            info(f'Node.js installation requested (install-nodejs: true); left to source profile "{source_work.source}"')
+        elif not install_nodejs_if_requested(config):
             raise Exception('Node.js installation failed')
         shadowing_npm = report_shadowing_global_npm()
 
-        # Step 6: Install dependencies (after Claude Code which provides tools)
+        # Step 6: Install dependencies (after Claude Code which provides
+        # tools); the commands the source's run executes were taken out of
+        # the lists before the summary and are named here instead
         print()
         print(f'{Colors.CYAN}Step 6: Installing dependencies...{Colors.NC}')
+        if source_work is not None:
+            for command in source_work.commands:
+                info(f'Left to source profile "{source_work.source}": {command}')
         dependencies = config.get('dependencies', {})
         dependency_failures = install_dependencies(dependencies)
 
@@ -20969,6 +21393,8 @@ def main() -> None:
             # Step 23: Refresh the profiles that link content from this one
             dependent_results = run_dependent_refresh_step(
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
+                source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
+                run_all_commands=args.run_all_commands,
             )
         else:
             # No command-names: route the profile-owned YAML keys
@@ -21076,6 +21502,8 @@ def main() -> None:
             # Step 23: Refresh the profiles that link content from the base profile
             dependent_results = run_dependent_refresh_step(
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
+                source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
+                run_all_commands=args.run_all_commands,
             )
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
@@ -21153,6 +21581,8 @@ def main() -> None:
         print(f'   * Environment: {environment_name}')
         if args.skip_install:
             claude_install_status = 'Skipped'
+        elif source_work is not None:
+            claude_install_status = f'Skipped (left to source profile "{source_work.source}")'
         elif claude_install_decision.kept:
             claude_install_status = (
                 f'Kept at {claude_install_decision.version} ({claude_install_decision.reason})'
@@ -21160,6 +21590,15 @@ def main() -> None:
         else:
             claude_install_status = 'Completed'
         print(f'   * Claude Code installation: {claude_install_status}')
+        # Under --yes nobody reads the installation summary before the run,
+        # so the closing lines repeat what this run left to its source
+        if source_work is not None:
+            print(
+                f'   * Left to source profile "{source_work.source}" (pass {RUN_ALL_COMMANDS_FLAG} to run them in '
+                'this profile):',
+            )
+            for row in source_work_rows(source_work):
+                print(f'       - {row}')
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
         print(f'   * Rules: {len(rules)} installed')
