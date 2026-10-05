@@ -19865,8 +19865,8 @@ def main() -> None:
             info('No custom files to download')
 
         # Step 5: Install Node.js if requested (before dependencies), then warn,
-        # before any step runs npm, when an older npm in the global prefix runs
-        # instead of the npm Node.js bundles
+        # before the Step 6 dependency commands run npm, when an older npm in the
+        # global prefix runs instead of the npm Node.js bundles
         print()
         print(f'{Colors.CYAN}Step 5: Checking Node.js installation...{Colors.NC}')
         if not install_nodejs_if_requested(config):
