@@ -25,6 +25,7 @@ import pytest
 from tests.e2e.expected.launchers import DEFAULT_RENDERINGS
 from tests.e2e.expected.launchers import GOLDEN_PROMPT
 from tests.e2e.expected.launchers import LAUNCHER_PATH_TOKEN
+from tests.e2e.shells import LOGIN_SHELL_INHERITED_PATH
 
 # Launcher variants create_launcher_script() generates: (id, prompt file, mode).
 LAUNCHER_VARIANTS = [
@@ -78,6 +79,8 @@ class LaunchRecord:
         args: The command-line arguments, one per element.
         session_probe: What the stub's Git Bash child handed a native program,
             or None when the launch did not set SESSION_BASH_VARIABLE.
+        cwd: The working directory the stub was started in, as the native
+            program spells it.
     """
 
     config_dir: str
@@ -85,6 +88,7 @@ class LaunchRecord:
     conversion_exclusions: str | None
     args: list[str]
     session_probe: SessionProbe | None
+    cwd: str
 
     def value_after(self, flag: str) -> str:
         """Return the argument that follows flag.
@@ -168,6 +172,30 @@ def find_powershell() -> str | None:
     return shutil.which('pwsh') or shutil.which('powershell')
 
 
+def require_empty_array_expansion(bash: str) -> None:
+    """Skip the test when bash cannot start claude with an empty flag array.
+
+    The Windows launch.sh runs under ``set -u`` and passes ``"${MCP_FLAGS[@]}"``
+    and ``"${SOURCES[@]}"``, arrays that are empty when the profile has no
+    mcp.json or the session starts outside the home folder. bash before 4.4
+    reports an empty array as unbound there and stops, while Git Bash, the
+    only shell the Windows launch.sh runs under, expands it to nothing. A
+    bash a non-Windows runner provides, such as the macOS /bin/bash 3.2, can
+    be older.
+
+    Args:
+        bash: The bash that runs the launchers.
+    """
+    completed = subprocess.run(
+        [bash, '-c', 'set -u; flags=(); : "${flags[@]}"'],
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f'{bash} stops at an empty array under set -u, which Git Bash expands to nothing')
+
+
 def _sh_single_quoted(value: str) -> str:
     """Quote a value for a POSIX shell so it stays one literal word.
 
@@ -228,6 +256,7 @@ def write_stub_claude(stub_dir: Path, record_file: Path) -> None:
         "    'conversion_exclusions': os.environ.get('MSYS2_ARG_CONV_EXCL'),\n"
         "    'args': sys.argv[1:],\n"
         "    'session_probe': session_probe,\n"
+        "    'cwd': os.getcwd(),\n"
         '}\n'
         f"with open({str(record_file)!r}, 'w', encoding='utf-8') as handle:\n"
         '    json.dump(record, handle)\n',
@@ -283,12 +312,15 @@ def launch(
     stub_dir: Path,
     extra_path: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> LaunchRecord:
     """Run a generated script with the stub claude first on PATH.
 
     The script starts without the variables that switch Git Bash argument
     conversion off, so the conversion a test observes does not depend on the
-    environment the test suite runs in.
+    environment the test suite runs in, and without the PATH an outer Git
+    Bash login shell recorded, so the login shell a Windows entry point
+    starts keeps the stub first on PATH.
 
     Args:
         command: The command line that runs the script; a string is handed to
@@ -297,6 +329,7 @@ def launch(
         stub_dir: Directory holding the stub claude.
         extra_path: Directory appended to PATH, such as ~/.local/bin.
         extra_env: Variables the script inherits on top of the test environment.
+        cwd: The working directory of the launch; the test's own when omitted.
 
     Returns:
         What the stub claude received.
@@ -304,7 +337,10 @@ def launch(
     record_file = stub_dir / 'record.json'
     record_file.unlink(missing_ok=True)
     write_stub_claude(stub_dir, record_file)
-    dropped = {'CLAUDE_CONFIG_DIR', LOADER_MARKS_VARIABLE, SESSION_BASH_VARIABLE, *PATH_CONVERSION_VARIABLES}
+    dropped = {
+        'CLAUDE_CONFIG_DIR', LOADER_MARKS_VARIABLE, SESSION_BASH_VARIABLE, LOGIN_SHELL_INHERITED_PATH,
+        *PATH_CONVERSION_VARIABLES,
+    }
     env = {key: value for key, value in os.environ.items() if key not in dropped}
     env['HOME'] = str(home)
     env['USERPROFILE'] = str(home)
@@ -315,6 +351,7 @@ def launch(
 
     completed = subprocess.run(
         command, capture_output=True, text=True, encoding='utf-8', errors='replace', check=False, timeout=120, env=env,
+        cwd=cwd,
     )
 
     assert completed.returncode == 0, (
@@ -329,6 +366,7 @@ def launch(
         conversion_exclusions=record['conversion_exclusions'],
         args=record['args'],
         session_probe=None if probe is None else SessionProbe(received=probe['received'], converted=probe['converted']),
+        cwd=record['cwd'],
     )
 
 

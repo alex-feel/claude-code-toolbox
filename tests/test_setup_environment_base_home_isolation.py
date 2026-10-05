@@ -1,0 +1,462 @@
+"""Unit tests for keeping an isolated profile's sessions out of the base config home.
+
+Claude Code reads the home folder's ``.claude`` -- the base profile -- as the
+project ``.claude`` of a session started in the home folder and as ancestor
+project memory of every session started below it. An isolated profile closes
+both channels: its config.json excludes the base profile's memory files from
+loading, under the home's long spelling and, on Windows, under its 8.3 short
+spelling, and its launch.sh limits a session started in the home folder to
+the profile's own settings sources.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import fnmatch
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from scripts import setup_environment
+from scripts.setup_environment import CLAUDE_MD_EXCLUDES_KEY
+from scripts.setup_environment import HOME_FOLDER_SETTINGS_GUARD
+from scripts.setup_environment import WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD
+from scripts.setup_environment import apply_base_config_home_exclusions
+from scripts.setup_environment import base_config_home_exclusions
+from scripts.setup_environment import create_launcher_script
+from tests.e2e.base_home_support import case_classes
+from tests.e2e.shells import find_bash
+
+LAUNCHER_VARIANTS = [
+    pytest.param(None, 'replace', id='no-prompt'),
+    pytest.param('probe-prompt.md', 'replace', id='prompt-replace'),
+    pytest.param('probe-prompt.md', 'append', id='prompt-append'),
+]
+SOURCES_FLAGS = '"${SOURCES[@]}"'
+# The Windows API call itself, kept apart from the stub the autouse fixture installs
+_REAL_WINDOWS_SHORT_PATH = setup_environment._windows_short_path
+HOME = Path('C:/Users/Me')
+SHORT_HOME = Path('C:/Users/ME~1')
+
+
+def _patterns(home: Path) -> list[str]:
+    """The three patterns an isolated profile excludes for the base config home below ``home``, as spelled."""
+    base = (home / '.claude').as_posix()
+    return [case_classes(f'{base}/{name}') for name in ('CLAUDE.md', 'CLAUDE.local.md', 'rules/**')]
+
+
+@pytest.fixture(autouse=True)
+def _home_without_a_short_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows gives no 8.3 spelling for the homes of these tests unless a test installs one.
+
+    The temporary directory of a Windows run has a short spelling of its
+    own, which would add patterns the tests of the long spelling do not
+    expect; the tests of the short spelling install their own stub.
+    """
+    monkeypatch.setattr(setup_environment, '_windows_short_path', lambda _path: None)
+
+
+class TestBaseConfigHomeExclusions:
+    """base_config_home_exclusions() names the base profile's memory files in forward-slash, case-class form."""
+
+    def test_names_the_memory_files_and_the_rules_of_the_base_profile(self, tmp_path: Path) -> None:
+        """CLAUDE.md, CLAUDE.local.md and every rule of ~/.claude are excluded, spelled with forward slashes."""
+        patterns = base_config_home_exclusions(tmp_path, links_rules_from_base=False)
+
+        assert patterns == _patterns(tmp_path)
+        assert all('\\' not in pattern for pattern in patterns)
+
+    def test_rules_linked_from_the_base_are_the_profile_s_own(self, tmp_path: Path) -> None:
+        """A profile whose rules/ links to ~/.claude/rules keeps those rules: only the memory files are excluded."""
+        patterns = base_config_home_exclusions(tmp_path, links_rules_from_base=True)
+
+        assert patterns == _patterns(tmp_path)[:2]
+
+    def test_letters_are_case_classes_that_match_the_home_in_every_spelling(self) -> None:
+        """Claude Code matches the patterns case-sensitively against paths built from the working directory as spelled.
+
+        A shell that lowercases the drive letter, or a user who types the
+        path in another case, therefore hands Claude Code a path the home as
+        given does not spell; every ASCII letter is a class matching both
+        cases, so the base files stay excluded in each spelling while the
+        profile's own directory below ~/.claude still matches nothing.
+        """
+        patterns = base_config_home_exclusions(Path('C:/Users/Me'), links_rules_from_base=False)
+
+        assert patterns == [
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]/.[cC][lL][aA][uU][dD][eE]/[cC][lL][aA][uU][dD][eE].[mM][dD]',
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]/.[cC][lL][aA][uU][dD][eE]/[cC][lL][aA][uU][dD][eE].[lL][oO][cC][aA][lL].[mM][dD]',
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]/.[cC][lL][aA][uU][dD][eE]/[rR][uU][lL][eE][sS]/**',
+        ]
+        for spelled in (
+            'C:/Users/Me/.claude/CLAUDE.md', 'c:/Users/Me/.claude/CLAUDE.md', 'c:/users/me/.claude/CLAUDE.md',
+            'C:/USERS/ME/.CLAUDE/CLAUDE.MD',
+        ):
+            assert fnmatch.fnmatchcase(spelled, patterns[0]), spelled
+        assert fnmatch.fnmatchcase('c:/users/me/.claude/CLAUDE.local.md', patterns[1])
+        assert fnmatch.fnmatchcase('c:/users/me/.claude/rules/team/style.md', patterns[2])
+        assert not fnmatch.fnmatchcase('c:/users/me/.claude/work-1/CLAUDE.md', patterns[0])
+        assert not fnmatch.fnmatchcase('c:/users/me/.claude/work-1/rules/own.md', patterns[2])
+
+
+class TestShortHomeSpellingExclusions:
+    """On Windows the patterns also name the home's 8.3 short spelling when Windows gives one that differs.
+
+    Windows spells a home whose account name is longer than eight characters
+    short in %TEMP% and %TMP% (``C:\\Users\\CHRIST~1\\...``), and Claude Code
+    builds the ancestor paths it matches the exclusions against from such a
+    working directory as spelled, so the long spelling's patterns miss them.
+    """
+
+    @staticmethod
+    def _windows_gives(monkeypatch: pytest.MonkeyPatch, short: Path | None) -> None:
+        """Run on Windows with ``short`` as the spelling GetShortPathNameW returns for every path."""
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        monkeypatch.setattr(setup_environment, '_windows_short_path', lambda _path: short)
+
+    def test_windows_adds_the_short_spelling_s_patterns_after_the_long_ones(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The short spelling gets the same three patterns, after the long spelling's, letters as case classes."""
+        self._windows_gives(monkeypatch, SHORT_HOME)
+
+        patterns = base_config_home_exclusions(HOME, links_rules_from_base=False)
+
+        assert patterns == [*_patterns(HOME), *_patterns(SHORT_HOME)]
+        assert patterns[3] == (
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]~1/.[cC][lL][aA][uU][dD][eE]/[cC][lL][aA][uU][dD][eE].[mM][dD]'
+        )
+        for spelled in ('C:/Users/ME~1/.claude/CLAUDE.md', 'c:/users/me~1/.claude/CLAUDE.md'):
+            assert fnmatch.fnmatchcase(spelled, patterns[3]), spelled
+        assert fnmatch.fnmatchcase('c:/users/me~1/.claude/CLAUDE.local.md', patterns[4])
+        assert fnmatch.fnmatchcase('c:/users/me~1/.claude/rules/team/style.md', patterns[5])
+        assert not fnmatch.fnmatchcase('C:/Users/ME~1/.claude/work-1/CLAUDE.md', patterns[3])
+        assert not fnmatch.fnmatchcase('C:/Users/ME~1/.claude/work-1/rules/own.md', patterns[5])
+
+    def test_windows_rules_linked_from_the_base_stay_in_under_both_spellings(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._windows_gives(monkeypatch, SHORT_HOME)
+
+        patterns = base_config_home_exclusions(HOME, links_rules_from_base=True)
+
+        assert patterns == [*_patterns(HOME)[:2], *_patterns(SHORT_HOME)[:2]]
+
+    @pytest.mark.parametrize(
+        'short', [Path('C:/Users/Me'), Path('c:/users/me'), Path('C:/USERS/ME')], ids=['same', 'lowercase', 'uppercase'],
+    )
+    def test_windows_adds_nothing_for_a_spelling_that_differs_in_letter_case_at_most(
+        self, monkeypatch: pytest.MonkeyPatch, short: Path,
+    ) -> None:
+        """A volume without 8.3 names, or a home of short components, gives the long spelling back, which the classes cover."""
+        self._windows_gives(monkeypatch, short)
+
+        assert base_config_home_exclusions(HOME, links_rules_from_base=False) == _patterns(HOME)
+
+    def test_windows_adds_nothing_when_windows_gives_no_short_spelling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._windows_gives(monkeypatch, None)
+
+        assert base_config_home_exclusions(HOME, links_rules_from_base=False) == _patterns(HOME)
+
+    @pytest.mark.parametrize('platform', ['linux', 'darwin'])
+    def test_other_platforms_never_ask_for_a_short_spelling(self, monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
+        monkeypatch.setattr(sys, 'platform', platform)
+
+        def _windows_only(_path: Path) -> Path | None:
+            raise AssertionError('GetShortPathNameW is a Windows call')
+
+        monkeypatch.setattr(setup_environment, '_windows_short_path', _windows_only)
+
+        assert base_config_home_exclusions(HOME, links_rules_from_base=False) == _patterns(HOME)
+
+    def test_declared_short_spelling_patterns_stay_first_and_are_added_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The union keeps a configuration's own copy of a short-spelling pattern in place and appends the rest."""
+        self._windows_gives(monkeypatch, SHORT_HOME)
+        declared = ['**/node_modules/**', _patterns(SHORT_HOME)[2]]
+
+        settings, warnings, auto = apply_base_config_home_exclusions(
+            {CLAUDE_MD_EXCLUDES_KEY: list(declared)}, home_dir=HOME, links_rules_from_base=False,
+        )
+
+        added = [*_patterns(HOME), *_patterns(SHORT_HOME)[:2]]
+        assert settings[CLAUDE_MD_EXCLUDES_KEY] == [*declared, *added]
+        assert warnings == []
+        assert auto == [f'user-settings.{CLAUDE_MD_EXCLUDES_KEY}: ' + ', '.join(added)]
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows path form')
+class TestWindowsShortPath:
+    """_windows_short_path() asks Windows for the 8.3 spelling of an existing path and gives None otherwise."""
+
+    def test_a_directory_with_a_long_name_is_spelled_by_its_alias(self, tmp_path: Path) -> None:
+        home = tmp_path / 'HomeFolderWithALongName'
+        home.mkdir()
+
+        short = _REAL_WINDOWS_SHORT_PATH(home)
+
+        assert short is not None
+        if short.as_posix().casefold() == home.as_posix().casefold():
+            pytest.skip('the volume creates no 8.3 names')
+        assert '~' in short.name, short
+        assert short.name == short.name.upper(), short
+        assert os.path.samefile(short, home)
+
+    def test_a_path_that_does_not_exist_has_no_short_spelling(self, tmp_path: Path) -> None:
+        assert _REAL_WINDOWS_SHORT_PATH(tmp_path / 'absent') is None
+
+
+class TestApplyBaseConfigHomeExclusions:
+    """apply_base_config_home_exclusions() unions the patterns into user-settings.claudeMdExcludes."""
+
+    def test_absent_user_settings_become_the_exclusions_alone(self, tmp_path: Path) -> None:
+        settings, warnings, auto = apply_base_config_home_exclusions(
+            None, home_dir=tmp_path, links_rules_from_base=False,
+        )
+
+        assert settings == {CLAUDE_MD_EXCLUDES_KEY: _patterns(tmp_path)}
+        assert warnings == []
+        assert auto == [f'user-settings.{CLAUDE_MD_EXCLUDES_KEY}: ' + ', '.join(_patterns(tmp_path))]
+
+    def test_other_settings_are_kept_beside_the_exclusions(self, tmp_path: Path) -> None:
+        settings, warnings, auto = apply_base_config_home_exclusions(
+            {'theme': 'dark'}, home_dir=tmp_path, links_rules_from_base=False,
+        )
+
+        assert settings == {'theme': 'dark', CLAUDE_MD_EXCLUDES_KEY: _patterns(tmp_path)}
+        assert warnings == []
+        assert len(auto) == 1
+
+    def test_declared_patterns_come_first_and_survive(self, tmp_path: Path) -> None:
+        """The configuration's own exclusions stay in place and in order; the base ones follow."""
+        declared = ['**/node_modules/**', _patterns(tmp_path)[2]]
+
+        settings, warnings, auto = apply_base_config_home_exclusions(
+            {CLAUDE_MD_EXCLUDES_KEY: list(declared)}, home_dir=tmp_path, links_rules_from_base=False,
+        )
+
+        assert settings[CLAUDE_MD_EXCLUDES_KEY] == [*declared, *_patterns(tmp_path)[:2]]
+        assert warnings == []
+        assert auto == [f'user-settings.{CLAUDE_MD_EXCLUDES_KEY}: ' + ', '.join(_patterns(tmp_path)[:2])]
+
+    def test_declared_complete_list_adds_nothing(self, tmp_path: Path) -> None:
+        """A configuration that already excludes every base file is left as it is, with no [auto] line."""
+        settings, warnings, auto = apply_base_config_home_exclusions(
+            {CLAUDE_MD_EXCLUDES_KEY: _patterns(tmp_path)}, home_dir=tmp_path, links_rules_from_base=False,
+        )
+
+        assert settings == {CLAUDE_MD_EXCLUDES_KEY: _patterns(tmp_path)}
+        assert warnings == []
+        assert auto == []
+
+    @pytest.mark.parametrize('declared', [None, '**/node_modules/**', {'a': 1}], ids=['null', 'string', 'object'])
+    def test_declared_non_list_is_replaced_with_a_warning(self, tmp_path: Path, declared: object) -> None:
+        """A value that is not a list cannot be unioned: the exclusions replace it and the run says so."""
+        settings, warnings, auto = apply_base_config_home_exclusions(
+            {CLAUDE_MD_EXCLUDES_KEY: declared}, home_dir=tmp_path, links_rules_from_base=False,
+        )
+
+        assert settings[CLAUDE_MD_EXCLUDES_KEY] == _patterns(tmp_path)
+        assert warnings == [
+            (
+                f'user-settings.{CLAUDE_MD_EXCLUDES_KEY} is {declared!r}, not a list of patterns; the base profile '
+                'exclusions of this isolated profile replace it.'
+            ),
+        ]
+        assert len(auto) == 1
+
+    def test_linked_rules_leave_the_rules_pattern_out(self, tmp_path: Path) -> None:
+        settings, _warnings, auto = apply_base_config_home_exclusions(
+            {}, home_dir=tmp_path, links_rules_from_base=True,
+        )
+
+        assert settings[CLAUDE_MD_EXCLUDES_KEY] == _patterns(tmp_path)[:2]
+        assert auto == [f'user-settings.{CLAUDE_MD_EXCLUDES_KEY}: ' + ', '.join(_patterns(tmp_path)[:2])]
+
+    def test_the_given_dict_is_updated_in_place(self, tmp_path: Path) -> None:
+        """The caller's dict is the one returned, as with the other settings injectors."""
+        user_settings: dict[str, object] = {'theme': 'dark'}
+
+        settings, _warnings, _auto = apply_base_config_home_exclusions(
+            user_settings, home_dir=tmp_path, links_rules_from_base=False,
+        )
+
+        assert settings is user_settings
+        assert CLAUDE_MD_EXCLUDES_KEY in user_settings
+
+
+def _launch_sh(profile_dir: Path, system: str, prompt: str | None, mode: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Render launch.sh for a platform and return its text."""
+    monkeypatch.setattr(setup_environment.platform, 'system', lambda: system)
+    result = create_launcher_script(profile_dir, 'iso-cmd', prompt, mode, has_profile_mcp_servers=True)
+    assert result is not None
+    return result[1].read_text(encoding='utf-8')
+
+
+def _claude_start_lines(content: str) -> list[str]:
+    """Every line of a launch.sh that starts claude."""
+    return [
+        line.strip() for line in content.splitlines()
+        if line.strip().startswith(('exec claude ', 'claude "'))
+    ]
+
+
+class TestLaunchShTemplate:
+    """Every launch.sh runs the home-folder guard once and hands its flags to every claude start."""
+
+    @pytest.mark.parametrize('system', ['Windows', 'Linux', 'Darwin'])
+    @pytest.mark.parametrize(('prompt', 'mode'), LAUNCHER_VARIANTS)
+    def test_guard_runs_once_before_every_claude_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, prompt: str | None, mode: str,
+    ) -> None:
+        content = _launch_sh(tmp_path / 'iso-cmd', system, prompt, mode, monkeypatch)
+
+        assert content.count(HOME_FOLDER_SETTINGS_GUARD) == 1
+        guard_end = content.index(HOME_FOLDER_SETTINGS_GUARD) + len(HOME_FOLDER_SETTINGS_GUARD)
+        assert _claude_start_lines(content[:guard_end]) == []
+        starts = _claude_start_lines(content[guard_end:])
+        assert starts, content
+        for line in starts:
+            assert f'"${{MCP_FLAGS[@]}}" {SOURCES_FLAGS} ' in line, line
+            assert line.index(SOURCES_FLAGS) < line.index('"$@"'), line
+
+    @pytest.mark.parametrize('system', ['Windows', 'Linux', 'Darwin'])
+    def test_guard_compares_the_working_directory_with_the_home_by_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str,
+    ) -> None:
+        """The test is -ef, so letter case, symlinks and short names never make a home folder look like another."""
+        content = _launch_sh(tmp_path / 'iso-cmd', system, None, 'replace', monkeypatch)
+
+        assert 'if [ "$PWD" -ef "$HOME" ]; then' in content
+        assert 'SOURCES=(--setting-sources user)' in content
+
+    @pytest.mark.parametrize(('prompt', 'mode'), LAUNCHER_VARIANTS)
+    def test_windows_launcher_starts_in_the_long_working_directory_before_the_guard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt: str | None, mode: str,
+    ) -> None:
+        """Every Windows variant changes to the long spelling of the working directory once, before any claude start."""
+        content = _launch_sh(tmp_path / 'iso-cmd', 'Windows', prompt, mode, monkeypatch)
+
+        assert content.count(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) == 1
+        spelling_end = content.index(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD)
+        assert spelling_end < content.index(HOME_FOLDER_SETTINGS_GUARD)
+        assert _claude_start_lines(content[:spelling_end]) == []
+        assert 'if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then' in content
+        assert '  cd "$LONG_PWD" || true' in content
+
+    @pytest.mark.parametrize('system', ['Linux', 'Darwin'])
+    @pytest.mark.parametrize(('prompt', 'mode'), LAUNCHER_VARIANTS)
+    def test_unix_launchers_leave_the_working_directory_spelling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, prompt: str | None, mode: str,
+    ) -> None:
+        """Linux and macOS have one spelling per directory, so their launchers change no working directory."""
+        content = _launch_sh(tmp_path / 'iso-cmd', system, prompt, mode, monkeypatch)
+
+        assert WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD not in content
+        assert 'cygpath -lm' not in content
+        assert 'LONG_PWD' not in content
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows path form')
+class TestWorkingDirectorySpellingGuardUnderBash:
+    """The guard, run under Git Bash, moves a session from a short-spelled working directory to its long spelling."""
+
+    @staticmethod
+    def _working_directory_after_the_guard(cwd: str) -> str:
+        bash = find_bash()
+        if bash is None:
+            pytest.skip('bash unavailable')
+        assert bash is not None
+        script = 'set -euo pipefail\n' + WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD + 'printf "%s" "$PWD"\n'
+        completed = subprocess.run(
+            [bash, '-c', script, 'launch.sh'], capture_output=True, text=True, check=False, timeout=60, cwd=cwd,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout
+
+    def test_a_short_spelled_working_directory_becomes_its_long_spelling(self, tmp_path: Path) -> None:
+        project = tmp_path / 'LongNamedHomeFolder' / 'work'
+        project.mkdir(parents=True)
+        short = _REAL_WINDOWS_SHORT_PATH(project)
+        assert short is not None
+        if short.as_posix().casefold() == project.as_posix().casefold():
+            pytest.skip('the volume creates no 8.3 names')
+
+        pwd = self._working_directory_after_the_guard(str(short))
+
+        assert '~' not in pwd, pwd
+        assert pwd.lower().endswith('/longnamedhomefolder/work'), pwd
+
+    def test_a_long_spelled_working_directory_stays_where_it_is(self, tmp_path: Path) -> None:
+        project = tmp_path / 'LongNamedHomeFolder' / 'work'
+        project.mkdir(parents=True)
+
+        pwd = self._working_directory_after_the_guard(str(project))
+
+        assert pwd.lower().endswith('/longnamedhomefolder/work'), pwd
+        assert '~' not in pwd, pwd
+
+
+class TestGuardUnderBash:
+    """The guard sets the flags exactly when the working directory is the home folder."""
+
+    @staticmethod
+    def _flags(home: Path, cwd: Path, *, home_value: str | None = None) -> str:
+        """Run the guard under bash from ``cwd`` with ``home`` as HOME and return the flags it leaves.
+
+        Args:
+            home: The home directory the launcher sees.
+            cwd: The working directory of the launch.
+            home_value: HOME as the shell receives it; defaults to ``home``.
+
+        Returns:
+            The space-joined SOURCES, empty when the guard set none.
+        """
+        bash = find_bash()
+        if bash is None:
+            pytest.skip('bash unavailable')
+        assert bash is not None
+        env = dict(os.environ)
+        env['HOME'] = str(home) if home_value is None else home_value
+        script = 'set -euo pipefail\n' + HOME_FOLDER_SETTINGS_GUARD + 'printf "%s" "${SOURCES[*]-}"\n'
+        completed = subprocess.run(
+            [bash, '-c', script, 'launch.sh'], capture_output=True, text=True, check=False, timeout=60, env=env,
+            cwd=cwd,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout
+
+    def test_home_folder_limits_settings_to_the_profile(self, tmp_path: Path) -> None:
+        assert self._flags(tmp_path, tmp_path) == '--setting-sources user'
+
+    def test_a_project_below_the_home_keeps_its_settings(self, tmp_path: Path) -> None:
+        project = tmp_path / 'work' / 'project'
+        project.mkdir(parents=True)
+
+        assert self._flags(tmp_path, project) == ''
+
+    def test_a_directory_outside_the_home_keeps_its_settings(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        elsewhere = tmp_path / 'elsewhere'
+        home.mkdir()
+        elsewhere.mkdir()
+
+        assert self._flags(home, elsewhere) == ''
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='letter case and short names are Windows path forms')
+    def test_home_folder_is_recognized_in_every_windows_spelling(self, tmp_path: Path) -> None:
+        """The home spelled in another letter case, as a short name, or in POSIX form is still the home."""
+        home = tmp_path / 'Mixed Case Home'
+        home.mkdir()
+        buffer = ctypes.create_unicode_buffer(260)
+        assert ctypes.windll.kernel32.GetShortPathNameW(str(home), buffer, 260)
+        short = Path(buffer.value)
+        swapped = Path(str(home).swapcase())
+        assert swapped.exists()
+
+        assert self._flags(home, swapped) == '--setting-sources user'
+        assert self._flags(home, short) == '--setting-sources user'
+        assert self._flags(home, home, home_value=home.as_posix()) == '--setting-sources user'
+        assert self._flags(home, home, home_value=str(short)) == '--setting-sources user'

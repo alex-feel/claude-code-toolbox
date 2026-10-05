@@ -12263,12 +12263,16 @@ class TestMainFunctionUserSettings:
             mock_exit.assert_not_called()
 
         # Isolated mode: write_user_settings is NOT called; the user-settings
-        # section is passed to create_profile_config instead.
+        # section, with the base config home exclusions every isolated
+        # profile carries, is passed to create_profile_config instead.
         mock_write_user_settings.assert_not_called()
         mock_settings.assert_called_once()
         assert mock_settings.call_args.kwargs['user_settings'] == {
             'language': 'russian',
             'model': 'claude-sonnet-4',
+            'claudeMdExcludes': setup_environment.base_config_home_exclusions(
+                setup_environment.get_real_user_home(), links_rules_from_base=False,
+            ),
         }
 
         # Verify output shows the isolated Step 14 skip message and Steps 17-21
@@ -12336,7 +12340,7 @@ class TestMainFunctionUserSettings:
         mock_load: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Test main without user-settings (no-op for user settings)."""
+        """Test main without user-settings: the isolated profile still gets the base config home exclusions."""
         # Mocks required by @patch decorators but not directly asserted
         del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
         mock_load.return_value = (
@@ -12359,11 +12363,18 @@ class TestMainFunctionUserSettings:
             setup_environment.main()
             mock_exit.assert_not_called()
 
-        # write_user_settings should not be called since user_settings is None
+        # write_user_settings is never called for an isolated run; the only
+        # user settings config.json receives are the exclusions
         mock_write_user_settings.assert_not_called()
+        mock_settings.assert_called_once()
+        assert mock_settings.call_args.kwargs['user_settings'] == {
+            'claudeMdExcludes': setup_environment.base_config_home_exclusions(
+                setup_environment.get_real_user_home(), links_rules_from_base=False,
+            ),
+        }
 
         captured = capsys.readouterr()
-        assert 'No user settings to configure' in captured.out
+        assert 'Isolated mode: user settings are built into config.json in Step 18' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
