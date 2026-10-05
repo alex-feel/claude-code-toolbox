@@ -341,7 +341,7 @@ class TestElevationReasonsOverride:
         args = setup_environment.argparse.Namespace(skip_install=False, no_admin=False, dry_run=False)
         with patch.object(setup_environment, 'admin_elevation_reasons', return_value=[]) as reasons:
             setup_environment.request_admin_elevation_if_needed({'x': 1}, args, skip_install=True)
-        reasons.assert_called_once_with({'x': 1}, args, skip_install=True)
+        reasons.assert_called_once_with({'x': 1}, args, skip_install=True, scheduled_update=None)
 
     def test_source_refresh_reasons_come_first_and_count_for_a_run_with_none_of_its_own(
         self, capsys: pytest.CaptureFixture[str],
