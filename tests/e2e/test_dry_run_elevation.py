@@ -63,6 +63,21 @@ def _golden_with_elevated_dependencies() -> dict[str, Any]:
     return config
 
 
+def _golden_needing_no_admin_after_install() -> dict[str, Any]:
+    """Return the golden configuration without the one key that needs admin under --skip-install.
+
+    The golden configuration declares auto-update, whose daily job runs with
+    the highest privileges and is therefore registered only by an elevated
+    run; without it, nothing but the Claude Code install needs elevation.
+
+    Returns:
+        A deep copy of the golden configuration without ``auto-update``.
+    """
+    config = copy.deepcopy(_load_golden())
+    del config['auto-update']
+    return config
+
+
 @pytest.fixture
 def mock_request_elevation() -> Iterator[MagicMock]:
     """Replace the UAC relaunch so no prompt opens and every call is recorded."""
@@ -175,7 +190,7 @@ class TestDryRunNeverElevates:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A non-elevated dry run with nothing that needs admin prints no elevation block."""
-        exit_code = _run_main(_load_golden(), ['--dry-run', '--skip-install'])
+        exit_code = _run_main(_golden_needing_no_admin_after_install(), ['--dry-run', '--skip-install'])
 
         assert exit_code == 0
         mock_request_elevation.assert_not_called()
@@ -184,6 +199,24 @@ class TestDryRunNeverElevates:
         assert BANNER_TITLE not in captured.out
         assert 'Installation Summary' in captured.out + captured.err
         assert 'Dry run complete. No changes were made.' in captured.out
+        _assert_nothing_installed(e2e_isolated_home)
+
+    def test_dry_run_with_skip_install_lists_the_scheduled_update_job(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        mock_request_elevation: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The daily update job of auto-update runs with the highest privileges, so registering it needs admin."""
+        exit_code = _run_main(_load_golden(), ['--dry-run', '--skip-install'])
+
+        assert exit_code == 0
+        mock_request_elevation.assert_not_called()
+        captured = capsys.readouterr()
+        assert DRY_RUN_HEADLINE in captured.out
+        assert f'  - {setup_environment.SCHEDULED_UPDATE_ELEVATION_REASON}' in captured.out
+        assert INSTALL_REASON not in captured.out
+        assert 'Scheduled update (auto-update):' in captured.out + captured.err
         _assert_nothing_installed(e2e_isolated_home)
 
     def test_dry_run_in_an_elevated_terminal_reports_nothing(
@@ -269,7 +302,7 @@ class TestRealRunElevation:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A non-elevated real run with nothing that needs admin goes straight to consent."""
-        exit_code = _run_main(_load_golden(), ['--skip-install'])
+        exit_code = _run_main(_golden_needing_no_admin_after_install(), ['--skip-install'])
 
         assert exit_code == 1
         mock_request_elevation.assert_not_called()
@@ -333,6 +366,10 @@ class TestNoAdminRunsEveryStepUnelevated:
         # A local configuration file resolves every resource relative to its own directory
         config = _golden_with_elevated_dependencies()
         del config['base-url']
+        # The daily update job is the one step a non-elevated Windows run cannot
+        # perform: it reports the refused registration and exits 1, which
+        # tests/e2e/test_scheduled_updates.py covers; this test watches Steps 1 and 6
+        del config['auto-update']
         repo = e2e_isolated_home['home'].parent / 'repo'
         shutil.copytree(mock_repo_path, repo)
         config_file = repo / 'golden.yaml'

@@ -114,6 +114,12 @@ GLOBAL_CONFIG_SETTINGS_ONLY_KEYS: frozenset[str] = frozenset({
 # Environment variable names: letters, digits, underscores; no leading digit
 ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
+# The auto-update time: HH:MM in 24-hour local time. Inline copy of
+# _AUTO_UPDATE_TIME_PATTERN in scripts/setup_environment.py (standalone script
+# policy prevents cross-import); verdict parity enforced by
+# tests/scripts/models/test_auto_update_parity.py.
+AUTO_UPDATE_TIME_PATTERN: re.Pattern[str] = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+
 # Hook event names recognized by Claude Code 2.1.238; Claude Code rejects any
 # other name at configuration load time. The HookEvent model warns (rather
 # than errors) on names outside this set so a configuration written for a
@@ -1335,6 +1341,50 @@ class CommandDefaults(BaseModel):
         return v
 
 
+class AutoUpdate(BaseModel):
+    """The daily OS job that re-runs a profile's setup, or runs another command, to keep it updated.
+
+    Every profile installed from a configuration with this key gets one job
+    in the operating system's scheduler (Task Scheduler, launchd, a systemd
+    user timer or cron). A profile that links content from another profile
+    gets none: its source's job refreshes it.
+
+    Attributes:
+        time: The daily run time as HH:MM in 24-hour local time. Quote the
+            value in YAML: an unquoted 03:30 is read as a number.
+        command: A command line the job runs instead of the profile's setup
+            (uvx cc-toolbox@latest setup --profile NAME --yes --no-admin);
+            optional.
+    """
+
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+
+    time: str = Field(..., description='Daily run time as HH:MM in 24-hour local time (quote it in YAML)')
+    command: str | None = Field(
+        None,
+        description='Command line the job runs instead of the profile setup; optional',
+    )
+
+    @field_validator('time')
+    @classmethod
+    def validate_time(cls, v: str) -> str:
+        """Validate the time: HH:MM between 00:00 and 23:59."""
+        if not AUTO_UPDATE_TIME_PATTERN.match(v.strip()):
+            raise ValueError(
+                f'time must be HH:MM in 24-hour local time (00:00 to 23:59), got {v!r}; '
+                'quote the value in YAML (time: "03:30"), because an unquoted 03:30 is read as a number',
+            )
+        return v
+
+    @field_validator('command')
+    @classmethod
+    def validate_command(cls, v: str | None) -> str | None:
+        """Validate the command: a non-empty string when given."""
+        if v is not None and not v.strip():
+            raise ValueError('command must be a non-empty string when given')
+        return v
+
+
 class InheritEntry(BaseModel):
     """Structured entry for list-based inheritance with per-entry merge control.
 
@@ -1480,6 +1530,14 @@ class EnvironmentConfig(BaseModel):
         alias='link-from',
         description='The profile the linked entries come from: base for ~/.claude (the '
         'default), or the primary command name of an installed isolated profile.',
+    )
+    auto_update: AutoUpdate | None = Field(
+        None,
+        alias='auto-update',
+        description='A daily OS job that re-runs the setup of every profile installed from this '
+        'configuration (uvx cc-toolbox@latest setup --profile NAME --yes --no-admin), or runs the '
+        'command named here instead, at the given local time. A profile that links content from '
+        'another profile gets no job of its own.',
     )
     claude_code_version: str | None = Field(
         None,

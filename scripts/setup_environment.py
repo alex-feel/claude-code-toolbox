@@ -17,9 +17,11 @@ import glob as glob_module
 import gzip
 import hashlib
 import http.client
+import io
 import json
 import os
 import platform
+import plistlib
 import random
 import re
 import shlex
@@ -30,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,12 +40,14 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Mapping
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -54,6 +59,7 @@ from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
 from urllib.request import urlretrieve
+from xml.etree import ElementTree as ET
 
 import yaml
 
@@ -123,6 +129,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'install-nodejs',
     'link-dirs',
     'link-from',
+    'auto-update',
     'dependencies',
     'description',
     'agents',
@@ -905,7 +912,11 @@ def _contains_shell_control_chars(command: str) -> bool:
 
 
 def admin_elevation_reasons(
-    config: dict[str, Any], args: argparse.Namespace, *, skip_install: bool | None = None,
+    config: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    skip_install: bool | None = None,
+    scheduled_update: 'ScheduledUpdatePlan | None' = None,
 ) -> list[str]:
     """List the operations of this run that need administrator rights on Windows.
 
@@ -915,6 +926,11 @@ def admin_elevation_reasons(
         skip_install: Whether Step 1 skips the Claude Code install; None
             reads ``args.skip_install``. A run that leaves the install to
             its link source passes True without the flag being given.
+        scheduled_update: The run's decision about the profile's daily update
+            job, when known; the job runs with the highest privileges, so
+            registering, re-registering or removing it needs an elevated
+            run. Without the plan, a configuration that declares auto-update
+            counts as needing it.
 
     Returns:
         One description per operation that needs elevation, in installation
@@ -941,6 +957,12 @@ def admin_elevation_reasons(
                 # Global npm installs may need admin depending on Node.js installation
                 reasons.append(f'Global npm package: {dep}')
 
+    if scheduled_update is not None:
+        if scheduled_update.changes_registration:
+            reasons.append(SCHEDULED_UPDATE_ELEVATION_REASON)
+    elif config.get(AUTO_UPDATE_SCHEDULE_KEY) is not None:
+        reasons.append(SCHEDULED_UPDATE_ELEVATION_REASON)
+
     return reasons
 
 
@@ -950,6 +972,7 @@ def request_admin_elevation_if_needed(
     *,
     skip_install: bool | None = None,
     source_refresh_reasons: Sequence[str] = (),
+    scheduled_update: 'ScheduledUpdatePlan | None' = None,
 ) -> None:
     """Relaunch through UAC when this run needs administrator rights it lacks.
 
@@ -969,12 +992,18 @@ def request_admin_elevation_if_needed(
             (SourceRefresh.elevation_reasons()); listed first, because that
             run comes first, and this run's own reasons follow without
             repeating any of them.
+        scheduled_update: The run's decision about the profile's daily update
+            job (see admin_elevation_reasons()).
     """
     if args.no_admin:
         return
     reasons = list(source_refresh_reasons)
     reasons.extend(
-        reason for reason in admin_elevation_reasons(config, args, skip_install=skip_install) if reason not in reasons
+        reason
+        for reason in admin_elevation_reasons(
+            config, args, skip_install=skip_install, scheduled_update=scheduled_update,
+        )
+        if reason not in reasons
     )
     if not reasons or is_admin():
         return
@@ -1219,6 +1248,12 @@ class InstallationPlan:
     # Base config-home paths an isolated run rewrote into its profile
     # directory, each marked [re-rooted] in the summary
     rerooted_paths: list[RerootedPath] = field(default_factory=lambda: list[RerootedPath]())
+
+    # The profile's daily update job (the auto-update key): what Step 24 does
+    # with it, the warnings about it, and the last scheduled run on record
+    scheduled_update: 'ScheduledUpdatePlan | None' = None
+    scheduled_update_warnings: list[str] = field(default_factory=lambda: list[str]())
+    last_scheduled_run: str | None = None
 
     @property
     def total_resources(self) -> int:
@@ -7960,7 +7995,123 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
         if repo_type == 'github':
             return build_github_headers(env_token)
 
+    # Method 3: the token the logged-in host CLI stores (gh or glab), so an
+    # unattended run authenticates the way the user's shell does
+    host = _credential_host(url)
+    if host is not None and repo_type in ('github', 'gitlab'):
+        cli_token = cli_stored_token(repo_type, host)
+        if cli_token:
+            tool = 'GitHub CLI (gh)' if repo_type == 'github' else 'GitLab CLI (glab)'
+            info(f'Using the stored {tool} login for {host}')
+            return {'PRIVATE-TOKEN': cli_token} if repo_type == 'gitlab' else build_github_headers(cli_token)
+
     return {}
+
+
+# Hosts whose fetches needed authentication during this run, each with its
+# repository type: whatever came from one of them -- the configuration, a
+# configuration it inherits, a downloaded file -- is private, so a scheduled
+# job needs an unattended credential source for every one of them
+_AUTHENTICATED_HOSTS: dict[str, str] = {}
+
+# Tokens the host CLIs answered with, per (repository type, host); None
+# records a lookup that found nothing, so each CLI is asked once per host
+_CLI_TOKEN_CACHE: dict[tuple[str, str], str | None] = {}
+_CLI_TOKEN_TIMEOUT_SECONDS = 30
+
+
+def _credential_host(url: str) -> str | None:
+    """Return the host a repository URL's credentials belong to.
+
+    Args:
+        url: The URL.
+
+    Returns:
+        ``github.com`` for every GitHub host (raw, API and web URLs share
+        one login), the lowercased host of a GitLab URL, or None when the URL
+        is no repository URL.
+    """
+    repo_type = detect_repo_type(url)
+    if repo_type == 'github':
+        return 'github.com'
+    if repo_type == 'gitlab':
+        host = urllib.parse.urlparse(url).hostname
+        return host.lower() if host else None
+    return None
+
+
+def _cli_token_command(repo_type: str, host: str) -> tuple[str, list[str]]:
+    """Return the host CLI and the arguments that print its stored token.
+
+    Args:
+        repo_type: ``github`` or ``gitlab``.
+        host: The host the login belongs to.
+
+    Returns:
+        The tool name and its arguments.
+    """
+    if repo_type == 'github':
+        return 'gh', ['auth', 'token', '--hostname', host]
+    return 'glab', ['auth', 'status', '--hostname', host, '--show-token']
+
+
+def _query_cli_token(repo_type: str, host: str) -> str | None:
+    tool, arguments = _cli_token_command(repo_type, host)
+    resolved = shutil.which(tool)
+    if resolved is None:
+        return None
+    executable = resolved
+    if platform.system() == 'Windows':
+        executable = _prefer_windows_executable(tool, resolved) or resolved
+    try:
+        result = subprocess.run(
+            [executable, *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, **_NON_INTERACTIVE_ENVIRONMENT},
+            timeout=_CLI_TOKEN_TIMEOUT_SECONDS,
+            creationflags=_NO_WINDOW_FLAG,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    if repo_type == 'github':
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return lines[-1] if lines else None
+    # glab prints its status report, with the token on a "Token ...: value"
+    # line, to stderr; a line that masks the token holds only asterisks
+    for line in (result.stdout + '\n' + result.stderr).splitlines():
+        label, separator, value = line.rpartition(':')
+        if separator and 'token' in label.lower():
+            token = value.strip()
+            if token and set(token) != {'*'}:
+                return token
+    return None
+
+
+def cli_stored_token(repo_type: str, host: str) -> str | None:
+    """Return the token the logged-in host CLI stores for a host.
+
+    ``gh auth token --hostname HOST`` prints the GitHub token; ``glab auth
+    status --hostname HOST --show-token`` prints the GitLab token on its
+    status line. The CLI is asked once per host; the token is never printed
+    or stored by the toolbox.
+
+    Args:
+        repo_type: ``github`` or ``gitlab``.
+        host: The host the login belongs to.
+
+    Returns:
+        The token, or None when the CLI is absent, not logged in for the
+        host, or prints nothing usable.
+    """
+    key = (repo_type, host)
+    if key not in _CLI_TOKEN_CACHE:
+        _CLI_TOKEN_CACHE[key] = _query_cli_token(repo_type, host)
+    return _CLI_TOKEN_CACHE[key]
 
 
 def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, str]:
@@ -7990,12 +8141,22 @@ def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, 
         auth_value = token if token.startswith('Bearer ') else f'Bearer {token}'
         return {'Authorization': auth_value}
 
+    cli_checked = ''
+    host = _credential_host(url)
+    if repo_type in ('github', 'gitlab') and host is not None:
+        tool, arguments = _cli_token_command(repo_type, host)
+        cli_checked = f'{tool} {" ".join(arguments)}'
+
     if repo_type and sys.stdin.isatty():
         warning(f'Authentication required for {url}')
         info(f"Checked environment variables: {', '.join(tokens_checked)}")
+        if cli_checked:
+            info(f'Checked the stored CLI login too: {cli_checked}')
         info('You can provide authentication by:')
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
         info(f'  2. Passing it on the command line: --env {tokens_checked[0]}=token_here')
+        if cli_checked:
+            info(f'  3. Logging in with the host CLI: {cli_checked.split(" auth ")[0]} auth login --hostname {host}')
 
         # Ask if they want to enter it now. The shared consent gate
         # flushes queued terminal reports, sanitizes escape sequences,
@@ -8018,6 +8179,8 @@ def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, 
         # Non-interactive terminal but auth might be needed
         info(f'Authentication required for {url}')
         info(f"If authentication is required, set one of: {', '.join(tokens_checked)}")
+        if cli_checked:
+            info(f'Checked the stored CLI login too: {cli_checked}')
 
     return {}
 
@@ -8043,14 +8206,20 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         could be resolved from any source (non-interactive and interactive).
     """
     headers = resolve_credentials(url, auth_param)
+    if not headers:
+        # No creds resolved via non-interactive sources; attempt interactive prompt.
+        # The prompt is itself guarded by sys.stdin.isatty() and detects repo_type internally.
+        repo_type = detect_repo_type(url)
+        tokens_checked = _env_tokens_checked_for_repo_type(repo_type)
+        headers = prompt_for_credentials(url, tokens_checked=tokens_checked)
     if headers:
-        return headers
-
-    # No creds resolved via non-interactive sources; attempt interactive prompt.
-    # The prompt is itself guarded by sys.stdin.isatty() and detects repo_type internally.
-    repo_type = detect_repo_type(url)
-    tokens_checked = _env_tokens_checked_for_repo_type(repo_type)
-    return prompt_for_credentials(url, tokens_checked=tokens_checked)
+        # A host that needed credentials holds something private, which a
+        # scheduled job needs an unattended source for
+        host = _credential_host(url)
+        repo_type = detect_repo_type(url)
+        if host is not None and repo_type is not None:
+            _AUTHENTICATED_HOSTS[host] = repo_type
+    return headers
 
 
 def derive_base_url(config_source: str) -> str:
@@ -9379,6 +9548,7 @@ def collect_machine_wide_writes(
     files_to_download: list[dict[str, Any]],
     has_dependency_commands: bool,
     pin_effect: str | None = None,
+    scheduled_update: 'ScheduledUpdatePlan | None' = None,
 ) -> list[str]:
     """Name every write of an isolated run that reaches beyond its profile.
 
@@ -9412,6 +9582,9 @@ def collect_machine_wide_writes(
             this platform.
         pin_effect: The pin_effect_line() of this run's pin, naming the
             other installed profiles, or None to describe the pin alone.
+        scheduled_update: The run's decision about the profile's daily
+            update job, which lives in the OS scheduler and the toolbox
+            state directory, or None.
 
     Returns:
         One line per machine-wide write, in execution order.
@@ -9460,6 +9633,15 @@ def collect_machine_wide_writes(
             writes.append(f'files-to-download outside the profile: {dest}')
     if has_dependency_commands:
         writes.append('Dependency commands: run machine-wide (listed above)')
+    if scheduled_update is not None and scheduled_update.changes_registration:
+        if scheduled_update.action == 'remove':
+            writes.append(f'OS scheduler: remove the daily update job {scheduled_update.name}')
+        else:
+            assert scheduled_update.spec is not None
+            writes.append(
+                f'OS scheduler: daily update job {scheduled_update.name} ({scheduled_update.spec.describe()}), '
+                f'its state in {scheduled_update.state_dir}',
+            )
     return writes
 
 
@@ -9934,6 +10116,22 @@ def display_installation_summary(
         for copy in plan.stale_controls_elsewhere:
             _print(f'  * {_stale_control_copy_line(copy)}')
         _print(f'  {STALE_CONTROLS_RERUN_NOTE}')
+
+    # The profile's daily update job: what Step 24 registers, re-registers,
+    # keeps or removes, the command it runs, where its state lives, and the
+    # last scheduled run on record
+    if plan.scheduled_update is not None:
+        scheduled_lines = scheduled_update_summary_lines(
+            plan.scheduled_update,
+            last_run=plan.last_scheduled_run,
+            warnings_=plan.scheduled_update_warnings,
+            windows=platform.system() == 'Windows',
+        )
+        if scheduled_lines:
+            _print()
+            _print(f'{Colors.BOLD}Scheduled update (auto-update):{Colors.NC}')
+            for line in scheduled_lines:
+                _print(f'  * {line}')
 
     # Attention section (red)
     has_attention = (
@@ -15994,16 +16192,31 @@ def content_dependents(home_dir: Path, source_name: str) -> list[InstalledProfil
         The dependents in sorted directory order; the base profile never
         links, so it is never a dependent.
     """
-    dependents: list[InstalledProfile] = []
-    for profile in installed_profiles(home_dir):
-        record = manifest_link(profile.manifest)
-        if record is None or profile.name == 'base':
-            continue
-        if str(record.get('source') or LINK_SOURCE_BASE).casefold() != source_name.casefold():
-            continue
-        if any(str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], record['dirs'])):
-            dependents.append(profile)
-    return dependents
+    return [
+        profile for profile in installed_profiles(home_dir)
+        if profile.name != 'base'
+        and (source := content_link_source(profile.manifest)) is not None
+        and source.casefold() == source_name.casefold()
+    ]
+
+
+def content_link_source(manifest: dict[str, Any] | None) -> str | None:
+    """Name the profile a manifest links content from.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The source's display name (``base`` or a primary command name) when
+        the manifest records a link holding a content entry, else None: a
+        ``projects``-only link makes no dependent.
+    """
+    record = manifest_link(manifest)
+    if record is None:
+        return None
+    if not any(str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], record['dirs'])):
+        return None
+    return str(record.get('source') or LINK_SOURCE_BASE)
 
 
 def dependents_remedy(dependents: list[InstalledProfile]) -> list[str]:
@@ -16597,6 +16810,8 @@ class ProfileResidue(NamedTuple):
             outside ~/.claude the new configuration does not install but
             another installed profile still records; they are listed and
             never removed.
+        scheduled_job: The daily update job the previous run registered
+            and the new configuration does not declare, or None.
     """
 
     files: list[Path]
@@ -16605,13 +16820,18 @@ class ProfileResidue(NamedTuple):
     settings_keys: list[str]
     destinations: list[Path]
     kept_destinations: list[tuple[Path, list[str]]]
+    scheduled_job: str | None = None
 
     def __bool__(self) -> bool:
-        return any((self.files, self.mcp_servers, self.os_env, self.settings_keys, self.destinations))
+        return any((
+            self.files, self.mcp_servers, self.os_env, self.settings_keys, self.destinations, self.scheduled_job,
+        ))
 
     def lines(self) -> list[str]:
         """Render the residue one item per line, for a guard message."""
         rendered = [f'file: {path}' for path in self.files]
+        if self.scheduled_job:
+            rendered.append(f'scheduled update job: {self.scheduled_job}')
         rendered.extend(f'MCP server: {name} (scope: {", ".join(scopes)})' for name, scopes in self.mcp_servers)
         rendered.extend(f'OS environment variable: {key}' for key in self.os_env)
         for key in self.settings_keys:
@@ -16775,7 +16995,15 @@ def profile_residue(
             kept_destinations.append((path, holders))
         elif _sha256_of_file(path) == record_dict.get('sha256'):
             destinations.append(path)
-    return ProfileResidue(files, servers, os_env, settings_keys, destinations, kept_destinations)
+
+    # The daily update job of the previous configuration, when the new one
+    # declares no auto-update (a declared key re-registers the job instead)
+    scheduled_job: str | None = None
+    recorded_job = manifest.get('auto_update')
+    if isinstance(recorded_job, dict) and config.get(AUTO_UPDATE_SCHEDULE_KEY) is None:
+        job_name = cast(dict[str, Any], recorded_job).get('job')
+        scheduled_job = str(job_name) if job_name else None
+    return ProfileResidue(files, servers, os_env, settings_keys, destinations, kept_destinations, scheduled_job)
 
 
 def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude_dir: Path) -> None:
@@ -16839,6 +17067,11 @@ def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude
             success(f'Removed settings.json key(s): {", ".join(residue.settings_keys)}')
         else:
             warning(f'Cannot remove settings.json key(s): {", ".join(residue.settings_keys)}')
+    if residue.scheduled_job:
+        # The job is removed by Step 24, which checks the rights the removal
+        # needs, reports a refused removal and keeps the job recorded until
+        # it is gone; here the residue only names it
+        info(f'The scheduled update job {residue.scheduled_job} is removed in Step 24')
 
 
 def write_manifest(
@@ -16861,6 +17094,7 @@ def write_manifest(
     mcp_servers: list[dict[str, Any]] | None = None,
     files_written: list[str] | None = None,
     link: dict[str, Any] | None = None,
+    auto_update: dict[str, Any] | None = None,
 ) -> bool:
     """Write the installation manifest of a profile.
 
@@ -16909,6 +17143,10 @@ def write_manifest(
             empty entry list for a typed or environment none, which a re-run
             remembers ahead of the configuration's link-dirs), or None when
             the profile links nothing without such a value
+        auto_update: The profile's daily update job as
+            auto_update_manifest_record() renders it (the time, the
+            configured command and the job name), or None when the profile
+            has no job
 
     Returns:
         True if manifest was written successfully, False otherwise.
@@ -16943,6 +17181,7 @@ def write_manifest(
         'settings_keys_written': settings_keys_written or [],
         'mcp_servers': mcp_servers or [],
         'files_written': files_written or [],
+        'auto_update': auto_update,
     }
 
     try:
@@ -16956,6 +17195,1532 @@ def write_manifest(
     except Exception as e:
         warning(f'Failed to write manifest: {e}')
         return False
+
+
+# ---------------------------------------------------------------------------
+# Scheduled profile updates (the auto-update key)
+# ---------------------------------------------------------------------------
+#
+# A configuration with `auto-update: {time: "HH:MM"}` gives each profile
+# installed from it one daily job in the operating system's own scheduler,
+# which re-runs that profile's setup through `uvx cc-toolbox@latest` (or runs
+# the command the key names instead). The toolbox keeps the job's record, a
+# machine-wide lock that keeps scheduled runs from overlapping, the log of
+# every scheduled run and the record of the last one in its state directory.
+
+AUTO_UPDATE_SCHEDULE_KEY = 'auto-update'
+SCHEDULED_RUN_FLAG = '--scheduled-run'
+SCHEDULED_UPDATE_JOB_PREFIX = 'cc-toolbox-update'
+TOOLBOX_STATE_DIR_NAME = 'cc-toolbox'
+SCHEDULED_UPDATE_KEPT_LOGS = 30
+SCHEDULED_UPDATE_LOCK_FILENAME = 'update.lock'
+SCHEDULED_UPDATE_LOCK_WAIT_SECONDS = 1800
+SCHEDULED_UPDATE_LOCK_POLL_SECONDS = 15
+SCHEDULED_UPDATE_LOCK_STALE_SECONDS = 6 * 3600
+SCHEDULER_COMMAND_TIMEOUT_SECONDS = 600
+SCHEDULED_UPDATE_TASK_TIME_LIMIT = 'PT4H'
+SCHEDULED_UPDATE_ELEVATION_REASON = (
+    'Registering the scheduled update job (auto-update), which runs with the highest privileges available'
+)
+_TASK_SCHEDULER_NAMESPACE = 'http://schemas.microsoft.com/windows/2004/02/mit/task'
+_AUTO_UPDATE_TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+_SCHEDULED_LOG_NAME_PATTERN = r'-\d{8}-\d{6}\.log$'
+# Git, the Git Credential Manager and the GitHub CLI read these and fail at
+# once where they would otherwise wait for an answer nobody gives at night
+_NON_INTERACTIVE_ENVIRONMENT = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GH_PROMPT_DISABLED': '1'}
+_NO_WINDOW_FLAG = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if sys.platform == 'win32' else 0
+
+
+class SchedulerError(RuntimeError):
+    """A scheduler command failed or the job cannot be registered on this machine."""
+
+
+class AutoUpdateSpec(NamedTuple):
+    """The validated auto-update key: a daily local time and an optional command.
+
+    Attributes:
+        hour: Hour of the daily run, local time.
+        minute: Minute of the daily run.
+        command: The command line the job runs instead of the profile's
+            setup, or None for the default.
+    """
+
+    hour: int
+    minute: int
+    command: str | None
+
+    @property
+    def time_text(self) -> str:
+        """The time as HH:MM."""
+        return f'{self.hour:02d}:{self.minute:02d}'
+
+    def describe(self) -> str:
+        """Describe the schedule for messages.
+
+        Returns:
+            Text such as ``every day at 03:30 local time``.
+        """
+        return f'every day at {self.time_text} local time'
+
+
+def validate_auto_update(config: dict[str, Any]) -> list[str]:
+    """Validate the auto-update key of a resolved configuration.
+
+    The runtime twin of the AutoUpdate model: a mapping with a required
+    ``time`` (HH:MM, 24-hour local time) and an optional non-empty
+    ``command``; nothing else.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        One error per problem; empty when the key is absent or valid.
+    """
+    value = config.get(AUTO_UPDATE_SCHEDULE_KEY)
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return [f'{AUTO_UPDATE_SCHEDULE_KEY} must be a mapping with a time (HH:MM) and an optional command, got {value!r}']
+    mapping = cast(dict[str, Any], value)
+    errors: list[str] = []
+    unknown = sorted(str(key) for key in mapping if key not in ('time', 'command'))
+    if unknown:
+        errors.append(
+            f'{AUTO_UPDATE_SCHEDULE_KEY} has unknown key(s): {", ".join(unknown)}; the allowed keys are time and command',
+        )
+    if 'time' not in mapping:
+        errors.append(f'{AUTO_UPDATE_SCHEDULE_KEY}.time is required: the daily run time as HH:MM in 24-hour local time')
+    else:
+        time_value = mapping['time']
+        if not isinstance(time_value, str) or not _AUTO_UPDATE_TIME_PATTERN.match(time_value.strip()):
+            errors.append(
+                f'{AUTO_UPDATE_SCHEDULE_KEY}.time must be HH:MM in 24-hour local time (00:00 to 23:59), got {time_value!r}; '
+                'quote the value in YAML (time: "03:30"), because an unquoted 03:30 is read as a number',
+            )
+    command = mapping.get('command')
+    if command is not None and (not isinstance(command, str) or not command.strip()):
+        errors.append(f'{AUTO_UPDATE_SCHEDULE_KEY}.command must be a non-empty string when given, got {command!r}')
+    return errors
+
+
+def parse_auto_update(config: dict[str, Any]) -> AutoUpdateSpec | None:
+    """Read the auto-update key of a configuration validate_auto_update() accepted.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        The spec, or None when the configuration declares no auto-update.
+    """
+    value = config.get(AUTO_UPDATE_SCHEDULE_KEY)
+    if not isinstance(value, dict):
+        return None
+    mapping = cast(dict[str, Any], value)
+    match = _AUTO_UPDATE_TIME_PATTERN.match(str(mapping['time']).strip())
+    assert match is not None
+    command = mapping.get('command')
+    return AutoUpdateSpec(int(match.group(1)), int(match.group(2)), str(command).strip() if command else None)
+
+
+def toolbox_state_dir(platform_name: str, home: Path, environ: Mapping[str, str]) -> Path:
+    """Return the per-user directory holding the toolbox's scheduler state.
+
+    Args:
+        platform_name: The ``sys.platform`` value of the machine.
+        home: The user's home directory.
+        environ: The process environment.
+
+    Returns:
+        ``%LOCALAPPDATA%\\cc-toolbox`` on Windows, ``~/Library/Application
+        Support/cc-toolbox`` on macOS, ``$XDG_STATE_HOME/cc-toolbox`` or
+        ``~/.local/state/cc-toolbox`` elsewhere (not created).
+    """
+    if platform_name == 'win32':
+        base = Path(environ['LOCALAPPDATA']) if environ.get('LOCALAPPDATA') else home / 'AppData' / 'Local'
+    elif platform_name == 'darwin':
+        base = home / 'Library' / 'Application Support'
+    else:
+        base = Path(environ['XDG_STATE_HOME']) if environ.get('XDG_STATE_HOME') else home / '.local' / 'state'
+    return base / TOOLBOX_STATE_DIR_NAME
+
+
+def scheduled_update_job_name(profile_name: str) -> str:
+    """Return the OS job name of a profile's daily update.
+
+    Args:
+        profile_name: The profile's display name (``base`` for the base profile).
+
+    Returns:
+        ``cc-toolbox-update-<profile>``.
+    """
+    return f'{SCHEDULED_UPDATE_JOB_PREFIX}-{profile_name}'
+
+
+SchedulerRunner = Callable[[list[str]], 'subprocess.CompletedProcess[str]']
+SchedulerWhich = Callable[[str], str | None]
+
+
+@dataclass(frozen=True)
+class SchedulerPlatform:
+    """Where and how the scheduler of this machine is driven.
+
+    Attributes:
+        name: The ``sys.platform`` value.
+        home: The user's home directory.
+        state: The toolbox state directory.
+        runner: Runs one scheduler command to completion.
+        environ: The environment the job inherits (its PATH is baked into
+            the registration where the scheduler gives none).
+        which: Executable lookup.
+    """
+
+    name: str
+    home: Path
+    state: Path
+    runner: SchedulerRunner
+    environ: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    which: SchedulerWhich = shutil.which
+
+
+def _run_scheduler_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a scheduler command without a console window, a prompt or an unbounded wait.
+
+    Args:
+        command: The command and its arguments.
+
+    Returns:
+        The completed process; a missing executable is exit code 127 and a
+        command that outlives the timeout exit code 124.
+    """
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, **_NON_INTERACTIVE_ENVIRONMENT},
+            timeout=SCHEDULER_COMMAND_TIMEOUT_SECONDS,
+            creationflags=_NO_WINDOW_FLAG,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(command, 127, '', f'{command[0]}: command not found')
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            command, 124, '', f'{command[0]}: no result after {SCHEDULER_COMMAND_TIMEOUT_SECONDS} seconds',
+        )
+
+
+def default_scheduler_platform() -> SchedulerPlatform:
+    """Build the scheduler platform of this machine.
+
+    Returns:
+        The platform with the real command runner and the state directory
+        of the real user home.
+    """
+    home = get_real_user_home()
+    return SchedulerPlatform(
+        name=sys.platform,
+        home=home,
+        state=toolbox_state_dir(sys.platform, home, os.environ),
+        runner=_run_scheduler_command,
+        environ=dict(os.environ),
+        which=shutil.which,
+    )
+
+
+def resolve_scheduler_executable(platform_: SchedulerPlatform, command: str) -> str | None:
+    """Find a command the way the scheduler must start it.
+
+    On Windows a bare-name lookup can return the extensionless shell shim
+    that ships beside an ``.exe`` or ``.cmd`` wrapper; the wrapper beside it
+    is what a scheduler can start.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        command: The command name.
+
+    Returns:
+        The absolute path to start, or None when the command is not on PATH.
+    """
+    found = platform_.which(command)
+    if found is None or platform_.name != 'win32':
+        return found
+    pathext = platform_.environ.get('PATHEXT', '.COM;.EXE;.BAT;.CMD')
+    extensions = [extension.lower() for extension in pathext.split(';') if extension]
+    path = Path(found)
+    if path.suffix.lower() in extensions:
+        return found
+    wrappers = (path.with_name(path.name + extension) for extension in extensions)
+    return next((str(wrapper) for wrapper in wrappers if wrapper.is_file()), found)
+
+
+def scheduled_update_command(platform_: SchedulerPlatform, profile_name: str) -> list[str]:
+    """Build the command line the OS job runs.
+
+    The job runs ``uvx cc-toolbox@latest setup --profile <name> --yes
+    --no-admin --scheduled-run``, uvx resolved to an absolute path now
+    because a scheduler's PATH can differ from the shell's; without uvx it
+    runs ``uv tool run``, which is the same thing.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        profile_name: The profile's display name (``base`` for the base profile).
+
+    Returns:
+        The full argument vector, executable first.
+
+    Raises:
+        SchedulerError: When neither uvx nor uv is on PATH.
+    """
+    uvx = resolve_scheduler_executable(platform_, 'uvx')
+    if uvx is not None:
+        head = [uvx, 'cc-toolbox@latest']
+    else:
+        uv = resolve_scheduler_executable(platform_, 'uv')
+        if uv is None:
+            raise SchedulerError('neither uvx nor uv is on PATH, so the job has nothing to run cc-toolbox with')
+        head = [uv, 'tool', 'run', 'cc-toolbox@latest']
+    return [*head, 'setup', '--profile', profile_name, '--yes', '--no-admin', SCHEDULED_RUN_FLAG]
+
+
+@dataclass
+class JobRegistration:
+    """Everything one registration writes and runs, so a plan can be shown before it is applied.
+
+    Attributes:
+        target: The file the scheduler reads the job from.
+        document: The registration as text, for the summary.
+        files: The files to write, each with its content and encoding.
+        directories: The directories the registered job writes into when
+            it fires, created before the job can, because a shell refuses a
+            redirection into a directory that does not exist.
+        best_effort: Commands whose failure is ignored.
+        commands: Commands that must succeed.
+    """
+
+    target: Path
+    document: str
+    files: dict[Path, tuple[str, str]] = field(default_factory=lambda: dict[Path, tuple[str, str]]())
+    directories: list[Path] = field(default_factory=lambda: list[Path]())
+    best_effort: list[list[str]] = field(default_factory=lambda: list[list[str]]())
+    commands: list[list[str]] = field(default_factory=lambda: list[list[str]]())
+
+
+def windows_update_task_xml(command: list[str], spec: AutoUpdateSpec, now: datetime, profile_name: str) -> str:
+    """Render Task Scheduler XML for the daily update of a profile.
+
+    The task runs under the current user's interactive logon with the
+    highest privileges available to it, catches up a missed occurrence as
+    soon as the machine is available, never starts while an instance runs,
+    and starts at today's slot while it still lies ahead, else tomorrow's.
+
+    Args:
+        command: The command line the task runs.
+        spec: The daily time.
+        now: The local time of the registration.
+        profile_name: The profile the task updates, for its description.
+
+    Returns:
+        The task definition as an XML string.
+    """
+    ET.register_namespace('', _TASK_SCHEDULER_NAMESPACE)
+
+    def node(parent: ET.Element, tag: str, text: str | None = None) -> ET.Element:
+        element = ET.SubElement(parent, f'{{{_TASK_SCHEDULER_NAMESPACE}}}{tag}')
+        if text is not None:
+            element.text = text
+        return element
+
+    slot = now.replace(hour=spec.hour, minute=spec.minute, second=0, microsecond=0)
+    start = slot if slot > now else slot + timedelta(days=1)
+    task = ET.Element(f'{{{_TASK_SCHEDULER_NAMESPACE}}}Task', {'version': '1.4'})
+    node(node(task, 'RegistrationInfo'), 'Description', f'Daily cc-toolbox update of profile {profile_name}')
+    trigger = node(node(task, 'Triggers'), 'CalendarTrigger')
+    node(trigger, 'StartBoundary', start.strftime('%Y-%m-%dT%H:%M:%S'))
+    node(trigger, 'Enabled', 'true')
+    node(node(trigger, 'ScheduleByDay'), 'DaysInterval', '1')
+    principal = node(node(task, 'Principals'), 'Principal')
+    principal.set('id', 'Author')
+    node(principal, 'LogonType', 'InteractiveToken')
+    node(principal, 'RunLevel', 'HighestAvailable')
+    settings = node(task, 'Settings')
+    for tag, value in (
+        ('MultipleInstancesPolicy', 'IgnoreNew'),
+        ('DisallowStartIfOnBatteries', 'false'),
+        ('StopIfGoingOnBatteries', 'false'),
+        ('StartWhenAvailable', 'true'),
+        ('RunOnlyIfNetworkAvailable', 'true'),
+        ('ExecutionTimeLimit', SCHEDULED_UPDATE_TASK_TIME_LIMIT),
+        ('Enabled', 'true'),
+    ):
+        node(settings, tag, value)
+    actions = node(task, 'Actions')
+    actions.set('Context', 'Author')
+    action = node(actions, 'Exec')
+    node(action, 'Command', command[0])
+    node(action, 'Arguments', subprocess.list2cmdline(command[1:]))
+    return f'<?xml version="1.0" encoding="UTF-16"?>\n{ET.tostring(task, encoding="unicode")}\n'
+
+
+def launchd_update_plist(label: str, command: list[str], spec: AutoUpdateSpec, path_env: str, log_file: Path) -> str:
+    """Render a launchd agent that runs the update daily with the PATH captured at registration.
+
+    Args:
+        label: The agent label (the job name).
+        command: The command line the agent runs.
+        spec: The daily time.
+        path_env: The PATH the agent runs with.
+        log_file: Where launchd writes the agent's own output.
+
+    Returns:
+        The property list as XML text.
+    """
+    return plistlib.dumps({
+        'Label': label,
+        'ProgramArguments': command,
+        'StartCalendarInterval': {'Hour': spec.hour, 'Minute': spec.minute},
+        'EnvironmentVariables': {'PATH': path_env},
+        'StandardOutPath': str(log_file),
+        'StandardErrorPath': str(log_file),
+        'RunAtLoad': False,
+    }).decode('utf-8')
+
+
+def _systemd_quote(value: str) -> str:
+    escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$')
+    return f'"{escaped}"'
+
+
+def systemd_update_units(command: list[str], spec: AutoUpdateSpec, path_env: str) -> tuple[str, str]:
+    """Render a oneshot service and a persistent daily timer for the systemd user manager.
+
+    Args:
+        command: The command line the service runs.
+        spec: The daily time.
+        path_env: The PATH the service runs with.
+
+    Returns:
+        The service unit text and the timer unit text.
+    """
+    exec_start = ' '.join(_systemd_quote(part) for part in command)
+    service = (
+        '[Unit]\n'
+        'Description=Daily cc-toolbox profile update\n'
+        'Wants=network-online.target\n'
+        'After=network-online.target\n\n'
+        '[Service]\n'
+        'Type=oneshot\n'
+        f'Environment={_systemd_quote("PATH=" + path_env)}\n'
+        f'ExecStart={exec_start}\n'
+    )
+    timer = (
+        '[Unit]\n'
+        'Description=Daily cc-toolbox profile update\n\n'
+        '[Timer]\n'
+        f'OnCalendar=*-*-* {spec.time_text}:00\n'
+        'Persistent=true\n\n'
+        '[Install]\n'
+        'WantedBy=timers.target\n'
+    )
+    return service, timer
+
+
+def cron_update_line(name: str, command: list[str], spec: AutoUpdateSpec, path_env: str, log_file: Path) -> str:
+    """Render a crontab entry tagged with the job name so it can be replaced or removed later.
+
+    Args:
+        name: The job name, which tags the line.
+        command: The command line cron runs.
+        spec: The daily time.
+        path_env: The PATH the command runs with.
+        log_file: Where cron's own output of the command is appended.
+
+    Returns:
+        One crontab line without a trailing newline.
+    """
+    shell = ' '.join(shlex.quote(part) for part in command)
+    entry = f'PATH={shlex.quote(path_env)} {shell} >> {shlex.quote(str(log_file))} 2>&1'
+    escaped = entry.replace('%', '\\%')
+    return f'{spec.minute} {spec.hour} * * * {escaped} # {name}'
+
+
+def _systemd_user_available(runner: SchedulerRunner) -> bool:
+    return runner(['systemctl', '--user', 'show-environment']).returncode == 0
+
+
+def scheduler_uses_cron(platform_: SchedulerPlatform) -> bool:
+    """Report whether the job on this machine is, or would be, a crontab entry.
+
+    Args:
+        platform_: The machine's scheduler platform.
+
+    Returns:
+        True on Linux without a running systemd user manager.
+    """
+    return platform_.name not in {'win32', 'darwin'} and not _systemd_user_available(platform_.runner)
+
+
+def scheduler_problems(platform_: SchedulerPlatform) -> list[str]:
+    """List what keeps this machine from registering a job at all.
+
+    Task Scheduler and launchd are part of their operating systems; on Linux
+    the job needs either a systemd user manager or the crontab command.
+
+    Args:
+        platform_: The machine's scheduler platform.
+
+    Returns:
+        One sentence per problem; empty when a scheduler is available.
+    """
+    if scheduler_uses_cron(platform_) and platform_.which('crontab') is None:
+        return ['neither a systemd user manager nor the crontab command is available to schedule the job']
+    return []
+
+
+_WINDOWS_ENVIRONMENT_KEYS = (
+    r'HKCU\Environment',
+    r'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+)
+
+
+def _registry_environment_carries(platform_: SchedulerPlatform, key: str, name: str) -> bool:
+    result = platform_.runner(['reg', 'query', key, '/v', name])
+    if result.returncode != 0:
+        return False
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].casefold() == name.casefold() and parts[2].strip():
+            return True
+    return False
+
+
+def job_environment_carries(platform_: SchedulerPlatform, name: str) -> bool:
+    """Report whether the scheduler hands the job a non-empty value of an environment variable.
+
+    A job inherits the scheduler's environment, never a shell's: Task
+    Scheduler gives it the user and system variables of the registry, launchd
+    its own environment, the systemd user manager its manager environment,
+    and cron only the PATH the crontab line sets. A variable a shell profile
+    exports, or ``--env`` sets for one run, reaches none of them.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The variable name.
+
+    Returns:
+        True when the job's environment holds a non-empty value.
+    """
+    if platform_.name == 'win32':
+        return any(_registry_environment_carries(platform_, key, name) for key in _WINDOWS_ENVIRONMENT_KEYS)
+    if platform_.name == 'darwin':
+        result = platform_.runner(['launchctl', 'getenv', name])
+        return result.returncode == 0 and bool(result.stdout.strip())
+    if scheduler_uses_cron(platform_):
+        return False
+    result = platform_.runner(['systemctl', '--user', 'show-environment'])
+    if result.returncode != 0:
+        return False
+    prefix = f'{name}='
+    return any(line.startswith(prefix) and line[len(prefix):].strip() for line in result.stdout.splitlines())
+
+
+def _job_environment_remedy(platform_: SchedulerPlatform, name: str) -> str | None:
+    """Name how a variable reaches the job's environment on this platform, or None where none does."""
+    if platform_.name == 'win32':
+        return f'set {name} as a user environment variable of your Windows account (setx {name} <token>)'
+    if platform_.name == 'darwin':
+        return f'hand {name} to launchd with launchctl setenv {name} <token> (needed again after every restart)'
+    if scheduler_uses_cron(platform_):
+        return None
+    return (
+        f'set {name} for the systemd user manager (systemctl --user set-environment {name}=<token> for this '
+        'session, or a ~/.config/environment.d/*.conf entry for every session)'
+    )
+
+
+def unattended_credential_warnings(platform_: SchedulerPlatform) -> list[str]:
+    """Warn for every private host a scheduled job cannot authenticate to.
+
+    Every host this run authenticated to is checked: a job can authenticate
+    to it when the environment the scheduler hands the job carries
+    ``CLAUDE_CODE_TOOLBOX_ENV_AUTH`` or the host's token variable, or when
+    the host CLI stores a login for it. A token this run took from a shell
+    profile, from ``--env`` or from the prompt is not there at night.
+
+    Args:
+        platform_: The machine's scheduler platform.
+
+    Returns:
+        One warning per uncovered host, naming the host and the remedies
+        that work on this platform; empty when every host is covered.
+    """
+    warnings_: list[str] = []
+    for host, repo_type in sorted(_AUTHENTICATED_HOSTS.items()):
+        names = ['CLAUDE_CODE_TOOLBOX_ENV_AUTH', *_env_tokens_checked_for_repo_type(repo_type)]
+        if any(job_environment_carries(platform_, name) for name in names):
+            continue
+        if cli_stored_token(repo_type, host):
+            continue
+        tool = 'gh' if repo_type == 'github' else 'glab'
+        remedy = _job_environment_remedy(platform_, names[1])
+        variable_text = (
+            f', or {remedy}' if remedy
+            else '; a crontab job receives no environment variable, so the stored login is the only source'
+        )
+        warnings_.append(
+            f'The scheduled update job cannot authenticate to {host}: this run used a token that no unattended '
+            f'source provides. Log in with {tool} auth login --hostname {host} so the job can use the stored '
+            f'token{variable_text}.',
+        )
+    return warnings_
+
+
+def _crontab_without(runner: SchedulerRunner, name: str) -> list[str]:
+    current = runner(['crontab', '-l'])
+    lines = current.stdout.splitlines() if current.returncode == 0 else []
+    return [line for line in lines if not line.rstrip().endswith(f'# {name}')]
+
+
+def _scheduler_user_id(runner: SchedulerRunner) -> str:
+    result = runner(['id', '-u'])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()
+        raise SchedulerError(f'user id lookup failed (exit {result.returncode}): {detail}')
+    return result.stdout.strip()
+
+
+def _systemd_unit_dir(platform_: SchedulerPlatform) -> Path:
+    config_home = platform_.environ.get('XDG_CONFIG_HOME')
+    return (Path(config_home) if config_home else platform_.home / '.config') / 'systemd' / 'user'
+
+
+def plan_job_registration(
+    platform_: SchedulerPlatform,
+    name: str,
+    command: list[str],
+    spec: AutoUpdateSpec,
+    now: datetime,
+) -> JobRegistration:
+    """Work out what registering the job on this platform writes and runs, without doing any of it.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+        command: The command line the job runs.
+        spec: The daily time.
+        now: The local time of the registration.
+
+    Returns:
+        The registration plan.
+    """
+    path_env = platform_.environ.get('PATH', '')
+    scheduler_log = platform_.state / 'logs' / f'{name}.scheduler.log'
+    if platform_.name == 'win32':
+        target = platform_.state / 'jobs' / f'{name}.xml'
+        document = windows_update_task_xml(command, spec, now, name.removeprefix(f'{SCHEDULED_UPDATE_JOB_PREFIX}-'))
+        return JobRegistration(
+            target, document, files={target: (document, 'utf-16')},
+            commands=[['schtasks', '/Create', '/TN', name, '/XML', str(target), '/F']],
+        )
+    if platform_.name == 'darwin':
+        target = platform_.home / 'Library' / 'LaunchAgents' / f'{name}.plist'
+        document = launchd_update_plist(name, command, spec, path_env, scheduler_log)
+        uid = _scheduler_user_id(platform_.runner)
+        return JobRegistration(
+            target, document, files={target: (document, 'utf-8')}, directories=[scheduler_log.parent],
+            best_effort=[['launchctl', 'bootout', f'gui/{uid}/{name}']],
+            commands=[['launchctl', 'bootstrap', f'gui/{uid}', str(target)]],
+        )
+    if not scheduler_uses_cron(platform_):
+        service, timer = systemd_update_units(command, spec, path_env)
+        target = _systemd_unit_dir(platform_) / f'{name}.timer'
+        return JobRegistration(
+            target, f'# {name}.service\n{service}\n# {name}.timer\n{timer}',
+            files={target.with_suffix('.service'): (service, 'utf-8'), target: (timer, 'utf-8')},
+            commands=[
+                ['systemctl', '--user', 'daemon-reload'],
+                ['systemctl', '--user', 'enable', '--now', f'{name}.timer'],
+            ],
+        )
+    staged = platform_.state / 'jobs' / 'crontab.txt'
+    line = cron_update_line(name, command, spec, path_env, scheduler_log)
+    content = ''.join(f'{entry}\n' for entry in [*_crontab_without(platform_.runner, name), line])
+    return JobRegistration(
+        staged, line, files={staged: (content, 'utf-8')}, directories=[scheduler_log.parent],
+        commands=[['crontab', str(staged)]],
+    )
+
+
+def _run_checked_scheduler_command(platform_: SchedulerPlatform, step: list[str]) -> None:
+    """Run one scheduler command that must succeed.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        step: The command and its arguments.
+
+    Raises:
+        SchedulerError: When the command exits non-zero, with its output.
+    """
+    result = platform_.runner(step)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()
+        raise SchedulerError(f'{subprocess.list2cmdline(step[:3])} failed (exit {result.returncode}): {detail}')
+
+
+def apply_job_registration(platform_: SchedulerPlatform, plan: JobRegistration) -> None:
+    """Create the plan's directories, write its files and run its commands.
+
+    A scheduler command that exits non-zero ends the registration with a
+    SchedulerError carrying its output.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        plan: The registration plan.
+    """
+    for directory in plan.directories:
+        directory.mkdir(parents=True, exist_ok=True)
+    for path, (content, encoding) in plan.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding=encoding)
+    for step in plan.best_effort:
+        platform_.runner(step)
+    for step in plan.commands:
+        _run_checked_scheduler_command(platform_, step)
+
+
+def query_job_registration(platform_: SchedulerPlatform, name: str) -> str | None:
+    """Ask the scheduler about the job.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+
+    Returns:
+        The scheduler's description of the registered job, or None when it
+        is not registered.
+    """
+    if platform_.name == 'win32':
+        query = ['schtasks', '/Query', '/TN', name, '/FO', 'LIST', '/V']
+    elif platform_.name == 'darwin':
+        query = ['launchctl', 'print', f'gui/{_scheduler_user_id(platform_.runner)}/{name}']
+    elif not scheduler_uses_cron(platform_):
+        query = ['systemctl', '--user', 'list-timers', f'{name}.timer', '--all']
+    else:
+        query = ['crontab', '-l']
+    result = platform_.runner(query)
+    if result.returncode != 0:
+        return None
+    if platform_.name not in {'win32', 'darwin'} and name not in result.stdout:
+        return None
+    return result.stdout.strip()
+
+
+def remove_job_registration(platform_: SchedulerPlatform, name: str) -> None:
+    """Remove the job from the scheduler and the files it was registered from.
+
+    The scheduler is asked first: a job it does not hold is not removed
+    again (only its leftover files are deleted), and a removal it refuses is
+    a SchedulerError, so the caller keeps the job's records and names the
+    failure instead of reporting a removal that never happened.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+    """
+    registered = query_job_registration(platform_, name) is not None
+    if platform_.name == 'win32':
+        if registered:
+            _run_checked_scheduler_command(platform_, ['schtasks', '/Delete', '/TN', name, '/F'])
+        (platform_.state / 'jobs' / f'{name}.xml').unlink(missing_ok=True)
+    elif platform_.name == 'darwin':
+        if registered:
+            uid = _scheduler_user_id(platform_.runner)
+            _run_checked_scheduler_command(platform_, ['launchctl', 'bootout', f'gui/{uid}/{name}'])
+        (platform_.home / 'Library' / 'LaunchAgents' / f'{name}.plist').unlink(missing_ok=True)
+    elif not scheduler_uses_cron(platform_):
+        if registered:
+            _run_checked_scheduler_command(platform_, ['systemctl', '--user', 'disable', '--now', f'{name}.timer'])
+        (_systemd_unit_dir(platform_) / f'{name}.timer').unlink(missing_ok=True)
+        (_systemd_unit_dir(platform_) / f'{name}.service').unlink(missing_ok=True)
+        platform_.runner(['systemctl', '--user', 'daemon-reload'])
+    elif registered:
+        remaining = _crontab_without(platform_.runner, name)
+        staged = platform_.state / 'jobs' / 'crontab.txt'
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_text(''.join(f'{entry}\n' for entry in remaining), encoding='utf-8')
+        _run_checked_scheduler_command(platform_, ['crontab', str(staged)])
+
+
+def job_record_path(platform_: SchedulerPlatform, name: str) -> Path:
+    """Return the file recording what the job was registered with.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+
+    Returns:
+        ``<state>/jobs/<name>.json``.
+    """
+    return platform_.state / 'jobs' / f'{name}.json'
+
+
+def read_job_record(platform_: SchedulerPlatform, name: str) -> dict[str, Any] | None:
+    """Read the registration record of a job.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+
+    Returns:
+        The record (time, command, os_command), or None when there is none
+        or it cannot be read.
+    """
+    try:
+        content = json.loads(job_record_path(platform_, name).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return cast(dict[str, Any], content) if isinstance(content, dict) else None
+
+
+def write_job_record(platform_: SchedulerPlatform, name: str, record: dict[str, Any]) -> None:
+    """Write the registration record of a job.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+        record: The record to write.
+    """
+    path = job_record_path(platform_, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+
+
+def remove_job_record(platform_: SchedulerPlatform, name: str) -> None:
+    """Delete the registration record of a job, if any.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+    """
+    job_record_path(platform_, name).unlink(missing_ok=True)
+
+
+class ScheduledUpdatePlan(NamedTuple):
+    """What a run does with the profile's daily update job, decided before consent.
+
+    Attributes:
+        action: ``register`` (no job yet), ``update`` (the registered job
+            differs), ``unchanged`` (registered as the configuration asks),
+            ``remove`` (a recorded or registered job the configuration no
+            longer asks for), ``deferred`` (a scheduled run found its own
+            job changed and leaves it to the next manual run) or ``none``
+            (nothing to do).
+        name: The job name.
+        spec: The configuration's auto-update, or None without one.
+        command: The command line the OS job runs; empty when no job is
+            registered by this run.
+        reason: Why the action is what it is, for the summary.
+        problems: What keeps this machine from registering a job.
+        state_dir: The toolbox state directory.
+    """
+
+    action: str
+    name: str
+    spec: AutoUpdateSpec | None
+    command: list[str]
+    reason: str
+    problems: list[str]
+    state_dir: Path
+
+    @property
+    def changes_registration(self) -> bool:
+        """Whether applying the plan registers, re-registers or removes a job."""
+        return self.action in ('register', 'update', 'remove')
+
+    @property
+    def keeps_job(self) -> bool:
+        """Whether the profile has a job after this run."""
+        return self.action in ('register', 'update', 'unchanged', 'deferred')
+
+    def record(self) -> dict[str, Any]:
+        """Render the job record the state directory keeps.
+
+        Returns:
+            The time, the configured command and the OS command line.
+        """
+        assert self.spec is not None
+        return {'time': self.spec.time_text, 'command': self.spec.command, 'os_command': list(self.command)}
+
+
+def _registration_difference(previous: dict[str, Any] | None, desired: dict[str, Any]) -> str:
+    """Describe what changed between a job record and the desired registration.
+
+    Args:
+        previous: The recorded registration, or None.
+        desired: The desired registration.
+
+    Returns:
+        The change, for the summary.
+    """
+    if previous is None:
+        return 'the registration is not recorded in the state directory'
+    changes: list[str] = []
+    if previous.get('time') != desired['time']:
+        changes.append(f'time {previous.get("time")} -> {desired["time"]}')
+    if previous.get('command') != desired['command']:
+        before = previous.get('command') or 'the profile setup'
+        after = desired['command'] or 'the profile setup'
+        changes.append(f'command {before} -> {after}')
+    if previous.get('os_command') != desired['os_command']:
+        changes.append('the command line the job runs')
+    return ', '.join(changes) if changes else 'the registration differs'
+
+
+def _spec_from_record(record: object) -> AutoUpdateSpec | None:
+    """Rebuild the auto-update a job was registered with from a manifest or job record.
+
+    Args:
+        record: The manifest's ``auto_update`` field or the state directory's
+            job record, each holding ``time`` and ``command``.
+
+    Returns:
+        The spec, or None when the record holds no readable time.
+    """
+    if not isinstance(record, dict):
+        return None
+    mapping = cast(dict[str, Any], record)
+    match = _AUTO_UPDATE_TIME_PATTERN.match(str(mapping.get('time') or '').strip())
+    if match is None:
+        return None
+    command = mapping.get('command')
+    return AutoUpdateSpec(int(match.group(1)), int(match.group(2)), str(command) if command else None)
+
+
+def plan_scheduled_update(
+    platform_: SchedulerPlatform,
+    *,
+    profile_name: str,
+    spec: AutoUpdateSpec | None,
+    linked_from: str | None,
+    manifest: dict[str, Any] | None,
+    scheduled_run: bool,
+) -> ScheduledUpdatePlan:
+    """Decide what this run does with the profile's daily update job.
+
+    A profile gets a job when its configuration declares auto-update and the
+    profile links no content from another profile (the source's job refreshes
+    a dependent). A job the manifest or the state directory remembers and the
+    configuration no longer asks for is removed. The scheduler is asked only
+    when a job is wanted, so a configuration without the key costs nothing.
+    A scheduled run never changes or removes its own job: such a change is
+    deferred to the next manual run.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        profile_name: The profile's display name.
+        spec: The configuration's auto-update, or None.
+        linked_from: The source profile when this profile links content, else None.
+        manifest: The profile's current manifest, or None.
+        scheduled_run: Whether this run is the job itself.
+
+    Returns:
+        The plan.
+    """
+    name = scheduled_update_job_name(profile_name)
+    recorded = manifest.get('auto_update') if manifest else None
+    manifest_records_job = isinstance(recorded, dict) and bool(cast(dict[str, Any], recorded).get('job'))
+    job_record = read_job_record(platform_, name)
+    if spec is None or linked_from is not None:
+        if linked_from is not None:
+            reason = f'the profile links content from profile "{linked_from}", whose job refreshes it'
+        else:
+            reason = 'the configuration declares no auto-update'
+        if not (manifest_records_job or job_record is not None):
+            return ScheduledUpdatePlan('none', name, None, [], reason if spec is not None else '', [], platform_.state)
+        registered_spec = _spec_from_record(recorded) or _spec_from_record(job_record)
+        if scheduled_run and registered_spec is not None:
+            # The job that is running now is never removed from inside it (a
+            # launchd bootout would kill this run); the plan keeps the job
+            # recorded so the next manual run removes it
+            reason = f'{reason}; a scheduled run leaves its own job as registered, the next manual run removes it'
+            return ScheduledUpdatePlan('deferred', name, registered_spec, [], reason, [], platform_.state)
+        return ScheduledUpdatePlan('remove', name, None, [], reason, [], platform_.state)
+    problems = scheduler_problems(platform_)
+    try:
+        command = scheduled_update_command(platform_, profile_name)
+    except SchedulerError as e:
+        problems.append(str(e))
+        command = []
+    desired = {'time': spec.time_text, 'command': spec.command, 'os_command': command}
+    registered = query_job_registration(platform_, name) is not None
+    if registered and job_record == desired:
+        reason = 'registered as the configuration asks'
+        return ScheduledUpdatePlan('unchanged', name, spec, command, reason, problems, platform_.state)
+    if registered:
+        difference = _registration_difference(job_record, desired)
+        if scheduled_run:
+            reason = f'{difference}; a scheduled run leaves its own job as registered, the next manual run applies the change'
+            return ScheduledUpdatePlan('deferred', name, spec, command, reason, problems, platform_.state)
+        return ScheduledUpdatePlan('update', name, spec, command, difference, problems, platform_.state)
+    return ScheduledUpdatePlan('register', name, spec, command, 'no job is registered yet', problems, platform_.state)
+
+
+def _scheduler_registration_needs_elevation(platform_: SchedulerPlatform) -> bool:
+    """Report whether registering or removing the job needs rights this process lacks.
+
+    Args:
+        platform_: The machine's scheduler platform.
+
+    Returns:
+        True for a Windows scheduler in a process without administrator
+        rights: a task that runs with the highest privileges is registered
+        and removed only by an elevated process.
+    """
+    return platform_.name == 'win32' and not is_admin()
+
+
+def apply_scheduled_update(platform_: SchedulerPlatform, plan: ScheduledUpdatePlan, *, now: datetime) -> str | None:
+    """Apply the plan: register, re-register or remove the job, recording what was registered.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        plan: The plan.
+        now: The local time.
+
+    Returns:
+        The failure, or None when the plan was applied (or needed nothing).
+    """
+    if plan.action == 'none':
+        return None
+    if plan.action == 'unchanged':
+        info(f'Scheduled update job {plan.name} is registered as the configuration asks; nothing changed')
+        return None
+    if plan.action == 'deferred':
+        info(f'Scheduled update job {plan.name}: {plan.reason}')
+        return None
+    if plan.problems and plan.action != 'remove':
+        return f'The scheduled update job {plan.name} cannot be registered: {"; ".join(plan.problems)}'
+    if _scheduler_registration_needs_elevation(platform_):
+        verb = 'removed' if plan.action == 'remove' else 'registered'
+        return (
+            f'The scheduled update job {plan.name} was not {verb}: on Windows the job runs with the highest '
+            'privileges available, so registering or removing it needs an elevated run. Run the setup from an '
+            'elevated terminal, or without --no-admin so it can request elevation.'
+        )
+    if plan.action == 'remove':
+        try:
+            remove_job_registration(platform_, plan.name)
+        except SchedulerError as e:
+            return f'The scheduled update job {plan.name} could not be removed: {e}'
+        remove_job_record(platform_, plan.name)
+        success(f'Removed the scheduled update job {plan.name} ({plan.reason})')
+        return None
+    assert plan.spec is not None
+    try:
+        apply_job_registration(platform_, plan_job_registration(platform_, plan.name, plan.command, plan.spec, now))
+    except SchedulerError as e:
+        return f'The scheduled update job {plan.name} could not be registered: {e}'
+    write_job_record(platform_, plan.name, plan.record())
+    verb = 'Updated' if plan.action == 'update' else 'Registered'
+    success(f'{verb} the scheduled update job {plan.name}: {plan.spec.describe()}')
+    if scheduler_uses_cron(platform_):
+        info('The job is a crontab entry: it fires only while a cron daemon runs and does not catch up a missed day')
+    return None
+
+
+def run_scheduled_update_step(
+    platform_: SchedulerPlatform,
+    plan: ScheduledUpdatePlan,
+    *,
+    warnings_: list[str],
+    now: datetime,
+    manifest_path: Path,
+    previous_record: object,
+) -> str | None:
+    """Run Step 24: the profile's daily update job.
+
+    Step 19 wrote the manifest for the job the plan leaves behind, so a
+    removal the scheduler refuses writes the job back into the manifest:
+    the job still exists, and the next run has to plan its removal again.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        plan: The plan decided before consent.
+        warnings_: Warnings about the job, printed with the step.
+        now: The local time.
+        manifest_path: The profile's manifest, written by Step 19.
+        previous_record: The ``auto_update`` field of the manifest the run
+            started from, or None.
+
+    Returns:
+        The failure, or None.
+    """
+    print()
+    if plan.action == 'none':
+        detail = f' ({plan.reason})' if plan.reason else ' (auto-update not declared)'
+        print(f'{Colors.CYAN}Step 24: No scheduled update job{detail}{Colors.NC}')
+        return None
+    if plan.action == 'remove':
+        print(f'{Colors.CYAN}Step 24: Removing the scheduled update job {plan.name}...{Colors.NC}')
+    else:
+        assert plan.spec is not None
+        print(f'{Colors.CYAN}Step 24: Scheduling the daily update job {plan.name} ({plan.spec.describe()})...{Colors.NC}')
+    for line in warnings_:
+        warning(line)
+    failure = apply_scheduled_update(platform_, plan, now=now)
+    if failure:
+        error(failure)
+        if plan.action == 'remove':
+            kept = _spec_from_record(read_job_record(platform_, plan.name)) or _spec_from_record(previous_record)
+            if kept is not None and _record_manifest_auto_update(manifest_path, auto_update_manifest_record(kept, plan.name)):
+                info(f'The manifest keeps recording the job {plan.name} until a run removes it')
+    return failure
+
+
+def _record_manifest_auto_update(manifest_path: Path, record: dict[str, Any] | None) -> bool:
+    """Replace the ``auto_update`` field of a written manifest.
+
+    Args:
+        manifest_path: The manifest Step 19 wrote.
+        record: The field's new value, as auto_update_manifest_record() renders it.
+
+    Returns:
+        True when the manifest was rewritten; False when it cannot be read.
+    """
+    try:
+        content = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(content, dict):
+        return False
+    manifest = cast(dict[str, Any], content)
+    manifest['auto_update'] = record
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    return True
+
+
+def auto_update_manifest_record(spec: AutoUpdateSpec | None, name: str) -> dict[str, Any] | None:
+    """Render the manifest's auto_update field.
+
+    Args:
+        spec: The configuration's auto-update when the profile has a job, else None.
+        name: The job name.
+
+    Returns:
+        The time, the configured command and the job name, or None.
+    """
+    if spec is None:
+        return None
+    return {'time': spec.time_text, 'command': spec.command, 'job': name}
+
+
+def scheduled_update_summary_lines(
+    plan: ScheduledUpdatePlan,
+    *,
+    last_run: str | None,
+    warnings_: list[str],
+    windows: bool,
+) -> list[str]:
+    """Render the installation summary's scheduled update block.
+
+    Args:
+        plan: The plan.
+        last_run: The last scheduled run line, or None.
+        warnings_: Warnings about the job.
+        windows: Whether the run is on Windows.
+
+    Returns:
+        The lines of the block, without the heading; empty when there is nothing to say.
+    """
+    if plan.action == 'none' and not plan.reason:
+        return []
+    if plan.action == 'none':
+        return [f'Job: none ({plan.reason})']
+    lines: list[str] = []
+    if plan.action == 'remove':
+        lines.append(f'Job {plan.name}: remove ({plan.reason})')
+    else:
+        assert plan.spec is not None
+        lines.append(f'Job {plan.name}: {plan.action} ({plan.reason}); runs {plan.spec.describe()}')
+        if plan.command:
+            lines.append(f'Runs: {subprocess.list2cmdline(plan.command)}')
+        if plan.spec.command:
+            lines.append(f'Command: {plan.spec.command} (run under the job lock, logged in the state directory)')
+        else:
+            lines.append('Command: the setup of this profile (uvx cc-toolbox@latest, every run installs the latest toolbox)')
+        if windows:
+            lines.append(
+                "Windows: the task runs under the current user's interactive logon with the highest privileges "
+                'available; registering it needs an elevated run',
+            )
+    lines.append(f'State: {plan.state_dir} (jobs, logs of the last {SCHEDULED_UPDATE_KEPT_LOGS} runs, the lock)')
+    if last_run:
+        lines.append(last_run)
+    lines.extend(f'{Colors.RED}[!]{Colors.NC} {line}' for line in [*plan.problems, *warnings_])
+    return lines
+
+
+def scheduled_update_completion_line(plan: ScheduledUpdatePlan, failure: str | None) -> str | None:
+    """Render the completion summary's scheduled update row.
+
+    Args:
+        plan: The plan Step 24 applied.
+        failure: The step's failure, or None.
+
+    Returns:
+        The row text without its bullet, or None when there is nothing to report.
+    """
+    if plan.action == 'none':
+        return f'Scheduled update: none ({plan.reason})' if plan.reason else None
+    if failure:
+        return f'Scheduled update: failed ({failure})'
+    if plan.action == 'remove':
+        return f'Scheduled update: job {plan.name} removed ({plan.reason})'
+    assert plan.spec is not None
+    verbs = {'register': 'registered', 'update': 'updated', 'unchanged': 'unchanged', 'deferred': 'left as registered'}
+    return f'Scheduled update: job {plan.name} {verbs[plan.action]}, {plan.spec.describe()}'
+
+
+def acquire_update_lock(
+    lock: Path,
+    *,
+    wait_seconds: float,
+    poll_seconds: float,
+    stale_seconds: float,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.time,
+) -> tuple[bool, str | None]:
+    """Take the machine-wide update lock, waiting a bounded time for a holder to finish.
+
+    A lock older than ``stale_seconds`` belongs to a run that never released
+    it (a shutdown, a sleep or a kill in the middle of the night) and is
+    taken over.
+
+    Args:
+        lock: The lock file.
+        wait_seconds: How long to wait for a held lock.
+        poll_seconds: How often to retry while waiting.
+        stale_seconds: The age at which a lock counts as abandoned.
+        sleep: Waits the given seconds.
+        clock: Returns the current time in seconds.
+
+    Returns:
+        Whether the lock was taken (False when another run held it past the
+        wait), and a note about a stale lock that was taken over, or None.
+    """
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = clock() + wait_seconds
+    note: str | None = None
+    while True:
+        with contextlib.suppress(FileNotFoundError):
+            age = clock() - lock.stat().st_mtime
+            if age >= stale_seconds:
+                lock.unlink()
+                note = (
+                    f'Took over the stale lock {lock}: a run that never released it left it {age / 3600:.1f} hours ago'
+                )
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if clock() >= deadline:
+                return False, note
+            sleep(poll_seconds)
+            continue
+        with os.fdopen(handle, 'w', encoding='utf-8') as stream:
+            stream.write(f'{os.getpid()}\n')
+        return True, note
+
+
+def release_update_lock(lock: Path) -> None:
+    """Release the update lock.
+
+    Args:
+        lock: The lock file.
+    """
+    lock.unlink(missing_ok=True)
+
+
+def prune_scheduled_update_logs(log_dir: Path, name: str, *, keep: int = SCHEDULED_UPDATE_KEPT_LOGS) -> None:
+    """Keep only the newest logs of a job.
+
+    Args:
+        log_dir: The logs directory.
+        name: The job name.
+        keep: How many logs to keep.
+    """
+    pattern = re.compile(f'^{re.escape(name)}{_SCHEDULED_LOG_NAME_PATTERN}')
+    logs = sorted(path for path in log_dir.glob(f'{name}-*.log') if pattern.match(path.name))
+    for old in logs[:-keep] if keep else logs:
+        old.unlink(missing_ok=True)
+
+
+def _scheduled_run_record_path(platform_: SchedulerPlatform, name: str) -> Path:
+    return platform_.state / 'runs' / f'{name}.json'
+
+
+def write_scheduled_run_record(platform_: SchedulerPlatform, name: str, record: dict[str, Any]) -> None:
+    """Record the last scheduled run of a job.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+        record: The run record.
+    """
+    path = _scheduled_run_record_path(platform_, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+
+
+def read_scheduled_run_record(platform_: SchedulerPlatform, name: str) -> dict[str, Any] | None:
+    """Read the record of the last scheduled run of a job.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+
+    Returns:
+        The record, or None when there is none or it cannot be read.
+    """
+    try:
+        content = json.loads(_scheduled_run_record_path(platform_, name).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return cast(dict[str, Any], content) if isinstance(content, dict) else None
+
+
+def last_scheduled_run_line(platform_: SchedulerPlatform, name: str) -> str | None:
+    """Render the last scheduled run of a job for a summary.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The job name.
+
+    Returns:
+        ``Last scheduled run: <local time>, exit code N, log <path>`` (or the
+        skip reason), or None without a record.
+    """
+    record = read_scheduled_run_record(platform_, name)
+    if record is None:
+        return None
+    started = str(record.get('started_at') or '')
+    try:
+        when = datetime.fromisoformat(started).strftime('%Y-%m-%d %H:%M')
+    except ValueError:
+        when = started or 'unknown time'
+    if record.get('outcome') == 'skipped':
+        outcome = f'skipped: {record.get("reason")}'
+    else:
+        outcome = f'exit code {record.get("exit_code")}'
+    return f'Last scheduled run: {when} (local), {outcome}, log {record.get("log")}'
+
+
+def _redirect_output_to(log_path: Path) -> None:
+    """Send this process's stdout and stderr, and those of its children, to the log file.
+
+    File descriptors 1 and 2 are pointed at the log, so child processes log
+    too, and ``sys.stdout`` and ``sys.stderr`` are rebuilt on those
+    descriptors: the stream objects a console process starts with write to
+    the console device itself (on Windows through its console handle, which
+    the duplicated descriptor no longer is), so keeping them would make the
+    first ``print()`` after the redirection fail.
+
+    Args:
+        log_path: The log file, appended to.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.flush()
+    fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    try:
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+    finally:
+        os.close(fd)
+    sys.stdout = io.TextIOWrapper(io.FileIO(1, 'w', closefd=False), encoding='utf-8', errors='replace', line_buffering=True)
+    sys.stderr = io.TextIOWrapper(io.FileIO(2, 'w', closefd=False), encoding='utf-8', errors='replace', line_buffering=True)
+
+
+def _detach_stdin() -> None:
+    """Read this process's stdin from the null device, so no prompt can wait for an answer.
+
+    A scheduled run owns a console on Windows, where ``sys.stdin.isatty()``
+    answers True and an authentication prompt would wait for a keypress
+    nobody gives while the run holds the update lock. Descriptor 0 is
+    pointed at the null device for child processes, and ``sys.stdin``
+    becomes an exhausted in-memory stream (the null device itself is a
+    character device on Windows, which ``isatty()`` reports as a terminal),
+    so every prompt takes its non-interactive branch and the run fails fast
+    instead.
+    """
+    fd = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(fd, 0)
+    finally:
+        os.close(fd)
+    sys.stdin = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+
+
+def _detach_from_terminal(log_path: Path) -> None:
+    """Cut a scheduled run off its terminal: output to the log, input from the null device.
+
+    Args:
+        log_path: The log file, appended to.
+    """
+    _redirect_output_to(log_path)
+    _detach_stdin()
+
+
+def _exit_code_of(exc: SystemExit) -> int:
+    code = exc.code
+    if code is None:
+        return 0
+    return code if isinstance(code, int) else 1
+
+
+def _run_custom_update_command(command: str, log_path: Path) -> int:
+    """Run the configured update command in the shell, its output appended to the log.
+
+    Args:
+        command: The command line.
+        log_path: The log file.
+
+    Returns:
+        The command's exit code.
+    """
+    with log_path.open('a', encoding='utf-8') as log:
+        result = subprocess.run(
+            command,
+            shell=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, **_NON_INTERACTIVE_ENVIRONMENT},
+            check=False,
+        )
+    return result.returncode
+
+
+def scheduled_custom_command(profile_name: str, home_dir: Path) -> str | None:
+    """Read the command a profile's manifest records for its scheduled update.
+
+    Args:
+        profile_name: The profile's display name.
+        home_dir: The user's home directory.
+
+    Returns:
+        The configured command, or None for the default (the profile's setup).
+    """
+    profile_dir = home_dir / '.claude' if profile_name == LINK_SOURCE_BASE else home_dir / '.claude' / profile_name
+    try:
+        manifest = read_profile_manifest(profile_dir / MANIFEST_FILENAME)
+    except ValueError:
+        return None
+    record = manifest.get('auto_update') if manifest else None
+    if not isinstance(record, dict):
+        return None
+    command = cast(dict[str, Any], record).get('command')
+    return str(command) if command else None
+
+
+def run_scheduled_update(
+    args: argparse.Namespace,
+    run_setup: Callable[[], None],
+    *,
+    platform_: SchedulerPlatform | None = None,
+    custom_command: str | None,
+) -> int:
+    """Run one scheduled update of a profile: the lock, the log, the command, the record.
+
+    The machine-wide lock keeps scheduled runs from overlapping; a run that
+    finds it held waits a bounded time, then logs why it gave up and exits 1,
+    and a lock an earlier run never released is taken over with a note in
+    the log. The run is cut off its terminal (output to a log in the state
+    directory, of which the newest 30 are kept; input from the null device,
+    so no prompt waits), and the outcome is recorded for the next manual
+    run's summary -- a setup that raises instead of exiting is recorded as a
+    completed run with exit code 1 and its traceback in the log.
+
+    Args:
+        args: Arguments after resolve_args(); ``profile`` names the profile.
+        run_setup: Runs the profile's setup in this process; its SystemExit
+            carries the exit code.
+        platform_: The scheduler platform; None for this machine's.
+        custom_command: The configured command to run instead of the setup,
+            or None.
+
+    Returns:
+        The exit code of the run.
+    """
+    platform_ = platform_ or default_scheduler_platform()
+    profile_name = str(args.profile)
+    name = scheduled_update_job_name(profile_name)
+    logs = platform_.state / 'logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    started = datetime.now(UTC).astimezone()
+    log_path = logs / f'{name}-{started.strftime("%Y%m%d-%H%M%S")}.log'
+    command_text = custom_command or f'cc-toolbox setup --profile {profile_name} --yes --no-admin (this process)'
+    record: dict[str, Any] = {
+        'profile': profile_name,
+        'job': name,
+        'started_at': started.isoformat(timespec='seconds'),
+        'finished_at': None,
+        'exit_code': None,
+        'outcome': None,
+        'reason': None,
+        'log': str(log_path),
+        'command': command_text,
+    }
+    header_line = f'cc-toolbox scheduled update: profile {profile_name}, job {name}, started {record["started_at"]}\n'
+    lock = platform_.state / SCHEDULED_UPDATE_LOCK_FILENAME
+    taken, lock_note = acquire_update_lock(
+        lock,
+        wait_seconds=SCHEDULED_UPDATE_LOCK_WAIT_SECONDS,
+        poll_seconds=SCHEDULED_UPDATE_LOCK_POLL_SECONDS,
+        stale_seconds=SCHEDULED_UPDATE_LOCK_STALE_SECONDS,
+    )
+    if not taken:
+        skip_reason = f'another scheduled run held the lock {lock} for {SCHEDULED_UPDATE_LOCK_WAIT_SECONDS} seconds'
+        log_path.write_text(f'{header_line}Skipped: {skip_reason}.\n', encoding='utf-8')
+        record.update(
+            finished_at=datetime.now(UTC).astimezone().isoformat(timespec='seconds'),
+            exit_code=1, outcome='skipped', reason=skip_reason,
+        )
+        write_scheduled_run_record(platform_, name, record)
+        prune_scheduled_update_logs(logs, name)
+        return 1
+    try:
+        lock_line = f'{lock_note}\n' if lock_note else ''
+        log_path.write_text(f'{header_line}{lock_line}Command: {command_text}\n\n', encoding='utf-8')
+        reason: str | None = None
+        try:
+            if custom_command:
+                code = _run_custom_update_command(custom_command, log_path)
+            else:
+                _detach_from_terminal(log_path)
+                try:
+                    run_setup()
+                    code = 0
+                except SystemExit as exit_request:
+                    code = _exit_code_of(exit_request)
+        except Exception as exc:
+            # The outcome of a run that crashed instead of exiting is still
+            # recorded, whatever raised, so the next manual run reports it
+            code = 1
+            reason = f'the run raised {type(exc).__name__}: {exc}'
+            with log_path.open('a', encoding='utf-8', errors='replace') as log:
+                log.write(f'\n{traceback.format_exc()}')
+        finished = datetime.now(UTC).astimezone()
+        with log_path.open('a', encoding='utf-8', errors='replace') as log:
+            log.write(f'\nFinished: exit code {code} at {finished.isoformat(timespec="seconds")}\n')
+        record.update(
+            finished_at=finished.isoformat(timespec='seconds'), exit_code=code, outcome='completed', reason=reason,
+        )
+        write_scheduled_run_record(platform_, name, record)
+        return code
+    finally:
+        release_update_lock(lock)
+        prune_scheduled_update_logs(logs, name)
 
 
 def _escape_bash_double_quoted(text: str) -> str:
@@ -19754,7 +21519,11 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     refreshed while it still runs. Without --skip-install every profile
     installs Claude Code, which needs elevation; with it, each profile's
     resolved-config.yaml decides, and a profile whose snapshot cannot be
-    read counts as needing it.
+    read counts as needing it. A profile's daily update job counts only
+    when its run would register, re-register or remove it: the plan is
+    decided here from the snapshot, the manifest and the job record, the
+    way the child's own run decides it, so an unchanged job prompts for
+    nothing.
 
     Args:
         profiles: The installed profiles the run refreshes.
@@ -19770,15 +21539,27 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     if not args.skip_install:
         return admin_elevation_reasons({}, args)
     reasons: list[str] = []
+    scheduler_platform = default_scheduler_platform()
     for profile in profiles:
         snapshot = read_resolved_config_snapshot(profile.directory)
-        if snapshot is None:
+        if snapshot is None or validate_auto_update(snapshot):
             reasons.append(
                 f'Profile "{profile.name}": {RESOLVED_CONFIG_FILENAME} is missing or unreadable, '
                 'so its run may need elevation',
             )
             continue
-        reasons.extend(reason for reason in admin_elevation_reasons(snapshot, args) if reason not in reasons)
+        scheduled_update = plan_scheduled_update(
+            scheduler_platform,
+            profile_name=profile.name,
+            spec=parse_auto_update(snapshot),
+            linked_from=content_link_source(profile.manifest),
+            manifest=profile.manifest,
+            scheduled_run=False,
+        )
+        reasons.extend(
+            reason for reason in admin_elevation_reasons(snapshot, args, scheduled_update=scheduled_update)
+            if reason not in reasons
+        )
     return reasons
 
 
@@ -20043,10 +21824,42 @@ def main() -> None:
         'and the refresh of a stale source hand it to every profile they run',
     )
     parser.add_argument(CHILD_RUN_FLAG, dest='child_run', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument(SCHEDULED_RUN_FLAG, dest='scheduled_run', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument(FOR_DEPENDENT_FLAG, dest='for_dependent', type=str, metavar='NAME', help=argparse.SUPPRESS)
     args = parser.parse_args()
     resolve_args(args)
 
+    # The daily update job registered by the auto-update key runs this
+    # program with --scheduled-run: the run takes the machine-wide update
+    # lock, sends its output to a log in the toolbox state directory and
+    # records its outcome, then runs the profile's setup (or the command the
+    # configuration names) in this process
+    if args.scheduled_run:
+        if not args.profile or args.profile == ALL_PROFILES:
+            error(f'{SCHEDULED_RUN_FLAG} runs the daily update of one installed profile and needs --profile NAME')
+            sys.exit(1)
+        custom_command = scheduled_custom_command(str(args.profile), get_real_user_home())
+        sys.exit(run_scheduled_update(
+            args, lambda: _run_setup(args, was_elevated_via_uac), custom_command=custom_command,
+        ))
+    _run_setup(args, was_elevated_via_uac)
+
+
+def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
+    """Run the setup with the parsed arguments.
+
+    Args:
+        args: Arguments after resolve_args().
+        was_elevated_via_uac: Whether this process is the window a UAC
+            relaunch opened.
+
+    Raises:
+        SystemExit: With the run's exit code when it ends before the
+            completion summary (a refused guard, a validation error, a
+            failed step).
+        Exception: Re-raised from a step for the handler at the end of this
+            function, which reports it and exits 1.
+    """
     # Refuse to run as root on Unix unless explicitly allowed. Runs after
     # resolve_args so --env CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 takes effect
     # (argument parsing performs no work), and before anything else does.
@@ -20469,11 +22282,30 @@ def main() -> None:
             cast(list[Any], config.get('files-to-download') or []), target_config_dir, linked_entries,
         )
 
+        # The profile's daily update job (the auto-update key), decided before
+        # the elevation gate (registering it needs an elevated run on Windows)
+        # and before the summary, which names it
+        auto_update_errors = validate_auto_update(config)
+        if auto_update_errors:
+            for err in auto_update_errors:
+                error(err)
+            sys.exit(1)
+        auto_update_spec = parse_auto_update(config)
+        scheduler_platform = default_scheduler_platform()
+        scheduled_update_plan = plan_scheduled_update(
+            scheduler_platform,
+            profile_name=profile_name,
+            spec=auto_update_spec,
+            linked_from=dependent_of.name if dependent_of is not None else None,
+            manifest=target_manifest,
+            scheduled_run=args.scheduled_run,
+        )
+
         # Relaunch elevated on Windows when this configuration needs admin
         # rights. The refresh of a stale source starts with --no-admin, so
         # this run decides elevation for the source's run too
         request_admin_elevation_if_needed(
-            config, args, skip_install=skip_claude_install,
+            config, args, skip_install=skip_claude_install, scheduled_update=scheduled_update_plan,
             source_refresh_reasons=(
                 source_refresh.elevation_reasons(home_dir, source_profile_names) if source_refresh is not None else ()
             ),
@@ -20765,6 +22597,14 @@ def main() -> None:
         if claude_install_decision.note_is_warning:
             plan.claude_install_warning = claude_install_decision.note
         plan.rerooted_paths = rerooted_paths
+        plan.scheduled_update = scheduled_update_plan
+        plan.last_scheduled_run = last_scheduled_run_line(scheduler_platform, scheduled_update_plan.name)
+        if scheduled_update_plan.keeps_job:
+            # A job for a private configuration needs, for every host this
+            # run authenticated to, a credential source that exists at night:
+            # a variable in the environment the scheduler hands the job, or a
+            # CLI login
+            plan.scheduled_update_warnings.extend(unattended_credential_warnings(scheduler_platform))
         plan.source_work = source_work
         plan.run_all_commands = args.run_all_commands
 
@@ -20805,6 +22645,7 @@ def main() -> None:
                 files_to_download=plan.files_to_download,
                 has_dependency_commands=bool(plan.dependency_commands),
                 pin_effect=plan.pin_effect,
+                scheduled_update=scheduled_update_plan,
             )
         plan.destination_warnings = shared_destination_warnings(
             plan.files_to_download, config_source, base_url,
@@ -21018,10 +22859,11 @@ def main() -> None:
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
 
-        # Track download, dependency and dependent failures across all steps for final error reporting
+        # Track download, dependency, dependent and scheduled-job failures across all steps for final error reporting
         download_failures: list[str] = []
         dependency_failures: list[str] = []
         dependent_results: list[DependentResult] = []
+        scheduled_update_failure: str | None = None
 
         # Step 4: Download/copy custom files
         print()
@@ -21266,6 +23108,9 @@ def main() -> None:
             'settings_keys_written': written_settings_keys(user_settings, status_line, config.get('hooks')),
             'mcp_servers': mcp_server_records(mcp_servers),
             'files_written': planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
+            'auto_update': auto_update_manifest_record(
+                scheduled_update_plan.spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
+            ),
         }
         config_source_type = classify_config_source(config_source)
         config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -21396,6 +23241,14 @@ def main() -> None:
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
             )
+
+            # Step 24: The profile's daily update job (the auto-update key)
+            scheduled_update_failure = run_scheduled_update_step(
+                scheduler_platform, scheduled_update_plan,
+                warnings_=plan.scheduled_update_warnings, now=datetime.now(UTC).astimezone(),
+                manifest_path=artifact_base_dir / MANIFEST_FILENAME,
+                previous_record=(target_manifest or {}).get('auto_update'),
+            )
         else:
             # No command-names: route the profile-owned YAML keys
             # (status-line, hooks) to the shared ~/.claude/settings.json via
@@ -21505,12 +23358,20 @@ def main() -> None:
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
             )
+
+            # Step 24: The base profile's daily update job (the auto-update key)
+            scheduled_update_failure = run_scheduled_update_step(
+                scheduler_platform, scheduled_update_plan,
+                warnings_=plan.scheduled_update_warnings, now=datetime.now(UTC).astimezone(),
+                manifest_path=claude_user_dir / MANIFEST_FILENAME,
+                previous_record=(target_manifest or {}).get('auto_update'),
+            )
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
-        # Check for download, dependency and dependent failures and report accordingly
+        # Check for download, dependency, dependent and scheduled-job failures and report accordingly
         dependent_failures = [result for result in dependent_results if result.code != 0]
-        if download_failures or dependency_failures or dependent_failures or source_refresh_code:
+        if download_failures or dependency_failures or dependent_failures or source_refresh_code or scheduled_update_failure:
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
@@ -21556,6 +23417,10 @@ def main() -> None:
                     )
                 print()
                 error('Review the output of each failed dependent above, then retry it with its --profile command.')
+                print()
+            if scheduled_update_failure:
+                error('The scheduled update job (auto-update) was not applied:')
+                error(f'  - {scheduled_update_failure}')
                 print()
             if shadowing_npm is not None:
                 print_shadowing_npm_warning(shadowing_npm)
@@ -21668,6 +23533,11 @@ def main() -> None:
             print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
+        scheduled_update_line = scheduled_update_completion_line(scheduled_update_plan, scheduled_update_failure)
+        if scheduled_update_line:
+            print(f'   * {scheduled_update_line}')
+            if plan.last_scheduled_run:
+                print(f'   * {plan.last_scheduled_run}')
         if shadowing_npm is not None:
             npm_headline, *npm_details = shadowing_npm.lines()
             print(f'   * {npm_headline} (setup left both copies unchanged):')

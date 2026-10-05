@@ -1430,6 +1430,8 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
       carries the configuration's own link-dirs and link-from, and link
       matches the configuration's link keys with the yaml origins (None
       without link-dirs)
+    - auto_update records the configuration's auto-update time and command
+      with the profile's job name, or None without the key
     - installed_at is a valid ISO timestamp string
 
     Args:
@@ -1551,6 +1553,21 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     # the base profile lists none.
     cmd_names = config.get('command-names')
     is_isolated = isinstance(cmd_names, list) and bool(cmd_names)
+
+    # auto_update: the daily update job the configuration asks for (a
+    # profile that links no content gets one), or None without the key
+    auto_update = config.get('auto-update')
+    if isinstance(auto_update, dict):
+        profile_label = str(cmd_names[0]) if isinstance(cmd_names, list) and cmd_names else 'base'
+        expected_job = {
+            'time': auto_update['time'],
+            'command': auto_update.get('command'),
+            'job': f'cc-toolbox-update-{profile_label}',
+        }
+        if data['auto_update'] != expected_job:
+            errors.append(f"Manifest auto_update: expected {expected_job!r}, got {data['auto_update']!r}")
+    elif data['auto_update'] is not None:
+        errors.append(f"Manifest auto_update: expected None without the auto-update key, got {data['auto_update']!r}")
     if not isinstance(data['command_names'], list):
         errors.append('Manifest command_names: expected list')
     elif is_isolated and len(data['command_names']) == 0:
