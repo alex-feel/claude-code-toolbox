@@ -350,7 +350,7 @@ class TestIsolatedRunStaysInsideItsProfile:
         assert [record['dest'] for record in manifest['machine_wide_destinations']] == [
             str(home / '.serena' / 'outside.txt'),
         ]
-        assert manifest['settings_keys_written'] == ['apiKeyHelper', 'awsCredentialExport', 'theme']
+        assert manifest['settings_keys_written'] == ['apiKeyHelper', 'awsCredentialExport', 'claudeMdExcludes', 'theme']
         resolved = (profile_dir / 'resolved-config.yaml').read_text(encoding='utf-8')
         assert f'~/.claude/{PROFILE}' not in resolved, 'the recorded configuration keeps the paths as authored'
         assert '~/.claude/CLAUDE.md' in resolved

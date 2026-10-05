@@ -12,6 +12,13 @@ import sys
 
 from scripts.setup_environment import find_bash_windows
 
+# Git Bash's /etc/profile rebuilds PATH from ORIGINAL_PATH when a login shell
+# inherits the variable, which an outer Git Bash login shell exports. A test
+# that prepares PATH for a generated script (a stub claude first, say) and
+# runs under such a shell would see the outer PATH restored instead, so the
+# variable never reaches a generated script.
+LOGIN_SHELL_INHERITED_PATH = 'ORIGINAL_PATH'
+
 
 def find_bash() -> str | None:
     """Locate a bash able to run generated POSIX scripts.
