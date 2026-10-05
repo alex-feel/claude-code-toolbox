@@ -1642,7 +1642,7 @@ class TestCreateLauncherScriptEdgeCases:
             shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
             assert '--append-system-prompt-file' in content
-            assert 'exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file' in content
+            assert 'exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file' in content
 
     @patch('platform.system', return_value='Windows')
     def test_create_launcher_windows_mode_replace(self, _mock_system):
@@ -2088,7 +2088,10 @@ class TestSystemPromptWithUserFlags:
 
             # Verify correct argument ordering: MCP flags + prompt flag + file path + user args + settings
             assert '--system-prompt-file' in content
-            assert '"${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"' in content
+            assert (
+                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
+                '"$@" --settings "$SETTINGS_WIN"'
+            ) in content
 
     @patch('platform.system', return_value='Windows')
     def test_windows_launcher_arguments_order_with_prompt_append_mode(self, _mock_system):
@@ -2110,7 +2113,10 @@ class TestSystemPromptWithUserFlags:
 
             # Verify correct argument ordering with append mode (includes MCP flags)
             assert '--append-system-prompt-file' in content
-            assert '"${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"' in content
+            assert (
+                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" '
+                '"$@" --settings "$SETTINGS_WIN"'
+            ) in content
 
     @patch('platform.system', return_value='Windows')
     def test_windows_launcher_arguments_order_without_prompt(self, _mock_system):
@@ -2130,7 +2136,7 @@ class TestSystemPromptWithUserFlags:
             content = shared_script.read_text()
 
             # Verify correct argument ordering without prompt (includes MCP flags)
-            assert 'claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"' in content
+            assert 'claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"' in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_arguments_order_with_prompt_replace_mode(self, _mock_system):
@@ -2152,7 +2158,10 @@ class TestSystemPromptWithUserFlags:
             # Should use single exec command, not if-else branches
             assert '--system-prompt-file' in content
             # Verify user args come before --settings (includes MCP flags)
-            assert '"${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert (
+                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
+                '"$@" --settings "$SETTINGS_PATH"'
+            ) in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_arguments_order_with_prompt_append_mode(self, _mock_system):
@@ -2172,7 +2181,10 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             assert '--append-system-prompt-file' in content
-            assert '"${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert (
+                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" '
+                '"$@" --settings "$SETTINGS_PATH"'
+            ) in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_arguments_order_without_prompt(self, _mock_system):
@@ -2191,7 +2203,7 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             # Should use single command with MCP flags
-            assert 'claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"' in content
+            assert 'claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_PATH"' in content
 
     @patch('platform.system', return_value='Darwin')
     def test_macos_launcher_arguments_order(self, _mock_system):
@@ -2211,7 +2223,10 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             # macOS should behave like Linux
-            assert '"${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert (
+                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
+                '"$@" --settings "$SETTINGS_PATH"'
+            ) in content
 
     @patch('platform.system', return_value='Windows')
     def test_windows_no_conditional_branches_for_args(self, _mock_system):
@@ -2252,7 +2267,10 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             # Should use single command, not if-else for args
-            assert '"${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert (
+                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
+                '"$@" --settings "$SETTINGS_PATH"'
+            ) in content
             # But the actual claude command should not be in a conditional
             claude_lines = [line for line in content.split('\n') if line.strip().startswith('claude ')]
             # All claude command lines should not be inside conditionals

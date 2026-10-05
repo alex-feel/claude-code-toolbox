@@ -36,10 +36,18 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
+# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
+fi
+
 echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
 
 # Pass any additional arguments to Claude
-claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"
+claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_PATH"
 ''',
     'unix/launch.sh/prompt-append': r'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
@@ -60,6 +68,14 @@ MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
 MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
+fi
+
+# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
 fi
 
 if [ ! -f "$PROMPT_PATH" ]; then
@@ -131,20 +147,20 @@ SAFE_PROMPT_SIZE=4096
 # Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 ''',
@@ -167,6 +183,14 @@ MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
 MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
+fi
+
+# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
 fi
 
 if [ ! -f "$PROMPT_PATH" ]; then
@@ -252,37 +276,37 @@ if version_ge "$CLAUDE_VERSION" "2.0.64"; then
     echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
   fi
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\033[0;32mResuming Claude Code session with golden-cmd configuration...\033[0m"
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+      claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"
+      claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_PATH"
     fi
   fi
 else
   echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude "${MCP_FLAGS[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 ''',
@@ -348,6 +372,25 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
+# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\Users\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory, wherever the session started.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
+fi
+
+# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
+fi
+
 # Keep slash arguments such as slash commands unchanged: Git Bash converts an
 # argument that looks like a POSIX path when it starts claude.exe, unless
 # MSYS2_ARG_CONV_EXCL lists it. Existing paths keep converting.
@@ -362,7 +405,7 @@ if [ -n "$UNCONVERTED_ARGS" ]; then
   export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}$UNCONVERTED_ARGS"
 fi
 
-exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
+exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
 ''',
     'windows/launch.sh/prompt-append': r'''#!/usr/bin/env bash
 set -euo pipefail
@@ -384,6 +427,25 @@ MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
+fi
+
+# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\Users\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory, wherever the session started.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
+fi
+
+# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
 fi
 
 PROMPT_PATH="$HOME/.claude/golden-cmd/prompts/golden-prompt.md"
@@ -468,20 +530,20 @@ fi
 
 # Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 ''',
@@ -505,6 +567,25 @@ MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
+fi
+
+# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\Users\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory, wherever the session started.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
+fi
+
+# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
 fi
 
 PROMPT_PATH="$HOME/.claude/golden-cmd/prompts/golden-prompt.md"
@@ -599,35 +680,35 @@ done
 # For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
 if version_ge "$CLAUDE_VERSION" "2.0.64"; then
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 elif [ "$HAS_CONTINUE" = true ]; then
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
     fi
   fi
 else
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude "${MCP_FLAGS[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 ''',

@@ -139,7 +139,9 @@ def open_workspace(tmp_path: Path) -> Iterator[Workspace]:
     """Yield an isolated home with a populated source profile and a running fake API.
 
     Meant to back a function-scoped fixture (``yield from open_workspace(tmp_path)``);
-    the fake API stops when the fixture finalizes.
+    the fake API stops when the fixture finalizes. The workspace lies in
+    tmp_path, or in the directory support.workspace_root() picks when a real
+    config home sits above tmp_path, so nothing real contributes to a run.
 
     Args:
         tmp_path: The test's temporary directory.
@@ -147,12 +149,13 @@ def open_workspace(tmp_path: Path) -> Iterator[Workspace]:
     Yields:
         The workspace.
     """
-    home = tmp_path / 'home'
+    root, cleanup = support.workspace_root(tmp_path)
+    home = root / 'home'
     source = home / '.claude' / 'src-profile'
     source.mkdir(parents=True)
-    project_dir = tmp_path / 'project'
+    project_dir = root / 'project'
     project_dir.mkdir()
-    hook_marker = tmp_path / 'hook_marker.jsonl'
+    hook_marker = root / 'hook_marker.jsonl'
     support.write_source_entries(source, hook_marker)
     support.lock_hook_script(source, support.isolated_home_env(home))
     server = FakeAnthropicServer().start()
@@ -160,3 +163,4 @@ def open_workspace(tmp_path: Path) -> Iterator[Workspace]:
         yield Workspace(home=home, source=source, project_dir=project_dir, hook_marker=hook_marker, server=server)
     finally:
         server.stop()
+        cleanup()
