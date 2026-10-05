@@ -55,3 +55,15 @@ EXPECTED_PATHS: Final[dict[str, str]] = {
     'commands_dir': '{claude_dir}/{cmd}/commands',
     'skills_dir': '{claude_dir}/{cmd}/skills',
 }
+
+# Where a Node.js installation and the npm global prefix keep their npm copies:
+# node.exe and the npm.cmd shim of Node.js sit in {node_root} with the bundled npm
+# in {node_root}/node_modules; npm install -g npm writes its copy into
+# {npm_prefix}/node_modules beside an npm.cmd shim of its own, and the npm.cmd
+# shim of Node.js runs that copy whenever it exists
+EXPECTED_NPM_LAYOUT: Final[dict[str, str]] = {
+    'node_bin_dir': '{node_root}',
+    'bundled_npm': '{node_root}/node_modules/npm',
+    'prefix_bin_dir': '{npm_prefix}',
+    'prefix_npm': '{npm_prefix}/node_modules/npm',
+}
