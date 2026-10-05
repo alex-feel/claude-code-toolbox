@@ -11,9 +11,12 @@ The module exports:
     - EXPECTED_PATHS: Dict mapping logical names to expected path templates
     - COMMON_FILES: List of files common to all platforms
     - EXPECTED_JSON_KEYS: Dict of expected keys in generated JSON files
+    - EXPECTED_NPM_LAYOUT: Dict mapping the npm copies of a Node.js installation
+      and of the npm global prefix to path templates
 
 Path templates use fixture key placeholders ({claude_dir}, {local_bin}, etc.)
-and {cmd} for the command name.
+and {cmd} for the command name; the npm layout uses {node_root} for the Node.js
+installation and {npm_prefix} for the npm global prefix.
 """
 
 import sys
@@ -26,18 +29,22 @@ from .common import EXPECTED_JSON_KEYS
 # Type checkers understand these conditional imports
 if sys.platform == 'win32':
     from .windows import EXPECTED_FILES
+    from .windows import EXPECTED_NPM_LAYOUT
     from .windows import EXPECTED_PATHS
 elif sys.platform == 'darwin':
     from .macos import EXPECTED_FILES
+    from .macos import EXPECTED_NPM_LAYOUT
     from .macos import EXPECTED_PATHS
 else:
     # Linux and other Unix-like systems
     from .linux import EXPECTED_FILES
+    from .linux import EXPECTED_NPM_LAYOUT
     from .linux import EXPECTED_PATHS
 
 __all__ = [
     'COMMON_FILES',
     'EXPECTED_FILES',
     'EXPECTED_JSON_KEYS',
+    'EXPECTED_NPM_LAYOUT',
     'EXPECTED_PATHS',
 ]

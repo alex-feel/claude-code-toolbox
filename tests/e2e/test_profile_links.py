@@ -1472,10 +1472,13 @@ class TestSourceRunRefreshesDependents:
         envs: list[dict[str, str]] = []
         real_run = setup_environment.subprocess.run
 
-        def _recording_run(argv: list[str], *, env: dict[str, str], check: bool) -> subprocess.CompletedProcess[Any]:
-            argvs.append(list(argv))
-            envs.append(dict(env))
-            return real_run(argv, env=env, check=check)
+        def _recording_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+            # The run also starts other processes, such as the npm probes of
+            # Step 5; only the child runs of Step 23 start the interpreter
+            if argv[0] == sys.executable:
+                argvs.append(list(argv))
+                envs.append(dict(kwargs['env']))
+            return real_run(argv, **kwargs)
 
         capfd.readouterr()
 
