@@ -874,8 +874,8 @@ class TestRefreshDependents:
         claude = tmp_path / '.claude'
         profiles = []
         for name in ('team-2', 'team-3'):
-            _manifest(claude / name, name, link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
-            profiles.append(setup_environment.InstalledProfile(name, claude / name, claude / name / 'manifest.json', None))
+            manifest = _manifest(claude / name, name, link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
+            profiles.append(setup_environment.InstalledProfile(name, claude / name, claude / name / 'manifest.json', manifest))
         return profiles
 
     def test_script_argv_shape_environment_and_results(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
