@@ -170,8 +170,7 @@ class TestLaunchShKeepsSlashArguments:
         """
         del variant
         bash = _require_bash()
-        if not with_mcp:
-            require_empty_array_expansion(bash)
+        require_empty_array_expansion(bash)
         home = e2e_isolated_home['home']
         profile_dir = e2e_isolated_home['claude_dir'] / 'slash-cmd'
         seed_profile(profile_dir, prompt, mcp=with_mcp)
@@ -205,6 +204,7 @@ class TestLaunchShKeepsSlashArguments:
         """A launch with no slash argument leaves MSYS2_ARG_CONV_EXCL out of the session's environment."""
         del variant
         bash = _require_bash()
+        require_empty_array_expansion(bash)
         home = e2e_isolated_home['home']
         profile_dir = e2e_isolated_home['claude_dir'] / 'slash-cmd'
         seed_profile(profile_dir, prompt)
