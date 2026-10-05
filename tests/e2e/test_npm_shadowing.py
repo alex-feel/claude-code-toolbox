@@ -534,7 +534,10 @@ class TestRealNpm:
         bundled_dir, bundled_version = REAL_NODE
         prefix = tmp_path / 'npm-prefix'
         prefix_dir = Path(EXPECTED_NPM_LAYOUT['prefix_npm'].format(node_root='', npm_prefix=prefix))
-        shutil.copytree(bundled_dir, prefix_dir, symlinks=True)
+        # Copy file contents, never links: an installation whose files are relative
+        # links into another tree (a package manager's linked install) would leave
+        # links that resolve to nothing in the prefix copy
+        shutil.copytree(bundled_dir, prefix_dir)
         manifest = json.loads((prefix_dir / 'package.json').read_text(encoding='utf-8'))
         manifest['version'] = self.STALE_COPY
         (prefix_dir / 'package.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
