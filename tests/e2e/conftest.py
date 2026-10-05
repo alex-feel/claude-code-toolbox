@@ -13,6 +13,43 @@ import pytest
 import yaml
 
 from scripts import setup_environment
+from tests.e2e.fake_scheduler import REGISTRY_VARIABLE
+from tests.e2e.fake_scheduler import FakeScheduler
+
+
+@pytest.fixture(autouse=True)
+def fake_scheduler(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> FakeScheduler | None:
+    """Replace the operating-system scheduler with a fake for every E2E test.
+
+    A configuration with auto-update (the golden configuration among them)
+    makes Step 24 register a daily job. The fake answers every scheduler
+    command the toolbox runs and keeps the jobs in a registry file under the
+    test's temporary directory, which it also hands to every child run
+    through REGISTRY_VARIABLE, so a dependent refresh or a scheduled run
+    sees the parent's jobs the way it would see a real scheduler's. The
+    Windows elevation requirement of the registration is switched off, so
+    the fake registers in a non-elevated test process too; tests of that
+    requirement patch it back on.
+
+    Tests marked ``real_scheduler`` opt out and reach the real scheduler.
+
+    Returns:
+        The fake, or None for a test that opted out.
+    """
+    if request.node.get_closest_marker('real_scheduler') is not None:
+        return None
+    registry = tmp_path / 'fake-scheduler.json'
+    fake = FakeScheduler(registry)
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        monkeypatch.setattr(module, '_run_scheduler_command', fake)
+        monkeypatch.setattr(module, '_scheduler_registration_needs_elevation', lambda: False)
+    monkeypatch.setenv(REGISTRY_VARIABLE, str(registry))
+    return fake
 
 
 @pytest.fixture(autouse=True)

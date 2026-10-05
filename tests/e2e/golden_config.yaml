@@ -43,6 +43,11 @@ link-dirs:
   - projects
 link-from: base
 
+# Daily OS job that re-runs this profile's setup through uvx cc-toolbox@latest
+# (24-hour local time, quoted so YAML reads it as text)
+auto-update:
+  time: "03:30"
+
 # Platform-specific dependencies
 dependencies:
   common:

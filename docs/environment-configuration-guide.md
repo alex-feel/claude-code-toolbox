@@ -171,6 +171,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies                    |
 | [`link-dirs`](#link-dirs)                             | `list[str]`            | No       | `None`  | Profile entries taken through a link from another profile  |
 | [`link-from`](#link-from)                             | `str`                  | No       | `base`  | The profile the linked entries come from                   |
+| [`auto-update`](#auto-update)                         | `AutoUpdate`           | No       | `None`  | Daily job that re-runs the profile's setup at a local time |
 | [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands                      |
 | [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                                  |
 | [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                                   |
@@ -498,6 +499,25 @@ The profile the linked entries come from: `base` for `~/.claude`, or the primary
 - **Rules:** a profile cannot link from itself, a content source must hold its entries for real, and the value is validated like a command name (see [`link-dirs`](#link-dirs)).
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `link-from: team-1`
+
+#### `auto-update`
+
+A daily re-run of the profile's setup, scheduled in the operating system's own scheduler: Task Scheduler on Windows, launchd on macOS, the systemd user manager on Linux (a crontab entry where none runs). Each profile installed from the configuration gets one job of its own, `cc-toolbox-update-<profile>` (`cc-toolbox-update-base` for the base profile), which runs `uvx cc-toolbox@latest setup --profile <profile> --yes --no-admin --scheduled-run` at the given local time, so the profile follows every change of its configuration and every toolbox release without anyone running the setup by hand. See [Scheduled Profile Updates](#scheduled-profile-updates) for the state directory, the lock, the logs, the credentials of an unattended run and the Windows rights the job needs.
+
+- **Type:** `AutoUpdate | None`, a mapping with the keys `time` (required) and `command` (optional)
+- **Default:** `None` (no job)
+- **`time`:** the daily run time as `HH:MM` in 24-hour local time (`00:00` to `23:59`)
+- **`command`:** a command line the job runs instead of the profile's setup, under the same lock and with the same log; a non-empty string when given
+- **Validation:** a value that is not a mapping, an unknown key, a missing or malformed `time`, or an empty `command` stops the run before the installation summary
+- **Linked profiles:** a profile that links content from another profile gets no job; the source's job refreshes it (see [Linked Profiles](#linked-profiles))
+- **Removal:** a run of a configuration that no longer declares the key removes the profile's job, and so does `--switch-config` to a configuration without it
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:**
+
+```yaml
+auto-update:
+  time: "03:30"
+```
 
 #### `dependencies`
 
@@ -1807,9 +1827,12 @@ Authentication is resolved in this order (highest priority first):
 1. **Explicit override** -- `CLAUDE_CODE_TOOLBOX_ENV_AUTH` environment variable, format `"header:value"`, `"header=value"`, or plain token
 2. **URL-specific environment variables** -- `GITLAB_TOKEN` for GitLab URLs, `GITHUB_TOKEN` for GitHub URLs
 3. **Generic token** -- `REPO_TOKEN` environment variable (auto-detects repository type)
-4. **Interactive prompt** -- If a terminal is available and the repository type is detected
+4. **The host CLI's stored login** -- the token `gh auth token --hostname <host>` prints for a GitHub URL, or the one `glab auth status --hostname <host> --show-token` reports for a GitLab URL, when that CLI is installed and logged in to the configuration's host; the setup says which CLI's login it uses and never prints, logs or stores the token
+5. **Interactive prompt** -- If a terminal is available and the repository type is detected
 
 Every variable above can be set for a single run with the repeatable `--env` flag, identically in every shell: `--env GITHUB_TOKEN=... --env GITLAB_TOKEN=...`. Values passed on the command line are visible in shell history and the process list; prefer real environment variables for secrets when that matters.
+
+The first four sources work without a terminal, which is what a [scheduled update](#scheduled-profile-updates) needs: a job runs with your account's persistent environment and the host CLIs' stored logins, so a token given with `--env` or typed at the prompt is not there when the job runs. A run that registers or keeps a job after authenticating that way warns `The scheduled update job cannot authenticate to <host>` and names the two remedies: set the variable persistently for your account, or log in with `gh auth login --hostname <host>` (`glab auth login --hostname <host>`).
 
 #### Variable Scopes
 
@@ -1911,12 +1934,24 @@ A profile whose `link-dirs` names a content entry follows the profile it links f
 
 A dependent is checked on every run: after the dependency commands and again at the end, each link must still be a link to its target, or the run stops with the `--profile NAME` command that repairs it; before `config.json` is written, every hook file the events wire must exist through the linked `hooks/`, or the run stops and names the source to re-run first. A deselection in the source is applied by the source; the dependent's own deselection step never touches a linked section. While a dependent points at it, the source refuses to change its own links or configuration (a different configuration, `--link-dirs`, `--link-from`) and names each dependent with the two ways out: re-point it (`--profile NAME --link-from <other profile>`) or unlink it (`--profile NAME --link-dirs none`).
 
-Two profiles can link the same entry from one source. A `projects` link needs none of this: it links to any profile, keeps the profile's own content and selection, and is never refreshed by the source. A content source is always a profile that holds its entries for real; linking from a profile that links content itself is refused with the profile to use instead.
+Two profiles can link the same entry from one source. A `projects` link needs none of this: it links to any profile, keeps the profile's own content and selection, and is never refreshed by the source. A content source is always a profile that holds its entries for real; linking from a profile that links content itself is refused with the profile to use instead. A dependent gets no [scheduled update](#scheduled-profile-updates) job of its own, whatever its configuration's `auto-update` says: the source's job refreshes it through Step 23, and the installation summary says so.
 
 ```powershell
 # Windows one-liner: iex (irm ...) takes no arguments, so the configuration, the names and the links come from the variables
 powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='team'; `$env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='team-2'; `$env:CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'; `$env:CLAUDE_CODE_TOOLBOX_LINK_FROM='team-1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
+
+### Scheduled Profile Updates
+
+A configuration with [`auto-update`](#auto-update) gives each profile installed from it one daily job in the operating system's own scheduler. The run decides what to do with the job before you confirm: the installation summary's `Scheduled update (auto-update):` block names the job, the action (`register`, `update`, `unchanged`, `remove` or `deferred`) with its reason, the time, the exact command line the job runs and the state directory, and the job also appears among the machine-wide writes; `--dry-run` shows the same block and registers nothing. A re-run re-registers the job only when the time or the command changed and leaves it untouched otherwise. A run of a configuration that no longer declares the key removes the job, and so does a `--switch-config` run to a configuration without it, where the switch guard lists the job as `scheduled update job: <name>` among the residue. The profile's manifest records the job under `auto_update` (`time`, `command`, `job`). A content-linked profile gets no job of its own: its source's job refreshes it the way every source run does (see [Linked Profiles](#linked-profiles)).
+
+**The job.** It runs `uvx cc-toolbox@latest setup --profile <profile> --yes --no-admin --scheduled-run` (`uv tool run cc-toolbox@latest ...` on a machine with `uv` but no `uvx`), `uvx` spelled as the absolute path found at registration, because a scheduler's PATH differs from your shell's. Every scheduled run therefore installs the latest toolbox release and re-reads the profile's configuration, as `--profile <profile>` typed by hand does. With `command`, the job runs that command line through the shell instead, under the same lock and into the same log. Scheduled runs never overlap: a run takes the machine-wide lock `update.lock` in the state directory, waits up to 30 minutes for another scheduled run to finish, and otherwise writes why it gave up into its log, records the run as skipped and exits 1; a lock older than six hours counts as abandoned and is taken over. A scheduled run never changes its own job registration: a time or command that changed since the registration is reported as `deferred` in its log and applied by the next manual run.
+
+**The state directory.** The toolbox keeps the job's record (`jobs/<job>.json`), the log of every scheduled run (`logs/<job>-YYYYmmdd-HHMMSS.log`, the newest 30 kept), the record of the last run (`runs/<job>.json`) and the lock in `%LOCALAPPDATA%\cc-toolbox` on Windows, `~/Library/Application Support/cc-toolbox` on macOS, and `$XDG_STATE_HOME/cc-toolbox` (`~/.local/state/cc-toolbox` by default) on Linux. The next manual run of the profile prints `Last scheduled run: <local time>, exit code <code>, log <path>` in the installation summary and in the completion summary, so a failed night shows up the next time you look.
+
+**The scheduler per platform.** On Windows the job is a Task Scheduler task that runs under your interactive logon with the highest privileges available to it, catches up a missed slot as soon as the machine is available, waits for the network and never starts a second instance. Registering or removing such a task needs an elevated run, so the setup lists `Registering the scheduled update job (auto-update), which runs with the highest privileges available` among the reasons for the UAC prompt; a run with `--no-admin` from a non-elevated terminal completes everything else, reports the job as not registered with the remedy (run from an elevated terminal, or without `--no-admin`) and exits 1. On macOS the job is a launchd user agent, `~/Library/LaunchAgents/cc-toolbox-update-<profile>.plist`, with the PATH of the registering shell baked in. On Linux the job is a systemd user timer with a oneshot service (`~/.config/systemd/user/cc-toolbox-update-<profile>.timer` and `.service`, `Persistent=true` so a missed day is caught up at the next start) and, where no systemd user manager runs, a crontab line tagged `# cc-toolbox-update-<profile>`, which fires only while a cron daemon runs and does not catch up a missed day; a machine with neither is reported in the summary and the job is not registered.
+
+**Credentials of an unattended run.** The job has no terminal, so a private configuration must be reachable without a prompt: through a token in your account's persistent environment (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `REPO_TOKEN` or `CLAUDE_CODE_TOOLBOX_ENV_AUTH`), or through the stored login of the host's CLI, which the setup reads with `gh auth token --hostname <host>` or `glab auth status --hostname <host> --show-token` (see [Auth Precedence](#auth-precedence)). A run that authenticated with a token from `--env` or from the prompt while registering or keeping a job warns that the job cannot authenticate and names both remedies. The toolbox uses a token for its requests and never prints, logs or stores it.
 
 ### Automatic IDE Extension Version Management
 
@@ -2076,6 +2111,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
 22. **Remove deselected components** -- Uninstalls previously installed artifacts of deselected components: MCP servers, skill directories, agent/command/rule/hook/downloaded files, and shared-settings hook entries. Runs in both modes, only when the selection deselects at least one claimed item, and never touches a linked section.
 23. **Refresh dependent profiles** -- Re-runs every installed profile that links content from this one, each as its own child run (see [Linked Profiles](#linked-profiles)). `--dry-run` lists the dependents and starts none. A child run (one `--profile all` starts, or a dependent this step refreshes) leaves the refresh, and the completion summary's list of profiles the run did not refresh, to the run that started it.
+24. **Schedule the daily update** -- Registers, re-registers, keeps or removes the profile's daily update job in the OS scheduler as the installation summary announced (see [Scheduled Profile Updates](#scheduled-profile-updates)): a job for a configuration with `auto-update`, none for a content-linked profile, removal for a profile whose configuration no longer declares the key. A scheduled run leaves its own job as registered. A job that cannot be registered -- a non-elevated Windows run under `--no-admin`, a Linux machine without a systemd user manager or `crontab` -- is listed in the error block and makes the run exit 1.
 
 Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 20-21 are skipped if `command-names` is not specified. In a profile that links content, Steps 8-12 and 17 report each linked section as linked and install nothing for it, and the links are verified after Step 6 and after Step 22.
 
@@ -2526,6 +2562,18 @@ A profile that other profiles link content from keeps its links and its configur
 
 A dependency command, or something outside the setup, replaced a link with a real directory or re-pointed it. Re-run the profile with `--profile NAME`: the remembered value repairs a link that points elsewhere, and a real directory with content is moved aside only when `--link-dirs` is passed for the run.
 
+### The scheduled update job was not registered
+
+On Windows the job runs with the highest privileges available to your account, and only an elevated process registers or removes such a task. A run from a terminal without administrator rights requests elevation for it; with `--no-admin` it completes everything else, lists `The scheduled update job (auto-update) was not applied:` in the error block and exits 1. Run the setup from an elevated terminal, or without `--no-admin`. On Linux the message names the missing scheduler: install `cron` (the `crontab` command), or run the setup inside a session with a systemd user manager. On any platform, `neither uvx nor uv is on PATH` means the job would have nothing to run `cc-toolbox` with; install uv for your account first.
+
+### The scheduled update job cannot authenticate
+
+The run reached a private configuration with a token from `--env` or from the interactive prompt, and a job was registered or kept. The job runs without a terminal, so it needs a persistent source: set `GITHUB_TOKEN` (or `GITLAB_TOKEN`, `REPO_TOKEN`, `CLAUDE_CODE_TOOLBOX_ENV_AUTH`) as an environment variable of your user account, or log in with `gh auth login --hostname <host>` or `glab auth login --hostname <host>` so the setup can read the stored token (see [Auth Precedence](#auth-precedence)).
+
+### auto-update.time must be HH:MM
+
+`auto-update.time` is the daily run time in 24-hour local time, `00:00` to `23:59`, and `auto-update` accepts only `time` and `command`. Quote the value (`time: "03:30"`), because YAML reads an unquoted `03:30` as a sexagesimal number.
+
 ### CLAUDE_CONFIG_DIR is set for a configuration without command-names
 
 A configuration without `command-names` writes its artifacts to `~/.claude` and its global configuration to `~/.claude.json`, while the Claude CLI resolves `CLAUDE_CONFIG_DIR` ahead of the home directory, so `claude mcp add` and the global-config writes would land under the directory that variable names. The setup refuses the run with exit code 1 instead of splitting it across two directories, and reports the same block under `--dry-run`. Clear the variable (`unset CLAUDE_CONFIG_DIR` in bash, `Remove-Item Env:CLAUDE_CONFIG_DIR` in PowerShell) and run the setup again, run it from a terminal that is not inside an isolated profile session, or -- when a configuration persists the variable through `os-env-variables` or `user-settings.env` -- remove it there and open a new terminal. A configuration with `command-names` is not refused: it reports that it replaces the inherited value with its own profile directory. See [Running Setup From Inside An Isolated Profile Session](#running-setup-from-inside-an-isolated-profile-session).
@@ -2723,7 +2771,7 @@ Destinations in `files-to-download` are checked against sensitive path prefixes 
 
 ### Token Handling
 
-Never commit authentication tokens to repositories. Use environment variables (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `REPO_TOKEN`) instead.
+Never commit authentication tokens to repositories. Use environment variables (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `REPO_TOKEN`) or the stored login of the host's CLI (`gh auth login`, `glab auth login`) instead. The setup reads a CLI's token for the request it makes and never prints, logs or stores it; a scheduled update run reaches a private configuration through these same sources (see [Auth Precedence](#auth-precedence)).
 
 ### Protected Configuration Keys
 

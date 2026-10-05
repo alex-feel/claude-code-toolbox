@@ -144,9 +144,14 @@ jobs:
           uv run python scripts/install_claude.py
           echo "${USERPROFILE:-$HOME}/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Install cron for the real-scheduler E2E test
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cron
+
       - name: Run E2E tests
         env:
           CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY: '1'
+          CLAUDE_CODE_TOOLBOX_E2E_REAL_SCHEDULER: '1'
         run: uv run pytest tests/e2e/ -v --tb=long --junit-xml=e2e-results.xml
 
       - name: Upload E2E test results

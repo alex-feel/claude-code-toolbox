@@ -13,6 +13,11 @@ the WM_SETTINGCHANGE broadcast, the user PATH cleanup and extension) and
 Fish universal variables. Those are replaced with no-ops so a test run never
 changes the machine it runs on.
 
+When the environment names a fake scheduler registry (see
+tests/e2e/fake_scheduler.py), the child answers its scheduler commands from
+that registry instead of the real scheduler, so a profile with auto-update
+registers its daily update job with the same fake the parent test uses.
+
 Setting SIMULATE_NON_ADMIN_VARIABLE to ``1`` makes the child behave as a
 process without an administrator token whatever token it actually holds:
 is_admin() reports False, and the elevation request the main() gate makes
@@ -34,6 +39,8 @@ from typing import Any
 from unittest.mock import patch
 
 from scripts import setup_environment
+from tests.e2e.fake_scheduler import REGISTRY_VARIABLE
+from tests.e2e.fake_scheduler import FakeScheduler
 
 SIMULATE_NON_ADMIN_VARIABLE = 'CCT_E2E_SIMULATE_NON_ADMIN'
 ELEVATION_MARKER = '[setup_child] elevation requested by the administrator gate'
@@ -65,6 +72,13 @@ def main() -> None:
         ))
         stack.enter_context(patch.object(setup_environment, 'cleanup_temp_paths_from_registry', lambda: (0, [])))
         stack.enter_context(patch.object(shutil, 'which', _which_without_fish))
+        # The scheduler the parent test replaced with a fake: the child shares
+        # its registry, so the daily update job of a profile with auto-update
+        # never reaches the real scheduler and the parent sees what the child did
+        registry = os.environ.get(REGISTRY_VARIABLE)
+        if registry:
+            stack.enter_context(patch.object(setup_environment, '_run_scheduler_command', FakeScheduler(Path(registry))))
+            stack.enter_context(patch.object(setup_environment, '_scheduler_registration_needs_elevation', lambda: False))
         if os.environ.get(SIMULATE_NON_ADMIN_VARIABLE) == '1':
             stack.enter_context(patch.object(setup_environment, 'is_admin', lambda: False))
             stack.enter_context(patch.object(setup_environment, 'request_admin_elevation', _refuse_elevation))

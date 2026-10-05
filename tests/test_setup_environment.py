@@ -5527,9 +5527,10 @@ class TestWriteManifest:
             'config_source_url', 'config_source_type', 'config_identity', 'config_digest',
             'installed_at', 'command_names', 'components', 'link', 'origins', 'yaml_values',
             'machine_wide_destinations', 'os_env_written', 'settings_keys_written',
-            'mcp_servers', 'files_written',
+            'mcp_servers', 'files_written', 'auto_update',
         }
         assert data['name'] == command_name
+        assert data['auto_update'] is None
         assert data['version'] == '1.2.0'
         assert data['claude_code_version'] == '2.1.85'
         assert data['command_names'] == command_names

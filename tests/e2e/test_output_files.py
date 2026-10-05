@@ -249,6 +249,7 @@ class TestManifestFile:
                 'link_dirs': ['projects'], 'link_from': 'base',
             },
             link={'dirs': ['projects'], 'source': 'base', 'origins': {'dirs': 'yaml', 'source': 'yaml'}},
+            auto_update={'time': golden_config['auto-update']['time'], 'command': None, 'job': f'cc-toolbox-update-{cmd}'},
         )
 
         manifest_path = claude_dir / 'manifest.json'

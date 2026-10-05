@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
+from typing import NoReturn
 
 import pytest
 import yaml
@@ -466,6 +467,53 @@ def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.
         return original_which(name, *args, **kwargs)
 
     monkeypatch.setattr(shutil, 'which', guarded_which)
+
+
+@pytest.fixture(autouse=True)
+def _reset_credential_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no cached host-CLI token and no host marked as authenticated.
+
+    resolve_credentials() asks the logged-in gh or glab once per host and
+    caches the answer for the process, and get_auth_headers() records the
+    hosts that needed credentials so the scheduled update job can warn about
+    a private configuration. Both are process state a test must not inherit
+    from an earlier one.
+    """
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, '_CLI_TOKEN_CACHE', {})
+        monkeypatch.setattr(module, '_AUTHENTICATED_HOSTS', set())
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_scheduler(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail a unit test that reaches the real operating-system scheduler.
+
+    Step 24 of main() registers, re-registers or removes the daily update
+    job of a profile whose configuration declares auto-update, through one
+    command runner for schtasks, launchctl, systemctl and crontab. A unit
+    test must never register a real job on the machine running the suite,
+    so the runner is replaced by a guard that fails the test. E2E tests
+    replace it with a fake of their own, and tests marked real_scheduler
+    opt out.
+    """
+    if request.node.get_closest_marker('real_scheduler'):
+        return
+    if 'e2e' in request.path.parts:
+        return
+
+    def _refuse(command: list[str]) -> NoReturn:
+        pytest.fail(f'a unit test reached the real OS scheduler: {command!r}')
+
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, '_run_scheduler_command', _refuse)
 
 
 @pytest.fixture(autouse=True)
