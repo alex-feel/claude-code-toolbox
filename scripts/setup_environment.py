@@ -20025,15 +20025,19 @@ def main() -> None:
             sys.exit(1)
 
         # A stale source is refreshed first, in its own run, so this profile
-        # installs the snapshot that run records; the refreshed manifest must
-        # hold the digest of the configuration this run was given, else the
-        # configuration moved between the two fetches and the run stops
-        # rather than install something the source did not. A source run
-        # that recorded the digest and still exited non-zero failed on a
-        # dependent of its own: those are named, this profile installs from
-        # the fresh snapshot, and the run ends with exit code 1 listing them
-        # the way a source run lists a failed dependent.
+        # installs the snapshot that run records. A run that exits non-zero
+        # without recording the digest of the configuration this run was given
+        # failed before its manifest, and this run stops with the source's
+        # retry; a run that exits 0 without it saw another configuration, so
+        # the configuration moved between the two fetches and this run stops
+        # rather than install something the source did not. A run that
+        # recorded the digest installed the configuration whatever it exits
+        # with: this profile installs from the fresh snapshot, and a non-zero
+        # exit (a download, a dependency or a dependent of the source that
+        # failed) ends this run with exit code 1, naming the source's run and
+        # every dependent it left behind.
         source_refresh_failures: list[str] = []
+        source_refresh_code = 0
         if source_refresh is not None:
             print()
             print(
@@ -20042,9 +20046,7 @@ def main() -> None:
             )
             refresh_code = refresh_source_profile(source_refresh, profile_name)
             recorded = source_refresh_recorded(source_refresh)
-            if refresh_code != 0 and recorded:
-                source_refresh_failures = unrefreshed_siblings(source_refresh, home_dir)
-            if refresh_code != 0 and not source_refresh_failures:
+            if refresh_code != 0 and not recorded:
                 print()
                 error(
                     f'The refresh of profile "{source_refresh.source}" failed (exit code {refresh_code}); '
@@ -20061,11 +20063,17 @@ def main() -> None:
                 info('Run this command again to install from the refreshed snapshot.')
                 sys.exit(1)
             print()
-            if source_refresh_failures:
+            if refresh_code != 0:
+                source_refresh_code = refresh_code
+                source_refresh_failures = unrefreshed_siblings(source_refresh, home_dir)
                 warning(
-                    f'Profile "{source_refresh.source}" refreshed; its run (exit code {refresh_code}) could not refresh: '
-                    f'{", ".join(source_refresh_failures)}',
+                    f'Profile "{source_refresh.source}" refreshed with errors (exit code {refresh_code}); '
+                    'review its output above',
                 )
+                if source_refresh_failures:
+                    warning(
+                        f'Its run could not refresh: {", ".join(source_refresh_failures)}',
+                    )
                 for name in source_refresh_failures:
                     info(f'Retry it with --profile {name} after this run.')
             success(
@@ -20651,7 +20659,7 @@ def main() -> None:
 
         # Check for download, dependency and dependent failures and report accordingly
         dependent_failures = [result for result in dependent_results if result.code != 0]
-        if download_failures or dependency_failures or dependent_failures or source_refresh_failures:
+        if download_failures or dependency_failures or dependent_failures or source_refresh_code:
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
@@ -20675,6 +20683,14 @@ def main() -> None:
                     error(f'  - {failure}')
                 print()
                 error('Review the dependency error messages above, then re-run the setup.')
+                print()
+            if source_refresh_code:
+                assert source_refresh is not None
+                error(
+                    f'The run of profile "{source_refresh.source}" that refreshed the source of this profile ended '
+                    f'with exit code {source_refresh_code}.',
+                )
+                error(f'Review its output above, then retry it with --profile {source_refresh.source}.')
                 print()
             if dependent_failures or source_refresh_failures:
                 assert source_refresh is not None or not source_refresh_failures

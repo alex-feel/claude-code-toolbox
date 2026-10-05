@@ -2410,7 +2410,8 @@ class TestStaleSourceRefresh:
         assert '=== Source profile team-1 ===' in output
         assert '=== Dependent profile team-3 ===' in output
         assert 'The refresh of profile "team-1" failed' not in output
-        assert 'Profile "team-1" refreshed; its run (exit code 1) could not refresh: team-3' in output
+        assert 'Profile "team-1" refreshed with errors (exit code 1); review its output above' in output
+        assert 'Its run could not refresh: team-3' in output
         assert 'Retry it with --profile team-3 after this run.' in output
         assert 'Profile "team-1" refreshed; installing "team-2" from its resolved-config.yaml' in output
         fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
@@ -2425,6 +2426,46 @@ class TestStaleSourceRefresh:
         assert 'The following dependent profiles failed to refresh:' in dependent_tail
         assert '- team-3: not refreshed by the run of profile "team-1"; retry with --profile team-3' in dependent_tail
         assert 'Review the output of each failed dependent above, then retry it with its --profile command.' in dependent_tail
+        assert (
+            'The run of profile "team-1" that refreshed the source of this profile ended with exit code 1.'
+        ) in dependent_tail
+
+    def test_source_run_failing_after_recording_its_configuration_installs_this_profile_and_exits_1(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source run whose own dependency fails still records the configuration: this profile installs, exit 1."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'team-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        stale_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        write_config(
+            configs, 'team.yaml', {**_team(), 'user-settings': {'theme': 'light'}, 'dependencies': {'common': ['exit 7']}},
+        )
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 1, output
+        assert '=== Source profile team-1 ===' in output
+        assert 'The refresh of profile "team-1" failed' not in output
+        assert 'Profile "team-1" refreshed with errors (exit code 1); review its output above' in output
+        assert 'Its run could not refresh' not in output
+        assert 'Profile "team-1" refreshed; installing "team-2" from its resolved-config.yaml' in output
+        fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
+        assert fresh_digest != stale_digest
+        assert read_manifest(claude_dir / 'team-2')['config_digest'] == fresh_digest
+        for name in ('team-1', 'team-2'):
+            assert _theme(claude_dir / name) == 'light', name
+        dependent_tail = output[output.rindex('Profile "team-1" refreshed; installing "team-2"'):]
+        assert 'Setup Completed with Errors' in dependent_tail
+        assert (
+            'The run of profile "team-1" that refreshed the source of this profile ended with exit code 1.'
+        ) in dependent_tail
+        assert 'Review its output above, then retry it with --profile team-1.' in dependent_tail
+        assert 'The following dependent profiles failed to refresh:' not in dependent_tail
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
