@@ -595,6 +595,30 @@ def _mock_profile_registry_reads(request: pytest.FixtureRequest, monkeypatch: py
 
 
 @pytest.fixture(autouse=True)
+def _mock_npm_shadowing_check(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make main()-flow unit tests see no npm copy shadowing the bundled one.
+
+    The real check runs the npm of the machine running the suite and reads its
+    Node.js installation, so a unit test would print a warning, or not,
+    depending on that machine. The setup script is imported both as
+    setup_environment and as scripts.setup_environment, which are distinct
+    module objects, so both are patched. E2E tests run the real check against
+    the npm layouts they build.
+
+    Tests that exercise the real implementation bypass this mock by capturing
+    a module-level reference to the function at test-module import time.
+    """
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, 'find_shadowing_global_npm', lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _mock_old_binary_cleanup(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace install_claude._cleanup_old_claude_files with a no-op in unit tests.
 
