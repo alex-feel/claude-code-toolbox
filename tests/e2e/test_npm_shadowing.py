@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -536,9 +537,13 @@ class TestRealNpm:
         prefix_dir = Path(EXPECTED_NPM_LAYOUT['prefix_npm'].format(node_root='', npm_prefix=prefix))
         # Copy file contents, never links: an installation whose files are relative
         # links into another tree (a package manager's linked install) would leave
-        # links that resolve to nothing in the prefix copy
+        # links that resolve to nothing in the prefix copy. The copy keeps each
+        # file's mode, and such an installation can hold read-only files, so the
+        # copy's package.json is made writable before its version is changed
         shutil.copytree(bundled_dir, prefix_dir)
-        manifest = json.loads((prefix_dir / 'package.json').read_text(encoding='utf-8'))
+        package_json = prefix_dir / 'package.json'
+        package_json.chmod(package_json.stat().st_mode | stat.S_IWUSR)
+        manifest = json.loads(package_json.read_text(encoding='utf-8'))
         manifest['version'] = self.STALE_COPY
         (prefix_dir / 'package.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         monkeypatch.setenv('NPM_CONFIG_PREFIX', str(prefix))
