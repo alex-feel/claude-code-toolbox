@@ -8476,6 +8476,46 @@ class TestBuildProfileSettings:
         )
         assert result['statusLine']['padding'] == 2
 
+    def test_status_line_refresh_interval_emitted(self, tmp_path: Path) -> None:
+        """statusLine refresh-interval is emitted as refreshInterval after padding."""
+        result = setup_environment._build_profile_settings(
+            {'statusLine': {'file': 'status.py', 'padding': 0, 'refresh-interval': 60}},
+            tmp_path,
+        )
+        assert result['statusLine']['refreshInterval'] == 60
+        assert list(result['statusLine']) == ['type', 'command', 'padding', 'refreshInterval']
+
+    def test_status_line_without_refresh_interval_is_unchanged(self, tmp_path: Path) -> None:
+        """An absent refresh-interval leaves statusLine as type, command and padding only."""
+        result = setup_environment._build_profile_settings(
+            {'statusLine': {'file': 'status.py', 'padding': 0}},
+            tmp_path,
+        )
+        assert result['statusLine'] == {
+            'type': 'command',
+            'command': setup_environment._build_file_command('status.py', None, tmp_path),
+            'padding': 0,
+        }
+
+    @pytest.mark.parametrize(
+        ('status_line', 'expected_tail'),
+        [
+            ({'file': 'status.py', 'padding': 0, 'refresh-interval': None}, {'padding': 0, 'refreshInterval': None}),
+            ({'file': 'status.py', 'padding': None}, {'padding': None}),
+        ],
+        ids=['refresh-interval', 'padding'],
+    )
+    def test_status_line_null_sub_key_propagates_as_none(
+        self, tmp_path: Path, status_line: dict[str, Any], expected_tail: dict[str, Any],
+    ) -> None:
+        """A null padding or refresh-interval is emitted as None, the deletion request the writers apply."""
+        result = setup_environment._build_profile_settings({'statusLine': status_line}, tmp_path)
+        assert result['statusLine'] == {
+            'type': 'command',
+            'command': setup_environment._build_file_command('status.py', None, tmp_path),
+            **expected_tail,
+        }
+
     def test_hooks_builder_delegation(self, tmp_path: Path) -> None:
         """hooks key populated via _build_hooks_json() delegation."""
         hooks_input = {
@@ -8522,6 +8562,132 @@ class TestBuildProfileSettings:
         )
         # Only 'statusLine' present; 'hooks' is OMITTED
         assert set(result.keys()) == {'statusLine'}
+
+
+class TestValidateStatusLine:
+    """Unit tests for validate_status_line(), the runtime twin of the StatusLine model."""
+
+    @pytest.mark.parametrize(
+        'config',
+        [{}, {'status-line': None}, {'status-line': 'status.py'}, {'status-line': {'file': 'status.py'}}],
+        ids=['absent', 'null', 'non-mapping', 'no-interval'],
+    )
+    def test_nothing_to_report(self, config: dict[str, Any]) -> None:
+        """No status-line, a null one, a non-mapping (reported elsewhere) and one without an interval pass."""
+        assert setup_environment.validate_status_line(config) == []
+
+    @pytest.mark.parametrize('value', [1, 60, None], ids=repr)
+    def test_valid_refresh_interval_accepted(self, value: int | None) -> None:
+        """An integer of at least 1, or an explicit null, passes."""
+        config = {'status-line': {'file': 'status.py', 'refresh-interval': value}}
+        assert setup_environment.validate_status_line(config) == []
+
+    @pytest.mark.parametrize('value', [0, -1, 1.5, 60.0, '60', True, False], ids=repr)
+    def test_invalid_refresh_interval_rejected(self, value: object) -> None:
+        """A value below 1 or anything but a true integer is one error naming the field and the value."""
+        config = {'status-line': {'file': 'status.py', 'refresh-interval': value}}
+        assert setup_environment.validate_status_line(config) == [
+            f'status-line.refresh-interval must be an integer of at least 1 (seconds), got {value!r}',
+        ]
+
+    def test_unknown_key_warned_and_ignored(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A key outside the accepted set is a warning naming it and the accepted keys, never an error."""
+        config = {'status-line': {'file': 'status.py', 'refreshInterval': 60}}
+        assert setup_environment.validate_status_line(config) == []
+        out = capsys.readouterr().out
+        assert (
+            'status-line: ignoring unknown key(s): refreshInterval '
+            '(accepted keys: config, file, padding, refresh-interval)'
+        ) in out
+
+    def test_known_keys_raise_no_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Every accepted key passes without a warning."""
+        config = {
+            'status-line': {
+                'file': 'status.py', 'config': 'status.yaml', 'padding': 0, 'refresh-interval': 5,
+            },
+        }
+        assert setup_environment.validate_status_line(config) == []
+        assert 'WARN' not in capsys.readouterr().out
+
+    @staticmethod
+    def _run_main_expecting_exit(
+        config: dict[str, Any], mock_home_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[int | str | None, MagicMock]:
+        """Run main() on the given configuration; return its exit code and the install_claude mock."""
+        monkeypatch.setenv('HOME', str(mock_home_dir))
+        monkeypatch.setenv('USERPROFILE', str(mock_home_dir))
+        with (
+            patch.object(setup_environment, 'load_config_from_source', return_value=(config, 'test.yaml')),
+            patch.object(setup_environment, 'install_claude') as mock_install,
+            patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.main()
+        return exc_info.value.code, mock_install
+
+    def test_main_exits_before_installation_on_invalid_refresh_interval(
+        self,
+        mock_home_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An invalid refresh-interval in an otherwise valid configuration exits 1 before Step 1."""
+        config = {
+            'name': 'Invalid Refresh Interval',
+            'hooks': {'files': ['hooks/status.py'], 'events': []},
+            'status-line': {'file': 'status.py', 'refresh-interval': 0},
+        }
+
+        exit_code, mock_install = self._run_main_expecting_exit(config, mock_home_dir, monkeypatch)
+
+        assert exit_code == 1
+        mock_install.assert_not_called()
+        captured = capsys.readouterr()
+        assert 'status-line.refresh-interval must be an integer of at least 1 (seconds), got 0' in captured.err
+        assert 'Step 1' not in captured.out
+
+    def test_main_prints_refresh_interval_error_with_hooks_consistency_errors(
+        self,
+        mock_home_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """main() prints the refresh-interval error together with the hooks-consistency errors, then exits 1."""
+        config = {
+            'name': 'Invalid Refresh Interval',
+            'hooks': {'files': ['hooks/status.py', 'hooks/unused.py'], 'events': []},
+            'status-line': {'file': 'status.py', 'refresh-interval': 0},
+        }
+
+        exit_code, mock_install = self._run_main_expecting_exit(config, mock_home_dir, monkeypatch)
+
+        assert exit_code == 1
+        mock_install.assert_not_called()
+        captured = capsys.readouterr()
+        assert 'status-line.refresh-interval must be an integer of at least 1 (seconds), got 0' in captured.err
+        assert "unused files: ['unused.py']" in captured.err
+        assert 'Step 1' not in captured.out
+
+    def test_source_snapshot_replay_exits_on_invalid_refresh_interval(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Replaying a source's selection validates refresh-interval and exits 1 on a bad value."""
+        config = {
+            'name': 'Invalid Refresh Interval',
+            'hooks': {'files': ['hooks/status.py'], 'events': []},
+            'status-line': {'file': 'status.py', 'refresh-interval': '60'},
+        }
+        source = setup_environment.LinkSource('source', tmp_path, None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            setup_environment.replay_source_snapshot(config, source)
+
+        assert exc_info.value.code == 1
+        assert (
+            "status-line.refresh-interval must be an integer of at least 1 (seconds), got '60'"
+            in capsys.readouterr().err
+        )
 
 
 class TestYamlToCamelProfileKeysParity:

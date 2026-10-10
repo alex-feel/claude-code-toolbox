@@ -241,6 +241,8 @@ status-line:
   file: "e2e_statusline.py"
   config: "e2e-statusline-config.yaml"
   padding: 0
+  # Re-runs the status line command every 60 seconds (settings.statusLine.refreshInterval)
+  refresh-interval: 60
 
 # Author-defined selectable component groups. DERIVED from
 # golden_config.yaml, not copied verbatim: this variant declares only

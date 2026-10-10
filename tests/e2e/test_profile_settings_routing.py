@@ -29,6 +29,11 @@ Test coverage:
   plus statusLine and hooks all land in ``~/.claude/settings.json``.
 - Auto-update Target ``user-settings.env`` survival across the Step 14 then
   Step 18 ordering.
+- ``status-line.refresh-interval`` installed through main() as
+  ``statusLine.refreshInterval`` in the isolated ``config.json`` and the base
+  ``settings.json``, left out when the configuration omits it or sets it to
+  null, and removed from the base ``settings.json`` by a later null while a
+  later omission keeps it.
 """
 from __future__ import annotations
 
@@ -43,6 +48,8 @@ from scripts.setup_environment import PROFILE_OWNED_KEYS
 from scripts.setup_environment import _build_profile_settings
 from scripts.setup_environment import write_profile_settings_to_settings
 from scripts.setup_environment import write_user_settings
+from tests.e2e.profile_support import run_main
+from tests.e2e.profile_support import write_config
 
 # ---------------------------------------------------------------------------
 # Test Class 1: _build_profile_settings statusLine/hooks Behavior
@@ -272,6 +279,31 @@ class TestProfileDeltaWriter:
         write_profile_settings_to_settings({'hooks': None}, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
         assert 'hooks' not in content
+
+    @pytest.mark.parametrize(
+        ('yaml_key', 'json_key', 'value'),
+        [('refresh-interval', 'refreshInterval', 60), ('padding', 'padding', 2)],
+        ids=['refresh-interval', 'padding'],
+    )
+    def test_nested_null_status_line_sub_key_removes_stale_value(
+        self, tmp_path: Path, yaml_key: str, json_key: str, value: int,
+    ) -> None:
+        """A later status-line sub-key null removes the value an earlier run wrote; an omission keeps it."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        settings_file = tmp_path / 'settings.json'
+
+        def write(status_line: dict[str, Any]) -> dict[str, Any]:
+            delta = _build_profile_settings({'statusLine': {'file': 'status.py', **status_line}}, hooks_dir)
+            write_profile_settings_to_settings(delta, tmp_path)
+            on_disk: dict[str, Any] = json.loads(settings_file.read_text(encoding='utf-8'))['statusLine']
+            return on_disk
+
+        assert write({yaml_key: value})[json_key] == value
+        assert write({})[json_key] == value
+        status_line = write({yaml_key: None})
+        assert json_key not in status_line
+        assert set(status_line) == {'type', 'command'}
 
     def test_hooks_event_lists_union_across_runs(self, tmp_path: Path) -> None:
         """Two Step 18 writes with different hook events both survive on disk."""
@@ -693,3 +725,106 @@ class TestAutoUpdateEnvSurvival:
         assert content['env']['DISABLE_UPDATES'] == '1'
         assert content['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == 'true'
         assert 'PreToolUse' in content['hooks']
+
+
+# ---------------------------------------------------------------------------
+# Test Class 6: status-line refresh-interval Installed Through main()
+# ---------------------------------------------------------------------------
+
+RUN_FLAGS = ['--skip-install', '--no-admin', '--yes']
+
+
+@pytest.fixture
+def status_line_configs(tmp_path: Path) -> Path:
+    """A configuration directory holding the status line script the configurations list."""
+    directory = tmp_path / 'configs'
+    script = directory / 'hooks' / 'statusline.py'
+    script.parent.mkdir(parents=True)
+    script.write_text("print('status')\n", encoding='utf-8')
+    return directory
+
+
+def _status_line_config(status_line: dict[str, Any]) -> dict[str, Any]:
+    """A configuration whose status line runs hooks/statusline.py."""
+    return {
+        'name': 'Status Line Refresh',
+        'hooks': {'files': ['hooks/statusline.py'], 'events': []},
+        'status-line': {'file': 'statusline.py', **status_line},
+    }
+
+
+def _installed_status_line(home: Path, command_names: list[str]) -> dict[str, Any]:
+    """The statusLine entry the run installed: config.json when isolated, settings.json otherwise."""
+    settings_path = (
+        home / '.claude' / command_names[0] / 'config.json' if command_names
+        else home / '.claude' / 'settings.json'
+    )
+    status_line: dict[str, Any] = json.loads(settings_path.read_text(encoding='utf-8'))['statusLine']
+    return status_line
+
+
+class TestStatusLineRefreshIntervalInstall:
+    """main() installs status-line.refresh-interval as statusLine.refreshInterval in both delivery modes."""
+
+    @pytest.mark.parametrize('command_names', [['work-1'], []], ids=['isolated-config-json', 'base-settings-json'])
+    def test_refresh_interval_installed(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        status_line_configs: Path,
+        command_names: list[str],
+    ) -> None:
+        """A declared refresh-interval reaches the installed statusLine as refreshInterval."""
+        home = e2e_isolated_home['home']
+        cfg = write_config(status_line_configs, 'status.yaml', _status_line_config({'refresh-interval': 60}))
+        names_args = ['--command-names', *command_names] if command_names else []
+
+        assert run_main([str(cfg), *RUN_FLAGS, *names_args]) == 0
+
+        status_line = _installed_status_line(home, command_names)
+        assert status_line['refreshInterval'] == 60
+        assert list(status_line) == ['type', 'command', 'refreshInterval']
+
+    @pytest.mark.parametrize('command_names', [['work-1'], []], ids=['isolated-config-json', 'base-settings-json'])
+    @pytest.mark.parametrize('refresh_interval', [{}, {'refresh-interval': None}], ids=['absent', 'null'])
+    def test_absent_or_null_refresh_interval_not_installed(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        status_line_configs: Path,
+        command_names: list[str],
+        refresh_interval: dict[str, Any],
+    ) -> None:
+        """A configuration that omits refresh-interval or sets it to null installs statusLine without it."""
+        home = e2e_isolated_home['home']
+        cfg = write_config(
+            status_line_configs, 'status.yaml', _status_line_config({'padding': 0, **refresh_interval}),
+        )
+        names_args = ['--command-names', *command_names] if command_names else []
+
+        assert run_main([str(cfg), *RUN_FLAGS, *names_args]) == 0
+
+        status_line = _installed_status_line(home, command_names)
+        assert 'refreshInterval' not in status_line
+        assert list(status_line) == ['type', 'command', 'padding']
+
+    @pytest.mark.parametrize(
+        ('later', 'expected'),
+        [({'refresh-interval': None}, 'absent'), ({}, 60)],
+        ids=['null-removes', 'omission-keeps'],
+    )
+    def test_later_base_run_null_removes_and_omission_keeps(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        status_line_configs: Path,
+        later: dict[str, Any],
+        expected: int | str,
+    ) -> None:
+        """Re-running an edited configuration: a null removes the interval from settings.json, an omission keeps it."""
+        home = e2e_isolated_home['home']
+        cfg = write_config(status_line_configs, 'status.yaml', _status_line_config({'refresh-interval': 60}))
+        assert run_main([str(cfg), *RUN_FLAGS]) == 0
+        assert _installed_status_line(home, [])['refreshInterval'] == 60
+
+        write_config(status_line_configs, 'status.yaml', _status_line_config(later))
+        assert run_main([str(cfg), *RUN_FLAGS]) == 0
+
+        assert _installed_status_line(home, []).get('refreshInterval', 'absent') == expected
