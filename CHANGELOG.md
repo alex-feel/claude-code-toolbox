@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.1.0...v8.2.0) (2026-10-10)
+
+
+### Features
+
+* add refresh-interval to the status-line key ([#479](https://github.com/alex-feel/claude-code-toolbox/issues/479)) ([f66177d](https://github.com/alex-feel/claude-code-toolbox/commit/f66177d4dc99183348e20d8cc7eed89de423e3e6))
+
 ## [8.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.0.0...v8.1.0) (2026-10-05)
 
 
