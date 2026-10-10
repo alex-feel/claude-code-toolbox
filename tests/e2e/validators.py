@@ -794,6 +794,18 @@ def _validate_status_line(actual: dict[str, Any], config: dict[str, Any]) -> lis
             f"statusLine.padding: expected {config['padding']!r}, got {actual.get('padding')!r}",
         )
 
+    # refreshInterval carries refresh-interval; an absent or null value leaves it out
+    refresh_interval = config.get('refresh-interval')
+    if refresh_interval is None:
+        if 'refreshInterval' in actual:
+            errors.append(
+                f"statusLine.refreshInterval: expected absent, got {actual['refreshInterval']!r}",
+            )
+    elif actual.get('refreshInterval') != refresh_interval:
+        errors.append(
+            f"statusLine.refreshInterval: expected {refresh_interval!r}, got {actual.get('refreshInterval')!r}",
+        )
+
     return errors
 
 

@@ -454,6 +454,18 @@ _YAML_TO_CAMEL_PROFILE_KEYS: dict[str, str] = {
     'hooks': 'hooks',
 }
 
+# YAML keys accepted inside the root-level status-line mapping. Inline copy of
+# the keys the StatusLine model in scripts/models/environment_config.py
+# defines (standalone script policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_status_line_parity.py. validate_status_line()
+# warns about (and ignores) any other key, which the model rejects.
+STATUS_LINE_YAML_KEYS: frozenset[str] = frozenset({
+    'file',
+    'config',
+    'padding',
+    'refresh-interval',
+})
+
 
 # Platform-specific imports with proper type checking support
 if sys.platform == 'win32':
@@ -3502,6 +3514,47 @@ def validate_hooks_files_consistency(
                 'Each file must be referenced by a hook event or status-line.',
             )
 
+    return errors
+
+
+def validate_status_line(config: dict[str, Any]) -> list[str]:
+    """Validate the fields of the root-level status-line mapping at runtime.
+
+    Runtime twin of the field validation of the StatusLine model in
+    scripts/models/environment_config.py (parity enforced by
+    tests/scripts/models/test_status_line_parity.py): ``refresh-interval``,
+    when present and not null, is an integer of at least 1 (a bool is not
+    an integer here). A key outside STATUS_LINE_YAML_KEYS gets a warning and
+    is ignored, where the model rejects it. A non-mapping status-line is
+    reported by validate_hooks_files_consistency() and passes here. Never
+    raises.
+
+    Args:
+        config: Fully resolved configuration dictionary.
+
+    Returns:
+        List of error messages; empty when the status-line fields are valid.
+    """
+    status_line_raw = config.get('status-line')
+    if not isinstance(status_line_raw, dict):
+        return []
+    status_line = cast(dict[str, Any], status_line_raw)
+
+    unknown_keys = sorted(str(key) for key in status_line if key not in STATUS_LINE_YAML_KEYS)
+    if unknown_keys:
+        warning(
+            f'status-line: ignoring unknown key(s): {", ".join(unknown_keys)} '
+            f'(accepted keys: {", ".join(sorted(STATUS_LINE_YAML_KEYS))})',
+        )
+
+    errors: list[str] = []
+    refresh_interval = status_line.get('refresh-interval')
+    if refresh_interval is not None and (
+        isinstance(refresh_interval, bool) or not isinstance(refresh_interval, int) or refresh_interval < 1
+    ):
+        errors.append(
+            f'status-line.refresh-interval must be an integer of at least 1 (seconds), got {refresh_interval!r}',
+        )
     return errors
 
 
@@ -15732,9 +15785,12 @@ def _build_profile_settings(
       ``settings[key] = None`` verbatim. The writer deletes the on-disk key
       via RFC 7396 null-as-delete semantics in ``_merge_recursive()``.
     - **Key present with a non-None value** -- the builder performs the
-      usual processing (command-string construction for ``statusLine``,
-      ``_build_hooks_json()`` delegation for ``hooks``) and emits the
-      processed value.
+      usual processing (command-string construction for ``statusLine``
+      plus its optional ``padding`` and ``refreshInterval`` from the YAML
+      ``padding`` and ``refresh-interval``, ``_build_hooks_json()``
+      delegation for ``hooks``) and emits the processed value. The two
+      ``statusLine`` sub-keys follow the same membership rule: an absent
+      sub-key is omitted and a null one is emitted as ``None``.
 
     The ``hooks`` value in ``profile_config`` is either ``None`` (YAML null),
     absent (YAML omitted), or the full YAML hooks configuration dict with
@@ -15786,10 +15842,14 @@ def _build_profile_settings(
                     'command': status_line_command,
                 }
 
-                # Add optional padding
-                padding = status_line.get('padding')
-                if padding is not None:
-                    status_line_built['padding'] = padding
+                # Optional padding and refresh interval (seconds between timed
+                # re-runs) keep their YAML membership: a declared null passes
+                # through as None, which the shared-settings writer applies as
+                # a deletion and the isolated writer strips.
+                if 'padding' in status_line:
+                    status_line_built['padding'] = status_line['padding']
+                if 'refresh-interval' in status_line:
+                    status_line_built['refreshInterval'] = status_line['refresh-interval']
 
                 settings['statusLine'] = status_line_built
                 info(f'Setting statusLine: {filename}')
@@ -21086,7 +21146,11 @@ def replay_source_snapshot(config: dict[str, Any], source: LinkSource) -> tuple[
         components registry included -- and the digest of that same object.
     """
     candidate = deepcopy(config)
-    validation_errors = [*validate_components(candidate), *validate_hooks_files_consistency(candidate)]
+    validation_errors = [
+        *validate_components(candidate),
+        *validate_hooks_files_consistency(candidate),
+        *validate_status_line(candidate),
+    ]
     if validation_errors:
         for err in validation_errors:
             error(err)
@@ -22051,8 +22115,9 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # re-read config keys fresh, so one in-place filter pass suffices.
         component_errors = validate_components(config)
         hooks_consistency_errors = validate_hooks_files_consistency(config)
-        if component_errors or hooks_consistency_errors:
-            for err in [*component_errors, *hooks_consistency_errors]:
+        status_line_errors = validate_status_line(config)
+        if component_errors or hooks_consistency_errors or status_line_errors:
+            for err in [*component_errors, *hooks_consistency_errors, *status_line_errors]:
                 error(err)
             sys.exit(1)
         selector_errors = _validate_component_selector_args(

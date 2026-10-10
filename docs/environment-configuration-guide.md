@@ -196,7 +196,7 @@ All configuration keys use **kebab-case** (hyphenated lowercase), for example `m
 **Sub-key naming conventions:**
 
 - **Top-level keys** (`hooks`, `mcp-servers`, `status-line`, etc.): MUST be kebab-case (validated by `KNOWN_CONFIG_KEYS`)
-- **Sub-keys in structured sections** (`hooks.events[]`): MUST be kebab-case (the toolbox translates to camelCase for Claude Code JSON output)
+- **Sub-keys in structured sections** (`hooks.events[]`, `status-line`): MUST be kebab-case (the toolbox translates to camelCase for Claude Code JSON output)
 - **Sub-keys in free-form sections** (`user-settings`, `global-config`): MUST match Claude Code's native camelCase (pass-through, no translation)
 
 > **Note:** The Pydantic validation model (`EnvironmentConfig`) uses `populate_by_name=True` for testing convenience, which means CI validation accepts both `os_env_variables` and `os-env-variables`. However, the runtime setup script (`setup_environment.py`) uses `config.get('os-env-variables')` and will not recognize underscore variants. Always use kebab-case in your configuration files.
@@ -1031,7 +1031,7 @@ global-config:
 **Profile-owned keys (`status-line`, `hooks`) in non-command-names mode:** The two profile-owned keys support null-as-delete at the YAML root level via the deep-merge writer -- see [Profile-Level Settings Routing](#profile-level-settings-routing). Both top-level and nested nulls are covered end-to-end:
 
 - **Top-level null** (for example, `status-line: null`, `hooks: null`): deletes the entire on-disk key from `~/.claude/settings.json`.
-- **Nested null** (for example, `hooks: {PreToolUse: null}`): deletes only the nested sub-key while preserving the rest of the block (other hook event names).
+- **Nested null** (for example, `hooks: {PreToolUse: null}`, or `padding: null` or `refresh-interval: null` under `status-line`): deletes only the nested sub-key while preserving the rest of the block (other hook event names, the rest of the status line entry).
 
 The dict-membership construction in the data flow from YAML root to the writer preserves the distinction between "declared with explicit null" and "absent from YAML" -- only the former triggers deletion. OMITTING a profile-owned key from a subsequent YAML run does NOT delete it; see [Deferred Stale-Key Behavior](#deferred-stale-key-behavior-user-facing-contract) for the intentional preservation contract.
 
@@ -1039,7 +1039,7 @@ The dict-membership construction in the data flow from YAML root to the writer p
 
 #### `status-line`
 
-Status line script configuration. The script file and optional config file are downloaded to `~/.claude/hooks/`.
+Status line script configuration. The script file and optional config file are `hooks.files` entries, downloaded with the hook scripts to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without).
 
 - **Type:** `StatusLine | None`
 - **Default:** `None`
@@ -1047,8 +1047,9 @@ Status line script configuration. The script file and optional config file are d
 - **Fields:**
   - `file` (str, required) -- Script filename; must exactly match the basename of a `hooks.files` entry (a path form like `hooks/statusline.py` fails validation)
   - `padding` (int, optional) -- Padding value
+  - `refresh-interval` (int, optional, minimum 1) -- Re-runs the status line command every N seconds in addition to the event-driven updates; written as `settings.statusLine.refreshInterval`. Leave it unset to run the command only on events; set it when the status line shows time-based text or data that changes while the session is idle. In a base install (no `command-names`), omitting the key keeps an interval an earlier run wrote to `~/.claude/settings.json` (see [Deferred Stale-Key Behavior](#deferred-stale-key-behavior-user-facing-contract)), `refresh-interval: null` removes it, and `status-line: null` removes the whole entry. An isolated profile rebuilds its `config.json` on every run, so omitting the key there removes it
   - `config` (str, optional) -- Config file reference (appended as command argument); matched against `hooks.files` basenames after query-parameter stripping and basename extraction
-- **Note:** Both `file` and `config` (if specified) must exist in `hooks.files`. If `status-line` is configured, the `hooks` key must also be present.
+- **Note:** Both `file` and `config` (if specified) must exist in `hooks.files`. If `status-line` is configured, the `hooks` key must also be present. Keys other than `file`, `config`, `padding`, and `refresh-interval` fail model validation, and the setup ignores them with a warning.
 - **Example:**
 
 ```yaml
@@ -1063,6 +1064,7 @@ status-line:
   file: "statusline.py"
   config: "statusline-config.yaml"
   padding: 0
+  refresh-interval: 60
 ```
 
 ### Hooks

@@ -325,6 +325,49 @@ class TestStatusLineFileReference:
         assert 'hooks.files' in str(exc_info.value).lower()
 
 
+def _status_line_config(status_line: dict[str, object]) -> dict[str, object]:
+    """A configuration whose status-line script is listed in hooks.files."""
+    return {
+        'name': 'Test',
+        'hooks': {'files': ['hooks/status.py'], 'events': []},
+        'status-line': {'file': 'status.py', **status_line},
+    }
+
+
+class TestStatusLineRefreshInterval:
+    """status-line.refresh-interval: an optional integer of at least 1 second."""
+
+    def test_accepted_through_alias(self) -> None:
+        """The kebab-case YAML key sets the field."""
+        config = EnvironmentConfig.model_validate(_status_line_config({'refresh-interval': 60}))
+        assert config.status_line is not None
+        assert config.status_line.refresh_interval == 60
+
+    def test_absent_and_null_leave_it_unset(self) -> None:
+        """An omitted key and an explicit null both leave the interval unset."""
+        absent = EnvironmentConfig.model_validate(_status_line_config({}))
+        null = EnvironmentConfig.model_validate(_status_line_config({'refresh-interval': None}))
+        assert absent.status_line is not None
+        assert absent.status_line.refresh_interval is None
+        assert null.status_line is not None
+        assert null.status_line.refresh_interval is None
+
+    @pytest.mark.parametrize('value', [0, -1, 1.5, '60', True], ids=repr)
+    def test_rejected_with_the_field_named(self, value: object) -> None:
+        """A value below 1 or anything but a true integer fails, naming the field."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate(_status_line_config({'refresh-interval': value}))
+        assert 'status-line.refresh-interval' in str(exc_info.value)
+
+    @pytest.mark.parametrize('key', ['refreshInterval', 'refresh_interval', 'interval'])
+    def test_unknown_key_rejected(self, key: str) -> None:
+        """A key StatusLine does not define fails validation, the Python field name included."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate(_status_line_config({key: 60}))
+        assert f'status-line.{key}' in str(exc_info.value)
+        assert 'Extra inputs are not permitted' in str(exc_info.value)
+
+
 class TestEdgeCases:
     """Test edge cases for hooks cross-validation."""
 

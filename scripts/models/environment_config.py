@@ -1114,8 +1114,22 @@ class Skill(BaseModel):
 class StatusLine(BaseModel):
     """Status line configuration for custom status display."""
 
-    file: str = Field(..., description='Script file path to download to ~/.claude/hooks/')
+    model_config = ConfigDict(extra='forbid')
+
+    file: str = Field(
+        ...,
+        description='Script filename matching the basename of a hooks.files entry; '
+        'downloaded with the hooks files and run as the status line command',
+    )
     padding: int | None = Field(None, description='Optional padding value for the status line')
+    refresh_interval: int | None = Field(
+        None,
+        alias='refresh-interval',
+        ge=1,
+        strict=True,
+        description='Optional interval in seconds (at least 1) at which Claude Code re-runs the status line '
+        'command in addition to its event-driven updates; written as settings.statusLine.refreshInterval',
+    )
     config: str | None = Field(
         None,
         description='Optional config file reference to download and append as command argument',
@@ -1507,7 +1521,7 @@ class EnvironmentConfig(BaseModel):
     status_line: StatusLine | None = Field(
         None,
         alias='status-line',
-        description='Status line configuration with script file and optional padding',
+        description='Status line configuration with script file, optional config, padding and refresh interval',
     )
     install_nodejs: bool | None = Field(
         None,
