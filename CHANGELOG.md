@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.2.0...v8.3.0) (2026-10-11)
+
+
+### Features
+
+* build each PEP 723 hook's uv environment during setup ([#481](https://github.com/alex-feel/claude-code-toolbox/issues/481)) ([9c4a9f7](https://github.com/alex-feel/claude-code-toolbox/commit/9c4a9f70eed3b5b5439c4e890c71d3a75a1ef6e5))
+
 ## [8.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.1.0...v8.2.0) (2026-10-10)
 
 
