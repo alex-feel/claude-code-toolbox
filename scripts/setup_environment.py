@@ -16548,6 +16548,28 @@ def _run_hook_environment_sync(command: list[str], *, cwd: Path, env: dict[str, 
     return run_command(command, capture_output=False, cwd=str(cwd), env=env)
 
 
+def _resolve_hook_uv() -> str | None:
+    """Find the uv that builds the hook environments.
+
+    The uv on PATH comes first, because the written hook commands run the uv
+    of the session's PATH. When PATH holds none, the ``UV`` variable names
+    the uv that started the run: ``uv run`` and ``uvx`` set it for their
+    child, and a child run inherits it from its parent, whose Step 13 may
+    have rebuilt PATH from the Windows registry and dropped a uv that only
+    the starting shell's PATH held before the child started.
+
+    Returns:
+        The uv executable, or None when neither source names one.
+    """
+    found = shutil.which('uv')
+    if found is not None:
+        return found
+    launcher = os.environ.get('UV')
+    if launcher and Path(launcher).is_file():
+        return launcher
+    return None
+
+
 def prepare_hook_environments(
     config: dict[str, Any],
     hooks_dir: Path,
@@ -23248,10 +23270,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         dependent_results: list[DependentResult] = []
         scheduled_update_failure: str | None = None
         # The uv that builds the hook environments in Step 19, resolved on
-        # the PATH the run started with (Step 1's installs included): Step
-        # 13 rebuilds PATH from the registry on Windows, which drops a uv
-        # that only the starting shell's PATH holds
-        hook_uv_executable = shutil.which('uv')
+        # the PATH the run started with (Step 1's installs included), else
+        # from the UV variable of the uv that started the run: Step 13
+        # rebuilds PATH from the registry on Windows, which drops a uv that
+        # only the starting shell's PATH holds, and a child run starts with
+        # that rebuilt PATH
+        hook_uv_executable = _resolve_hook_uv()
 
         # Step 4: Download/copy custom files
         print()

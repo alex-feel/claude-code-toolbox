@@ -281,6 +281,44 @@ class TestProfileRuns:
         )
         assert not errors, '\n'.join(errors)
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Step 13 rebuilds PATH from the registry on Windows only')
+    def test_child_run_finds_uv_through_the_launcher_variable(
+        self, e2e_isolated_home: dict[str, Path], repo: Path, hook_sync_recorder: HookSyncRecorder,
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dependent refreshed as a child starts with the parent's rebuilt PATH and still finds uv.
+
+        The parent resolves uv before Step 13 drops its directory from PATH;
+        the child starts with that PATH and resolves uv from the UV
+        variable the launching uv set, which the parent hands down.
+        """
+        uv_before = shutil.which('uv')
+        assert uv_before is not None, 'the suite runs under uv, so uv is on PATH when the run starts'
+        uv_dir = Path(uv_before).parent
+        claude_dir = e2e_isolated_home['claude_dir']
+        cfg = write_config(repo, 'hooks.yaml', _hooks_config())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        assert run_main([
+            str(cfg), *SKIP, '--yes', '--command-names', 'team-2', '--link-dirs', 'hooks', '--link-from', 'team-1',
+        ]) == 0
+        hook_sync_recorder.clear()
+
+        def rebuild_without_uv() -> bool:
+            entries = os.environ['PATH'].split(os.pathsep)
+            os.environ['PATH'] = os.pathsep.join(entry for entry in entries if Path(entry) != uv_dir)
+            return True
+
+        monkeypatch.setattr(setup_environment, 'refresh_path_from_registry', rebuild_without_uv)
+        monkeypatch.setenv('UV', uv_before)
+        runner = write_child_runner(tmp_path, monkeypatch)
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes'], argv0=str(runner)) == 0
+
+        records = hook_sync_recorder.records()
+        errors = _sync_errors(records, [claude_dir / 'team-1' / 'hooks', claude_dir / 'team-2' / 'hooks'])
+        assert not errors, '\n'.join(errors)
+        assert [Path(record['command'][0]) for record in records] == [Path(uv_before), Path(uv_before)]
+
     def test_profile_all_children_prepare_every_profile(
         self, e2e_isolated_home: dict[str, Path], repo: Path, hook_sync_recorder: HookSyncRecorder,
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

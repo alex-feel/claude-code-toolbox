@@ -239,6 +239,31 @@ class TestHookSyncEnvironment:
         assert env['CCT_HOOK_ENV_PROBE'] == 'present'
 
 
+class TestResolveHookUv:
+    """The uv on PATH comes first; the UV variable of the launching uv stands in when PATH holds none."""
+
+    def test_path_uv_wins(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        launcher = tmp_path / 'launcher-uv.exe'
+        launcher.write_text('', encoding='utf-8')
+        monkeypatch.setattr(setup_environment.shutil, 'which', lambda *_args, **_kwargs: '/bin/uv')
+        monkeypatch.setenv('UV', str(launcher))
+        assert setup_environment._resolve_hook_uv() == '/bin/uv'
+
+    def test_launcher_variable_when_path_holds_none(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        launcher = tmp_path / 'launcher-uv.exe'
+        launcher.write_text('', encoding='utf-8')
+        monkeypatch.setattr(setup_environment.shutil, 'which', lambda *_args, **_kwargs: None)
+        monkeypatch.setenv('UV', str(launcher))
+        assert setup_environment._resolve_hook_uv() == str(launcher)
+
+    def test_none_without_either(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(setup_environment.shutil, 'which', lambda *_args, **_kwargs: None)
+        monkeypatch.delenv('UV', raising=False)
+        assert setup_environment._resolve_hook_uv() is None
+        monkeypatch.setenv('UV', str(tmp_path / 'gone' / 'uv.exe'))
+        assert setup_environment._resolve_hook_uv() is None
+
+
 class TestRunHookEnvironmentSync:
     """The runner hands uv the hooks directory and the composed environment."""
 
