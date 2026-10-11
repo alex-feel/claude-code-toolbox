@@ -240,7 +240,7 @@ class TestMainDeselectionWiring:
 
     Every other test of execute_deselection_cleanup builds the plan by
     hand; these run the REAL wiring: choke-point plan collection from the
-    unfiltered config, then Step 22/23 cleanup against actual files under
+    unfiltered config, then Step 23 cleanup against actual files under
     the isolated home.
     """
 
@@ -284,7 +284,7 @@ class TestMainDeselectionWiring:
         self,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Step 22 deletes the deselected component's file and keeps the rest."""
+        """Step 23 deletes the deselected component's file and keeps the rest."""
         claude_dir = e2e_isolated_home['claude_dir']
         agents_dir = claude_dir / 'agents'
         agents_dir.mkdir(parents=True, exist_ok=True)

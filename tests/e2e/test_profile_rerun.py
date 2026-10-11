@@ -872,7 +872,7 @@ class TestProfileAll:
         assert 'Job cc-toolbox-update-team-1: unchanged (registered as the configuration asks)' in output
         assert 'Job cc-toolbox-update-team-2: unchanged (registered as the configuration asks)' in output
         assert 'Job: none (the profile links content from profile "team-1", whose job refreshes it)' in output
-        assert 'Step 24: No scheduled update job (auto-update not declared)' in output, 'the plain base has none'
+        assert 'Step 25: No scheduled update job (auto-update not declared)' in output, 'the plain base has none'
 
     def test_non_admin_windows_parent_elevates_for_the_jobs_only_when_one_changes(
         self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],

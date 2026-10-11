@@ -5,8 +5,13 @@ This hook is triggered by PostToolUse events for Edit/MultiEdit/Write operations
 It receives a config file path as the first argument.
 
 The script imports its shared helper from its own directory, the way a hook
-reaches a module declared in ``hooks.helpers``.
+reaches a module declared in ``hooks.helpers``. Its PEP 723 block declares no
+dependencies, so the setup prepares its uv environment without the network.
 """
+
+# /// script
+# dependencies = []
+# ///
 
 import json
 import sys

@@ -313,6 +313,11 @@ DEFAULT_ARRAY_UNION_KEYS: set[str] = {
     'permissions.ask',
 }
 
+# The Python version every uv-launched hook runs on. _hook_launcher_args()
+# writes it into the hook command, and prepare_hook_environments() builds
+# each hook's environment for the same interpreter, so the two never diverge.
+HOOK_LAUNCHER_PYTHON_VERSION = '3.12'
+
 # Keys that contain shell commands requiring tilde expansion
 # These keys may reference file paths that need ~ expanded to absolute paths
 # Uses expand_tildes_in_command() for consistent expansion (DRY with commit 46a086b)
@@ -1169,6 +1174,9 @@ class InstallationPlan:
     hooks_events: list[dict[str, Any]] = field(
         default_factory=lambda: list[dict[str, Any]](),
     )
+    # The wired Python hook and status-line files; Step 19 builds the uv
+    # environment of each one that declares PEP 723 metadata after download
+    hook_environments: list[str] = field(default_factory=lambda: list[str]())
     mcp_servers: list[dict[str, Any]] = field(
         default_factory=lambda: list[dict[str, Any]](),
     )
@@ -1261,7 +1269,7 @@ class InstallationPlan:
     # directory, each marked [re-rooted] in the summary
     rerooted_paths: list[RerootedPath] = field(default_factory=lambda: list[RerootedPath]())
 
-    # The profile's daily update job (the auto-update key): what Step 24 does
+    # The profile's daily update job (the auto-update key): what Step 25 does
     # with it, the warnings about it, and the last scheduled run on record
     scheduled_update: 'ScheduledUpdatePlan | None' = None
     scheduled_update_warnings: list[str] = field(default_factory=lambda: list[str]())
@@ -4041,7 +4049,7 @@ def has_deselected_items(deselected: dict[str, list[Any]]) -> bool:
 # be compared quote-insensitively; in a direct command, quotes are literal
 # shell syntax and stripping them would conflate distinct commands.
 _BUILT_FILE_COMMAND_PATTERN = re.compile(
-    r'(?:uv run --no-project --python 3\.12 |node )?"[^"]*"(?: "[^"]*")?',
+    rf'(?:uv run --no-project --python {re.escape(HOOK_LAUNCHER_PYTHON_VERSION)} |node )?"[^"]*"(?: "[^"]*")?',
 )
 
 
@@ -9830,6 +9838,7 @@ def collect_installation_plan(
         hooks_files=hooks_files,
         hooks_helpers=hooks_helpers,
         hooks_events=hooks_events,
+        hook_environments=hook_environment_candidate_names(config),
         mcp_servers=mcp_servers,
         dependency_commands=dependency_commands,
         system_prompt=system_prompt,
@@ -9929,6 +9938,11 @@ def display_installation_summary(
             type_counts[t] = type_counts.get(t, 0) + 1
         type_parts = [f'{count} {name}' for name, count in sorted(type_counts.items())]
         _print(f'    ({", ".join(type_parts)})')
+    if plan.hook_environments:
+        _print(
+            f'  * Hook environments: {", ".join(plan.hook_environments)} '
+            '(uv builds an environment after download for each file with PEP 723 metadata)',
+        )
     _print(f'  * MCP servers: {len(plan.mcp_servers)}')
 
     # Component selection
@@ -10170,7 +10184,7 @@ def display_installation_summary(
             _print(f'  * {_stale_control_copy_line(copy)}')
         _print(f'  {STALE_CONTROLS_RERUN_NOTE}')
 
-    # The profile's daily update job: what Step 24 registers, re-registers,
+    # The profile's daily update job: what Step 25 registers, re-registers,
     # keeps or removes, the command it runs, where its state lives, and the
     # last scheduled run on record
     if plan.scheduled_update is not None:
@@ -14289,7 +14303,7 @@ PROFILE_SOURCES: dict[str, str] = {
 ALL_PROFILES = 'all'
 
 # The hidden argument a parent run passes to every child it starts -- the
-# children of --profile all, the dependents a source's Step 23 refreshes, and
+# children of --profile all, the dependents a source's Step 24 refreshes, and
 # the stale source a dependent run refreshes first: the parent's report covers
 # the profiles its children run, so a child lists none as unrefreshed and
 # leaves the dependent refresh to the parent
@@ -14303,7 +14317,7 @@ RUN_ALL_COMMANDS_FLAG = '--run-all-commands'
 
 # The hidden argument a dependent run adds, beside --child-run, to the
 # refresh of its stale source: the named dependent installs itself once the
-# source's run returns, so the source's Step 23 refreshes every other
+# source's run returns, so the source's Step 24 refreshes every other
 # dependent and leaves that one out
 FOR_DEPENDENT_FLAG = '--for-dependent'
 
@@ -15318,7 +15332,7 @@ def _hook_launcher_args(file_name: str) -> list[str]:
     """
     lowered_name = file_name.lower()
     if lowered_name.endswith(('.py', '.pyw')):
-        return ['uv', 'run', '--no-project', '--python', '3.12']
+        return ['uv', 'run', '--no-project', '--python', HOOK_LAUNCHER_PYTHON_VERSION]
     if lowered_name.endswith(('.js', '.mjs', '.cjs')):
         return ['node']
     return []
@@ -16288,11 +16302,13 @@ def dependents_remedy(dependents: list[InstalledProfile]) -> list[str]:
     ]
 
 
-def wired_hook_file_names(config: dict[str, Any]) -> list[str]:
+def wired_hook_file_names(config: dict[str, Any], *, launched_only: bool = False) -> list[str]:
     """List the hooks-directory files the configuration's hook events and status line run.
 
     Args:
         config: The resolved configuration.
+        launched_only: Whether to leave out the ``config`` references, which
+            Claude Code passes to the scripts as arguments and never launches.
 
     Returns:
         The query-stripped basenames of every command hook's ``command``
@@ -16319,12 +16335,14 @@ def wired_hook_file_names(config: dict[str, Any]) -> list[str]:
         command = event_dict.get('command')
         if isinstance(command, str) and _installed_resource_name(command) in listed:
             _add(command)
-        _add(event_dict.get('config'))
+        if not launched_only:
+            _add(event_dict.get('config'))
     status_line = config.get('status-line')
     if isinstance(status_line, dict):
         status_dict = cast(dict[str, Any], status_line)
         _add(status_dict.get('file'))
-        _add(status_dict.get('config'))
+        if not launched_only:
+            _add(status_dict.get('config'))
     return names
 
 
@@ -16339,6 +16357,304 @@ def missing_wired_hook_files(config: dict[str, Any], hooks_dir: Path) -> list[st
         The absolute paths that do not exist as files.
     """
     return [str(hooks_dir / name) for name in wired_hook_file_names(config) if not (hooks_dir / name).is_file()]
+
+
+# The sidecar lockfile uv reads beside a PEP 723 script (``uv lock --script``
+# writes ``<script>.lock``). Without one, ``uv run`` ignores UV_LOCKED and
+# UV_FROZEN with a warning while ``uv sync --script`` refuses to run, so the
+# hook environment step drops the two for a script that has no lockfile.
+HOOK_SCRIPT_LOCKFILE_SUFFIX = '.lock'
+_LOCKFILE_ONLY_UV_SETTINGS: tuple[str, ...] = ('UV_LOCKED', 'UV_FROZEN')
+# The line that opens a PEP 723 inline metadata block of type ``script``
+_PEP723_SCRIPT_TAG = '# /// script'
+
+
+class HookEnvironmentResult(NamedTuple):
+    """What the hook environment step did for a profile's uv-launched hooks.
+
+    Attributes:
+        prepared: The hook files whose uv environment was built or checked.
+        skipped: The Python hook files without PEP 723 metadata, which uv
+            runs on the interpreter alone, so they have no environment.
+        failed: The hook files whose sync failed, each spelled as the
+            written hook command spells it.
+    """
+
+    prepared: list[str]
+    skipped: list[str]
+    failed: list[str]
+
+    @property
+    def ran(self) -> bool:
+        """Whether the step prepared or skipped a Python hook; a failure ends the run in the error block instead."""
+        return bool(self.prepared or self.skipped)
+
+    def completion_line(self) -> str:
+        """Render the counts for the closing summary, which a run with a failed sync never reaches."""
+        parts: list[str] = []
+        if self.prepared:
+            parts.append(f'{len(self.prepared)} prepared')
+        if self.skipped:
+            parts.append(f'{len(self.skipped)} without PEP 723 metadata')
+        return ', '.join(parts)
+
+
+def declares_pep723_script(path: Path) -> bool:
+    """Tell whether a hook script declares PEP 723 inline metadata.
+
+    The opening tag alone decides. uv builds an environment for a script that
+    opens a ``# /// script`` block, and a block the tag opens without closing
+    makes ``uv run`` and ``uv sync --script`` fail alike, which the sync must
+    surface rather than skip. A ``# /// pyproject`` block or no block means
+    uv runs the file on the interpreter alone.
+
+    Args:
+        path: The hook file.
+
+    Returns:
+        True when a line of the file is the opening tag; False for a file
+        without one, and for a file that cannot be read as UTF-8 text, with
+        a warning.
+    """
+    try:
+        with path.open(encoding='utf-8') as handle:
+            return any(line.rstrip('\r\n') == _PEP723_SCRIPT_TAG for line in handle)
+    except (OSError, UnicodeDecodeError) as exc:
+        warning(f'Cannot read {path} for PEP 723 metadata: {exc}')
+        return False
+
+
+def hook_environment_candidate_names(config: dict[str, Any]) -> list[str]:
+    """Name the wired hook files the toolbox launches through uv.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        The query-stripped basenames of every command hook and status-line
+        file whose written command starts with uv, in the order
+        wired_hook_file_names() lists them; config files, which Claude Code
+        passes as arguments, and JavaScript hooks are left out.
+    """
+    return [
+        name for name in wired_hook_file_names(config, launched_only=True)
+        if _hook_launcher_args(name)[:1] == ['uv']
+    ]
+
+
+def hook_environment_sync_command(hook_path: str, uv_executable: str = 'uv') -> list[str]:
+    """Build the uv command that prepares the environment of one hook file.
+
+    Args:
+        hook_path: The hook path exactly as the written hook command spells
+            it, because uv keys the environment by that spelling.
+        uv_executable: The uv to run, the bare name for a command shown to
+            the user and the resolved path for the one the step runs.
+
+    Returns:
+        The argument vector of ``uv sync --script``, requesting the Python
+        version the written command requests.
+    """
+    return [uv_executable, 'sync', '--script', hook_path, '--python', HOOK_LAUNCHER_PYTHON_VERSION]
+
+
+def hook_environment_sync_command_text(hook_path: str) -> str:
+    """Render the sync command of one hook file for a shell, the path double-quoted."""
+    return ' '.join(f'"{part}"' if part == hook_path else part for part in hook_environment_sync_command(hook_path))
+
+
+def _settings_env_block(path: Path) -> dict[str, str]:
+    """Read the ``env`` block of a settings file a session applies to its hooks.
+
+    Args:
+        path: A ``settings.json`` or ``config.json``.
+
+    Returns:
+        The string-valued entries of the file's top-level ``env`` object;
+        empty for a missing file, invalid JSON, or a file without one.
+    """
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    env = data.get('env') if isinstance(data, dict) else None
+    if not isinstance(env, dict):
+        return {}
+    return {str(key): value for key, value in cast(dict[str, object], env).items() if isinstance(value, str)}
+
+
+def hook_sync_environment(
+    os_env_variables: Mapping[str, str | None],
+    settings_files: Sequence[Path],
+    *,
+    lockfile_present: bool,
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Compose the environment a hook's environment is built in.
+
+    A session hands a hook the process environment with the profile's
+    ``os-env-variables`` applied (a base run writes them to the OS, the
+    ``launch.sh`` of an isolated run sources them from its loader, and a
+    null entry removes the variable), then the ``env`` block of each
+    settings file it loads, later files overriding earlier ones. The sync
+    runs in the same environment, so a ``UV_CACHE_DIR``, an index URL or a
+    proxy there decides the same environment for both commands. Without a
+    sidecar lockfile, ``uv run`` ignores ``UV_LOCKED`` and ``UV_FROZEN``
+    with a warning while ``uv sync --script`` refuses to run, so the two are
+    dropped for such a file.
+
+    Args:
+        os_env_variables: The resolved ``os-env-variables`` of the run.
+        settings_files: The settings files a session of the profile reads,
+            in the order Claude Code applies them.
+        lockfile_present: Whether ``<script>.lock`` lies beside the script.
+        base: The environment to start from; the process environment when
+            omitted.
+
+    Returns:
+        The environment for the sync.
+    """
+    environment = dict(os.environ if base is None else base)
+    for name, value in os_env_variables.items():
+        if value is None:
+            environment.pop(name, None)
+        else:
+            environment[name] = value
+    for path in settings_files:
+        environment.update(_settings_env_block(path))
+    if not lockfile_present:
+        for name in _LOCKFILE_ONLY_UV_SETTINGS:
+            environment.pop(name, None)
+    return environment
+
+
+def _run_hook_environment_sync(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run one ``uv sync --script`` with uv's own output on the console.
+
+    The E2E suite replaces this function with a recorder, in a parent run
+    and in every child run it starts.
+
+    Args:
+        command: The argument vector hook_environment_sync_command() built.
+        cwd: The hooks directory. ``uv sync --script`` reads a ``uv.toml`` or
+            a ``[tool.uv]`` table from the working directory, which the
+            written ``uv run --no-project`` command does not, so the sync
+            never runs where the setup was started.
+        env: The environment hook_sync_environment() composed.
+
+    Returns:
+        The completed process.
+    """
+    return run_command(command, capture_output=False, cwd=str(cwd), env=env)
+
+
+def prepare_hook_environments(
+    config: dict[str, Any],
+    hooks_dir: Path,
+    *,
+    os_env_variables: Mapping[str, str | None],
+    settings_files: Sequence[Path],
+    uv_executable: str | None,
+) -> HookEnvironmentResult:
+    """Build the uv environment of every PEP 723 hook the configuration wires.
+
+    The toolbox writes every Python command hook and status line as ``uv run
+    --no-project --python <version> "<hooks dir>/<file>"``. For a file with
+    PEP 723 metadata, uv builds a persistent environment on that command's
+    first run, inside Claude Code's hook timeout and before the hook's own
+    code starts. This builds it now with ``uv sync --script`` on the same
+    path string, so the first launch installs nothing; the sync installs and
+    never executes the hook, and rewrites a stale sidecar lockfile exactly as
+    that first launch would. A dependent whose hooks/ is linked prepares its
+    own paths: uv keys the environment by the path as spelled, so the
+    dependent's spelling through the link has an environment of its own.
+
+    Args:
+        config: The resolved configuration.
+        hooks_dir: The profile's hooks directory, as the written commands
+            spell it.
+        os_env_variables: The resolved ``os-env-variables`` of the run.
+        settings_files: The settings files a session of the profile reads,
+            in the order Claude Code applies them.
+        uv_executable: The uv the run found on PATH when it started, or
+            None when there was none; the written hook commands need it too.
+
+    Returns:
+        The prepared, skipped and failed files.
+    """
+    candidates = hook_environment_candidate_names(config)
+    result = HookEnvironmentResult([], [], [])
+    if not candidates:
+        info('No Python hooks to prepare environments for')
+        return result
+    if uv_executable is None:
+        error('uv is not on PATH; the hook commands this run wrote need it')
+        result.failed.extend((hooks_dir / name).as_posix() for name in candidates)
+        return result
+    for name in candidates:
+        path = hooks_dir / name
+        hook_path = path.as_posix()
+        if not path.is_file():
+            error(f'Hook file not found: {hook_path}')
+            result.failed.append(hook_path)
+            continue
+        if not declares_pep723_script(path):
+            info(f'{name}: no PEP 723 metadata, runs on the interpreter alone')
+            result.skipped.append(name)
+            continue
+        info(f'Preparing the environment of {name}...')
+        environment = hook_sync_environment(
+            os_env_variables, settings_files,
+            lockfile_present=path.with_name(name + HOOK_SCRIPT_LOCKFILE_SUFFIX).is_file(),
+        )
+        completed = _run_hook_environment_sync(
+            hook_environment_sync_command(hook_path, uv_executable), cwd=hooks_dir, env=environment,
+        )
+        if completed.returncode != 0:
+            if completed.stderr:
+                error(completed.stderr.strip())
+            error(f'Failed to prepare the environment of {name} (exit code {completed.returncode})')
+            result.failed.append(hook_path)
+        else:
+            result.prepared.append(name)
+    return result
+
+
+def run_hook_environment_step(
+    config: dict[str, Any],
+    hooks_dir: Path,
+    *,
+    os_env_variables: Mapping[str, str | None],
+    settings_files: Sequence[Path],
+    uv_executable: str | None,
+    download_failed: bool,
+) -> HookEnvironmentResult:
+    """Run Step 19: build the uv environment of every PEP 723 hook the run wires.
+
+    Args:
+        config: The resolved configuration.
+        hooks_dir: The profile's hooks directory, as the written commands
+            spell it.
+        os_env_variables: The resolved ``os-env-variables`` of the run.
+        settings_files: The settings files a session of the profile reads,
+            in the order Claude Code applies them.
+        uv_executable: The uv the run found on PATH when it started, or None.
+        download_failed: Whether this run's hook download failed; the step
+            then has nothing complete to prepare, and the run already ends
+            with exit code 1.
+
+    Returns:
+        The prepared, skipped and failed files; all empty when skipped.
+    """
+    print()
+    print(f'{Colors.CYAN}Step 19: Preparing hook environments...{Colors.NC}')
+    if download_failed:
+        info('Skipped: the hook files failed to download')
+        return HookEnvironmentResult([], [], [])
+    return prepare_hook_environments(
+        config, hooks_dir, os_env_variables=os_env_variables, settings_files=settings_files,
+        uv_executable=uv_executable,
+    )
 
 
 def order_profiles_source_first(profiles: list[InstalledProfile]) -> list[InstalledProfile]:
@@ -17128,10 +17444,10 @@ def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude
         else:
             warning(f'Cannot remove settings.json key(s): {", ".join(residue.settings_keys)}')
     if residue.scheduled_job:
-        # The job is removed by Step 24, which checks the rights the removal
+        # The job is removed by Step 25, which checks the rights the removal
         # needs, reports a refused removal and keeps the job recorded until
         # it is gone; here the residue only names it
-        info(f'The scheduled update job {residue.scheduled_job} is removed in Step 24')
+        info(f'The scheduled update job {residue.scheduled_job} is removed in Step 25')
 
 
 def write_manifest(
@@ -18298,9 +18614,9 @@ def run_scheduled_update_step(
     manifest_path: Path,
     previous_record: object,
 ) -> str | None:
-    """Run Step 24: the profile's daily update job.
+    """Run Step 25: the profile's daily update job.
 
-    Step 19 wrote the manifest for the job the plan leaves behind, so a
+    Step 20 wrote the manifest for the job the plan leaves behind, so a
     removal the scheduler refuses writes the job back into the manifest:
     the job still exists, and the next run has to plan its removal again.
 
@@ -18309,7 +18625,7 @@ def run_scheduled_update_step(
         plan: The plan decided before consent.
         warnings_: Warnings about the job, printed with the step.
         now: The local time.
-        manifest_path: The profile's manifest, written by Step 19.
+        manifest_path: The profile's manifest, written by Step 20.
         previous_record: The ``auto_update`` field of the manifest the run
             started from, or None.
 
@@ -18319,13 +18635,13 @@ def run_scheduled_update_step(
     print()
     if plan.action == 'none':
         detail = f' ({plan.reason})' if plan.reason else ' (auto-update not declared)'
-        print(f'{Colors.CYAN}Step 24: No scheduled update job{detail}{Colors.NC}')
+        print(f'{Colors.CYAN}Step 25: No scheduled update job{detail}{Colors.NC}')
         return None
     if plan.action == 'remove':
-        print(f'{Colors.CYAN}Step 24: Removing the scheduled update job {plan.name}...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 25: Removing the scheduled update job {plan.name}...{Colors.NC}')
     else:
         assert plan.spec is not None
-        print(f'{Colors.CYAN}Step 24: Scheduling the daily update job {plan.name} ({plan.spec.describe()})...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 25: Scheduling the daily update job {plan.name} ({plan.spec.describe()})...{Colors.NC}')
     for line in warnings_:
         warning(line)
     failure = apply_scheduled_update(platform_, plan, now=now)
@@ -18342,7 +18658,7 @@ def _record_manifest_auto_update(manifest_path: Path, record: dict[str, Any] | N
     """Replace the ``auto_update`` field of a written manifest.
 
     Args:
-        manifest_path: The manifest Step 19 wrote.
+        manifest_path: The manifest Step 20 wrote.
         record: The field's new value, as auto_update_manifest_record() renders it.
 
     Returns:
@@ -18425,7 +18741,7 @@ def scheduled_update_completion_line(plan: ScheduledUpdatePlan, failure: str | N
     """Render the completion summary's scheduled update row.
 
     Args:
-        plan: The plan Step 24 applied.
+        plan: The plan Step 25 applied.
         failure: The step's failure, or None.
 
     Returns:
@@ -20712,7 +21028,7 @@ def unrefreshed_profile_lines(home_dir: Path, this_profile: str, refreshed: froz
     Args:
         home_dir: User home directory.
         this_profile: This run's profile display name.
-        refreshed: The dependents this run refreshed in Step 23.
+        refreshed: The dependents this run refreshed in Step 24.
 
     Returns:
         One line per other installed profile this run did not refresh.
@@ -20766,13 +21082,13 @@ def run_dependent_refresh_step(
     source_commands: frozenset[str] = frozenset(),
     run_all_commands: bool = False,
 ) -> list[DependentResult]:
-    """Run Step 23: refresh every profile that links content from this one.
+    """Run Step 24: refresh every profile that links content from this one.
 
     Args:
         dependents: The dependents content_dependents() found before the run.
         source_name: This run's profile display name.
         child_run: Whether another run started this one -- --profile all,
-            which runs every installed profile itself, or a source's Step 23,
+            which runs every installed profile itself, or a source's Step 24,
             which refreshes every dependent itself.
         for_dependent: The dependent whose run started this one to refresh
             its stale source: it installs itself afterwards, so this step
@@ -20791,24 +21107,24 @@ def run_dependent_refresh_step(
         others = dependents_except(dependents, for_dependent)
         note = f'(profile "{for_dependent}" installs itself after this run)'
         if not others:
-            print(f'{Colors.CYAN}Step 23: No other installed profile links content from "{source_name}" {note}{Colors.NC}')
+            print(f'{Colors.CYAN}Step 24: No other installed profile links content from "{source_name}" {note}{Colors.NC}')
             return []
         names = ', '.join(profile.name for profile in others)
-        print(f'{Colors.CYAN}Step 23: Refreshing {len(others)} other dependent profile(s): {names} {note}...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 24: Refreshing {len(others)} other dependent profile(s): {names} {note}...{Colors.NC}')
         return refresh_dependents(others, source_commands=source_commands, run_all_commands=run_all_commands)
     if child_run:
-        print(f'{Colors.CYAN}Step 23: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
+        print(f'{Colors.CYAN}Step 24: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
         return []
     if not dependents:
-        print(f'{Colors.CYAN}Step 23: No installed profile links content from "{source_name}"{Colors.NC}')
+        print(f'{Colors.CYAN}Step 24: No installed profile links content from "{source_name}"{Colors.NC}')
         return []
     names = ', '.join(profile.name for profile in dependents)
-    print(f'{Colors.CYAN}Step 23: Refreshing {len(dependents)} dependent profile(s): {names}...{Colors.NC}')
+    print(f'{Colors.CYAN}Step 24: Refreshing {len(dependents)} dependent profile(s): {names}...{Colors.NC}')
     return refresh_dependents(dependents, source_commands=source_commands, run_all_commands=run_all_commands)
 
 
 def child_run_environment() -> dict[str, str]:
-    """Build the environment of a child run (of --profile all, a source's Step 23, or a dependent's source refresh).
+    """Build the environment of a child run (of --profile all, a source's Step 24, or a dependent's source refresh).
 
     Every argument twin except the repository credential is dropped, so a
     variable set for the parent cannot change what a child installs, and
@@ -21215,11 +21531,11 @@ class SourceRefresh(NamedTuple):
         digest: The digest of the configuration this run was given, as the
             source's run records it; the refreshed manifest must hold it.
         dependents: The source's other content dependents, which the
-            source's Step 23 refreshes.
+            source's Step 24 refreshes.
         skip_install: Whether this run skips the Claude Code installation,
             forwarded to the source's run.
         run_all_commands: Whether this run was given --run-all-commands,
-            forwarded to the source's run, whose Step 23 hands it to every
+            forwarded to the source's run, whose Step 24 hands it to every
             other dependent.
         snapshot: The resolved-config.yaml the source's run records for the
             configuration this run was given (replay_source_snapshot()), the
@@ -21252,7 +21568,7 @@ class SourceRefresh(NamedTuple):
 
         Args:
             this_profile: The dependent's display name, which the source's
-                Step 23 leaves out.
+                Step 24 leaves out.
 
         Returns:
             ``--profile SOURCE --yes --child-run --for-dependent THIS``, the
@@ -21398,12 +21714,12 @@ def refresh_source_profile(refresh: SourceRefresh, this_profile: str) -> int:
     program this run started from, with the environment
     child_run_environment() builds: ``--child-run`` because this run reports
     on the profiles the refresh covers, ``--for-dependent`` so the source's
-    Step 23 refreshes its other dependents and leaves this profile to
+    Step 24 refreshes its other dependents and leaves this profile to
     install itself, the parent's ``--skip-install`` so the binary is
     installed where the parent would install it, ``--no-admin`` because the
     parent decided elevation for both runs (SourceRefresh.elevation_reasons()),
     and the parent's ``--run-all-commands``, which the child's environment
-    lost with its twin, so the other dependents the source's Step 23
+    lost with its twin, so the other dependents the source's Step 24
     refreshes receive it too.
 
     Args:
@@ -22187,7 +22503,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         guard_environment_link_change(args, link_spec, target_manifest, profile_name)
         dependents = content_dependents(home_dir, profile_name)
         # The dependent whose run started this one to refresh its source
-        # installs itself afterwards, so Step 23 and the summary leave it out
+        # installs itself afterwards, so Step 24 and the summary leave it out
         dependents_to_refresh = dependents_except(dependents, args.for_dependent)
         if dependents and target_manifest is not None:
             recorded_link = manifest_link(target_manifest)
@@ -22924,11 +23240,18 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
 
-        # Track download, dependency, dependent and scheduled-job failures across all steps for final error reporting
+        # Track download, dependency, hook environment, dependent and scheduled-job failures across all steps
+        # for final error reporting
         download_failures: list[str] = []
         dependency_failures: list[str] = []
+        hook_environments = HookEnvironmentResult([], [], [])
         dependent_results: list[DependentResult] = []
         scheduled_update_failure: str | None = None
+        # The uv that builds the hook environments in Step 19, resolved on
+        # the PATH the run started with (Step 1's installs included): Step
+        # 13 rebuilds PATH from the registry on Windows, which drops a uv
+        # that only the starting shell's PATH holds
+        hook_uv_executable = shutil.which('uv')
 
         # Step 4: Download/copy custom files
         print()
@@ -23149,7 +23472,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             profile_dir=isolated_config_dir,
         )
 
-        # What this run wrote and chose, as Step 19 records it: a later
+        # What this run wrote and chose, as Step 20 records it: a later
         # re-run reads the names and the component delta, and the switch
         # guard reads the written records to list the residue
         manifest_records: dict[str, Any] = {
@@ -23226,9 +23549,23 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 user_settings=user_settings,
             )
 
-            # Step 19: Write installation manifest
+            # Step 19: Build the uv environment of every PEP 723 hook the
+            # profile wires, on the path spelling config.json names, so the
+            # hook's first launch installs nothing. The sync runs in the
+            # environment the sessions hand their hooks, read from the
+            # settings files Step 18 left: the profile's own settings.json
+            # and, above it, config.json.
+            hook_environments = run_hook_environment_step(
+                config, hooks_dir,
+                os_env_variables=os_env_variables or {},
+                settings_files=[artifact_base_dir / 'settings.json', artifact_base_dir / 'config.json'],
+                uv_executable=hook_uv_executable,
+                download_failed='hook files' in download_failures,
+            )
+
+            # Step 20: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 20: Writing installation manifest...{Colors.NC}')
             write_manifest(
                 config_base_dir=artifact_base_dir,
                 command_name=primary_command_name,
@@ -23241,9 +23578,9 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 **manifest_records,
             )
 
-            # Step 20: Create launcher script
+            # Step 21: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 20: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 21: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -23253,16 +23590,16 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 artifact_base_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 21: Register global command(s); the wrappers of aliases the
+            # Step 22: Register global command(s); the wrappers of aliases the
             # profile's previous manifest listed and this run drops go first
             if launcher_result:
                 main_launcher, launch_script = launcher_result
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 21: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 22: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 21: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 22: Registering global {primary_command_name} command...{Colors.NC}')
                 previous_names = [
                     str(item)
                     for item in cast(list[object], (target_manifest or {}).get('command_names') or [])
@@ -23277,13 +23614,13 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             else:
                 warning('Launcher script was not created')
 
-            # Step 22: Remove previously installed artifacts of deselected
+            # Step 23: Remove previously installed artifacts of deselected
             # components (the removal plan derives from the unfiltered
             # config, so no on-disk state is needed); a linked entry belongs
             # to another profile and is left alone
             if has_deselected_items(deselected):
                 print()
-                print(f'{Colors.CYAN}Step 22: Removing deselected components...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
                 execute_deselection_cleanup(
                     deselected,
                     config,
@@ -23300,14 +23637,14 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             if link_plan is not None:
                 _exit_on_broken_links(verify_profile_links(artifact_base_dir, link_plan), profile_name)
 
-            # Step 23: Refresh the profiles that link content from this one
+            # Step 24: Refresh the profiles that link content from this one
             dependent_results = run_dependent_refresh_step(
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
             )
 
-            # Step 24: The profile's daily update job (the auto-update key)
+            # Step 25: The profile's daily update job (the auto-update key)
             scheduled_update_failure = run_scheduled_update_step(
                 scheduler_platform, scheduled_update_plan,
                 warnings_=plan.scheduled_update_warnings, now=datetime.now(UTC).astimezone(),
@@ -23377,12 +23714,24 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
 
             write_profile_settings_to_settings(settings_delta, claude_user_dir)
 
-            # Step 19: Write the base profile's installation manifest. Every
+            # Step 19: Build the uv environment of every PEP 723 hook the
+            # base profile wires, on the path spelling settings.json names,
+            # in the environment its sessions hand their hooks: the merged
+            # settings.json Step 18 left, on top of the OS variables Step 7 set.
+            hook_environments = run_hook_environment_step(
+                config, hooks_dir,
+                os_env_variables=os_env_variables or {},
+                settings_files=[claude_user_dir / 'settings.json'],
+                uv_executable=hook_uv_executable,
+                download_failed='hook files' in download_failures,
+            )
+
+            # Step 20: Write the base profile's installation manifest. Every
             # toolbox-managed profile records its own Claude Code version
             # pin, so a later run of any profile can tell whether the
             # machine-global auto-update controls are still needed.
             print()
-            print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 20: Writing installation manifest...{Colors.NC}')
             write_manifest(
                 config_base_dir=claude_user_dir,
                 command_name=None,
@@ -23395,17 +23744,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 **manifest_records,
             )
 
-            # Steps 20-21: Skip command creation
+            # Steps 21-22: Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 20-21: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 21-22: Skipping command creation (no command-names specified)...{Colors.NC}')
 
-            # Step 22: Remove previously installed artifacts of deselected
+            # Step 23: Remove previously installed artifacts of deselected
             # components (the removal plan derives from the unfiltered
             # config, so no on-disk state is needed). Runs after the Step 18
             # settings merge so the union-written file is reconciled last.
             if has_deselected_items(deselected):
                 print()
-                print(f'{Colors.CYAN}Step 22: Removing deselected components...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
                 execute_deselection_cleanup(
                     deselected,
                     config,
@@ -23417,14 +23766,14 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     is_isolated=False,
                 )
 
-            # Step 23: Refresh the profiles that link content from the base profile
+            # Step 24: Refresh the profiles that link content from the base profile
             dependent_results = run_dependent_refresh_step(
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
             )
 
-            # Step 24: The base profile's daily update job (the auto-update key)
+            # Step 25: The base profile's daily update job (the auto-update key)
             scheduled_update_failure = run_scheduled_update_step(
                 scheduler_platform, scheduled_update_plan,
                 warnings_=plan.scheduled_update_warnings, now=datetime.now(UTC).astimezone(),
@@ -23434,9 +23783,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
-        # Check for download, dependency, dependent and scheduled-job failures and report accordingly
+        # Check for download, dependency, hook environment, dependent and scheduled-job failures and report accordingly
         dependent_failures = [result for result in dependent_results if result.code != 0]
-        if download_failures or dependency_failures or dependent_failures or source_refresh_code or scheduled_update_failure:
+        if (
+            download_failures or dependency_failures or hook_environments.failed or dependent_failures
+            or source_refresh_code or scheduled_update_failure
+        ):
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
@@ -23460,6 +23812,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     error(f'  - {failure}')
                 print()
                 error('Review the dependency error messages above, then re-run the setup.')
+                print()
+            if hook_environments.failed:
+                error('The following hook environments could not be prepared:')
+                for hook_path in hook_environments.failed:
+                    error(f'  - {hook_path}')
+                    error(f'    retry by hand: {hook_environment_sync_command_text(hook_path)}')
+                print()
+                error(
+                    'Check the network, index and proxy settings the hook would use; '
+                    'Claude Code fails the hook the same way when it starts it.',
+                )
                 print()
             if source_refresh_code:
                 assert source_refresh is not None
@@ -23567,6 +23930,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 else:
                     clean_name = Path(status_line_file_val).name
                 print(f'   * Status line: {clean_name}')
+        if hook_environments.ran:
+            print(f'   * Hook environments: {hook_environments.completion_line()}')
         if os_level_env_variables:
             set_vars = sum(1 for v in os_level_env_variables.values() if v is not None)
             del_vars = sum(1 for v in os_level_env_variables.values() if v is None)
@@ -23620,7 +23985,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             for result in dependent_results:
                 print(f'       - {result.line()}')
         # A child run lists nothing here: the report of the run that started
-        # it (--profile all, or the source whose Step 23 refreshes this
+        # it (--profile all, or the source whose Step 24 refreshes this
         # dependent) covers every installed profile
         unrefreshed = [] if args.child_run else unrefreshed_profile_lines(
             get_real_user_home(), profile_name,

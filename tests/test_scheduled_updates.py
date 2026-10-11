@@ -517,7 +517,7 @@ class TestPlanScheduledUpdate:
 
 
 class TestApplyScheduledUpdate:
-    """Step 24: applying the plan."""
+    """Step 25: applying the plan."""
 
     def test_register_writes_the_job_record(self, tmp_path: Path) -> None:
         """Registration records time, command and the OS command line in the state dir."""
@@ -593,7 +593,7 @@ class TestApplyScheduledUpdate:
     def test_step_writes_a_refused_removal_back_into_the_manifest(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Step 19 recorded no job; a removal Step 24 cannot apply puts the job back so the next run plans it."""
+        """Step 20 recorded no job; a removal Step 25 cannot apply puts the job back so the next run plans it."""
         scheduler = FakeScheduler()
         plan, platform = _registered(tmp_path, scheduler)
         scheduler.fail_remove = True
@@ -1202,7 +1202,7 @@ class TestManifestRecord:
 
 
 class TestResidue:
-    """Switching to a configuration without the key lists the job as residue; Step 24 removes it."""
+    """Switching to a configuration without the key lists the job as residue; Step 25 removes it."""
 
     def test_residue_lists_the_job_and_leaves_its_removal_to_step_24(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -1232,9 +1232,9 @@ class TestResidue:
         )
         assert kept.scheduled_job is None
         setup_environment.remove_profile_residue(residue, profile_dir=profile_dir, claude_dir=claude_dir)
-        assert plan.name in scheduler.jobs, 'the residue removal leaves the job to Step 24'
+        assert plan.name in scheduler.jobs, 'the residue removal leaves the job to Step 25'
         assert setup_environment.read_job_record(platform, plan.name) is not None
-        assert f'The scheduled update job {plan.name} is removed in Step 24' in capsys.readouterr().out
+        assert f'The scheduled update job {plan.name} is removed in Step 25' in capsys.readouterr().out
         removal, _ = _plan(tmp_path, scheduler, spec=None, manifest=manifest)
         assert removal.action == 'remove'
         assert setup_environment.apply_scheduled_update(platform, removal, now=NOW) is None

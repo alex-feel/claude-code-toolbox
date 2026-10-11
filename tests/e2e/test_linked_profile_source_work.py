@@ -5,7 +5,7 @@ content entry, with ``--link-from``) shares the one machine with it: the
 Claude Code binary, the IDE extension, Node.js and the tools the dependency
 commands install exist once, and the source's run installs them. Every run of
 such a dependent -- a standalone install, ``--profile NAME``, a ``--profile
-all`` child, a source's Step 23 refresh and the install that follows the
+all`` child, a source's Step 24 refresh and the install that follows the
 refresh of a stale source -- therefore skips the install and upgrade of
 Step 1 (the presence check stays), the IDE extension of Step 2 and the
 Node.js installation of Step 5. A dependent that links every content entry
@@ -19,7 +19,7 @@ CLI writes into ``CLAUDE_CONFIG_DIR``). A full copy, a profile that links
 only ``projects``, the base profile and a source run everything, and
 ``--run-all-commands`` (or ``CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS=1``) makes
 a dependent run everything too, also in the children ``--profile all``,
-Step 23 and the refresh of a stale source start. The installation summary
+Step 24 and the refresh of a stale source start. The installation summary
 and ``--dry-run`` name each skipped item with its source, and the
 completion summary repeats them with the flag that forces the full run. On
 Windows the elevation gate reads the same decision: a dependent's dry run
@@ -820,7 +820,7 @@ class TestDependentElevationDecision:
 
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestChildRuns:
-    """The children --profile all and a source's Step 23 start are dependents too, and receive the flag."""
+    """The children --profile all and a source's Step 24 start are dependents too, and receive the flag."""
 
     def _install_source_and_two_dependents(self, configs: Path, install_log: Path) -> Path:
         cfg = _install_source(configs, install_log)
@@ -939,7 +939,7 @@ class TestChildRuns:
 
         output = _fd_output(capfd)
         assert code == 0, output
-        assert 'Step 23: Refreshing 2 dependent profile(s): team-2, team-3...' in output
+        assert 'Step 24: Refreshing 2 dependent profile(s): team-2, team-3...' in output
         assert [argv[argv.index('--profile') + 1] for argv in argvs] == ['team-2', 'team-3']
         assert all(argv[-1] == '--no-admin' for argv in argvs), 'no child carries the flag the source was not given'
         assert '* team-2 (--profile team-2 --yes --skip-install --no-admin)' in output
@@ -1005,7 +1005,7 @@ class TestChildRuns:
 
         output = _fd_output(capfd)
         assert code == 0, output
-        assert f'Step 23: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
+        assert f'Step 24: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
         assert [argv[argv.index('--profile') + 1] for argv in argvs] == [DEPENDENT]
         assert argvs[0][-1] == '--no-admin', argvs
         assert '--run-all-commands' not in argvs[0], 'the child carries no flag the base run was not given'
@@ -1234,10 +1234,10 @@ class TestStaleSourceRefresh:
         assert 'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS' not in envs[0], 'the flag, not the twin, reaches the child'
         assert '* command: --profile team-1 --yes --skip-install --no-admin --run-all-commands' in output
         assert '* team-3 (--profile team-3 --yes --skip-install --no-admin --run-all-commands)' in output, (
-            "the source refresh's Step 23 hands the flag to the other dependent"
+            "the source refresh's Step 24 hands the flag to the other dependent"
         )
         assert (
-            'Step 23: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)'
+            'Step 24: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)'
         ) in output
         assert sorted(_runs(home)) == sorted(ONE_FRESH_RUN * 3), 'the source, team-3 and team-2 each ran everything'
         for name in (SOURCE, DEPENDENT, 'team-3'):
