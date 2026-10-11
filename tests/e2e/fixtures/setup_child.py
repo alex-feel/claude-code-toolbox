@@ -21,6 +21,11 @@ child counts as holding administrator rights, so a Windows registration
 succeeds, and a fake shaped for another platform replaces the platform the
 setup builds, so the parent's backend is the child's too.
 
+When the environment names a hook sync record file (see
+tests/e2e/hook_sync_recorder.py), the child records the uv syncs that
+prepare its hook environments into that file instead of running uv, so the
+parent test sees what every child would have synced.
+
 Setting SIMULATE_NON_ADMIN_VARIABLE to ``1`` makes the child behave as a
 process without an administrator token whatever token it actually holds:
 is_admin() reports False, and the elevation request the main() gate makes
@@ -45,6 +50,8 @@ from scripts import setup_environment
 from tests.e2e.fake_scheduler import REGISTRY_VARIABLE
 from tests.e2e.fake_scheduler import FakeScheduler
 from tests.e2e.fake_scheduler import fake_platform
+from tests.e2e.hook_sync_recorder import RECORDER_VARIABLE
+from tests.e2e.hook_sync_recorder import HookSyncRecorder
 
 SIMULATE_NON_ADMIN_VARIABLE = 'CCT_E2E_SIMULATE_NON_ADMIN'
 ELEVATION_MARKER = '[setup_child] elevation requested by the administrator gate'
@@ -88,6 +95,13 @@ def main() -> None:
                 stack.enter_context(patch.object(
                     setup_environment, 'default_scheduler_platform', lambda: fake_platform(fake, setup_environment),
                 ))
+        # The hook environment syncs the parent test records: the child appends
+        # to the same record file instead of running uv
+        record = os.environ.get(RECORDER_VARIABLE)
+        if record:
+            stack.enter_context(patch.object(
+                setup_environment, '_run_hook_environment_sync', HookSyncRecorder(Path(record)),
+            ))
         if os.environ.get(SIMULATE_NON_ADMIN_VARIABLE) == '1':
             stack.enter_context(patch.object(setup_environment, 'is_admin', lambda: False))
             stack.enter_context(patch.object(setup_environment, 'request_admin_elevation', _refuse_elevation))

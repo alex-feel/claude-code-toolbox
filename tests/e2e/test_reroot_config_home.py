@@ -20,7 +20,7 @@ link: the source's run wrote it there, so the dependent's run skips it, keeps
 it out of ``files_written``, and lists it under ``Provided by links`` in the
 summary and in ``--dry-run``; a destination outside every linked entry is
 written into the dependent's own profile, a profile that links only
-``projects`` writes everything it re-roots, and the Step 23 refresh a source
+``projects`` writes everything it re-roots, and the Step 24 refresh a source
 run starts behaves the same way. The source is an isolated profile or the
 base ``~/.claude`` itself, whose run wrote the same destinations without any
 rewrite.
@@ -1044,7 +1044,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """Step 23 of the source re-runs the dependent as a child that leaves the override to the link again."""
+        """Step 24 of the source re-runs the dependent as a child that leaves the override to the link again."""
         home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
         cfg, source_file = self._install_source(configs, claude_dir)
@@ -1062,7 +1062,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
 
         output = _fd_output(capfd)
         assert code == 0, output
-        assert f'Step 23: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
+        assert f'Step 24: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
         assert f'=== Dependent profile {DEPENDENT} ===' in output
         assert f'- {DEPENDENT}: ok' in output
         child_output = output[output.index(f'=== Dependent profile {DEPENDENT} ==='):]
@@ -1082,7 +1082,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """Step 23 of --profile base re-runs the dependent as a child that leaves the override to the base's hooks/ again."""
+        """Step 24 of --profile base re-runs the dependent as a child that leaves the override to the base's hooks/ again."""
         claude_dir = e2e_isolated_home['claude_dir']
         cfg, source_file = self._install_source(configs, claude_dir, BASE)
         assert run_main([
@@ -1098,7 +1098,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
 
         output = _fd_output(capfd)
         assert code == 0, output
-        assert f'Step 23: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
+        assert f'Step 24: Refreshing 1 dependent profile(s): {DEPENDENT}...' in output
         assert f'=== Dependent profile {DEPENDENT} ===' in output
         assert f'- {DEPENDENT}: ok' in output
         child_output = output[output.index(f'=== Dependent profile {DEPENDENT} ==='):]

@@ -17,6 +17,9 @@ from scripts import setup_environment
 from tests.e2e.fake_scheduler import REGISTRY_VARIABLE
 from tests.e2e.fake_scheduler import FakeScheduler
 from tests.e2e.fake_scheduler import fake_platform
+from tests.e2e.hook_sync_recorder import FAILING_VARIABLE
+from tests.e2e.hook_sync_recorder import RECORDER_VARIABLE
+from tests.e2e.hook_sync_recorder import HookSyncRecorder
 
 
 def _setup_modules() -> list[ModuleType]:
@@ -51,7 +54,7 @@ def fake_scheduler(
     """Replace the operating-system scheduler with a fake for every E2E test.
 
     A configuration with auto-update (the golden configuration among them)
-    makes Step 24 register a daily job. The fake answers every scheduler
+    makes Step 25 register a daily job. The fake answers every scheduler
     command the toolbox runs and keeps the jobs in a registry file under the
     test's temporary directory, which it also hands to every child run
     through REGISTRY_VARIABLE, so a dependent refresh or a scheduled run
@@ -73,6 +76,37 @@ def fake_scheduler(
     _install_fake_scheduler(fake, monkeypatch)
     monkeypatch.setenv(REGISTRY_VARIABLE, str(registry))
     return fake
+
+
+@pytest.fixture(autouse=True)
+def hook_sync_recorder(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> HookSyncRecorder | None:
+    """Record the uv syncs that prepare hook environments instead of running uv.
+
+    Step 19 runs ``uv sync --script`` for every wired PEP 723 hook (the
+    golden configuration's Python hook among them), which would reach the
+    machine's uv cache and the network. The recorder replaces the sync
+    runner in every setup module and keeps its records in a file under the
+    test's temporary directory, which it also hands to every child run
+    through RECORDER_VARIABLE, so a ``--profile all`` child, a dependent
+    refresh or a source refresh records into the same file. A failure a
+    test asks for through FAILING_VARIABLE never leaks into the next test.
+
+    Tests marked ``real_uv_sync`` opt out and run the real uv.
+
+    Returns:
+        The recorder, or None for a test that opted out.
+    """
+    monkeypatch.delenv(FAILING_VARIABLE, raising=False)
+    if request.node.get_closest_marker('real_uv_sync') is not None:
+        monkeypatch.delenv(RECORDER_VARIABLE, raising=False)
+        return None
+    recorder = HookSyncRecorder(tmp_path / 'hook-syncs.jsonl')
+    for module in _setup_modules():
+        monkeypatch.setattr(module, '_run_hook_environment_sync', recorder)
+    monkeypatch.setenv(RECORDER_VARIABLE, str(recorder.path))
+    return recorder
 
 
 def _shaped_scheduler(

@@ -152,7 +152,7 @@ class TestRegistration:
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Step 24 registers the job with the resolved command; the manifest and the state directory record it."""
+        """Step 25 registers the job with the resolved command; the manifest and the state directory record it."""
         home = e2e_isolated_home['home']
         cfg = write_config(configs, 'env.yaml', _scheduled())
 
@@ -176,7 +176,7 @@ class TestRegistration:
         assert 'Scheduled update (auto-update):' in output
         assert f'Job {JOB}: register (no job is registered yet); runs every day at 03:30 local time' in output
         assert f'Runs: {subprocess.list2cmdline(command)}' in output
-        assert f'Step 24: Scheduling the daily update job {JOB} (every day at 03:30 local time)...' in output
+        assert f'Step 25: Scheduling the daily update job {JOB} (every day at 03:30 local time)...' in output
         assert f'Scheduled update: job {JOB} registered, every day at 03:30 local time' in output
 
     def test_base_profile_gets_a_job_named_base(
@@ -302,7 +302,7 @@ class TestRegistration:
         assert not marker.exists(), 'the dropped command no longer runs'
         run = _run_record(home, fake_scheduler, JOB)
         assert run is not None
-        assert 'Step 24:' in Path(run['log']).read_text(encoding='utf-8', errors='replace'), 'the setup ran instead'
+        assert 'Step 25:' in Path(run['log']).read_text(encoding='utf-8', errors='replace'), 'the setup ran instead'
 
     def test_custom_command_is_recorded_and_the_job_still_runs_the_toolbox(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
@@ -338,7 +338,7 @@ class TestRegistration:
         assert 'Scheduled update (auto-update):' in output
         assert f'Job {JOB}: register (no job is registered yet); runs every day at 03:30 local time' in output
         assert 'Command: the setup of this profile (uvx cc-toolbox@latest' in output
-        assert 'Step 24' not in output
+        assert 'Step 25' not in output
 
     def test_isolated_run_names_the_job_among_the_machine_wide_writes(
         self, configs: Path, capsys: pytest.CaptureFixture[str],
@@ -376,14 +376,14 @@ class TestRemoval:
         assert _job_record(home, fake_scheduler, JOB) is None
         assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
         output = _output(capsys)
-        assert f'Step 24: Removing the scheduled update job {JOB}...' in output
+        assert f'Step 25: Removing the scheduled update job {JOB}...' in output
         assert f'Scheduled update: job {JOB} removed (the configuration declares no auto-update)' in output
 
     def test_switching_to_a_configuration_without_the_key_removes_the_job(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The switch guard lists the job as residue and --switch-config lets Step 24 remove it."""
+        """The switch guard lists the job as residue and --switch-config lets Step 25 remove it."""
         home = e2e_isolated_home['home']
         cfg = write_config(configs, 'env.yaml', _scheduled())
         other = write_config(configs, 'other.yaml', {'name': 'Other Env', 'user-settings': {'theme': 'light'}})
@@ -399,8 +399,8 @@ class TestRemoval:
         assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
         output = _output(capsys)
         assert f'scheduled update job: {JOB}' in output, 'the guard lists the job among the residue'
-        assert f'The scheduled update job {JOB} is removed in Step 24' in output
-        assert f'Step 24: Removing the scheduled update job {JOB}...' in output
+        assert f'The scheduled update job {JOB} is removed in Step 25' in output
+        assert f'Step 25: Removing the scheduled update job {JOB}...' in output
         assert f'Removed the scheduled update job {JOB}' in output
 
     def test_switch_guard_refuses_without_consent_and_keeps_the_job(
@@ -494,7 +494,7 @@ class TestRemoval:
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Step 23 of the source re-runs the dependent as a child, which registers no job of its own."""
+        """Step 24 of the source re-runs the dependent as a child, which registers no job of its own."""
         cfg = write_config(configs, 'env.yaml', _scheduled())
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
         linked = [str(cfg), *SKIP, '--yes', '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1']
@@ -506,7 +506,7 @@ class TestRemoval:
 
         fake_scheduler.reload()
         assert sorted(fake_scheduler.jobs) == [JOB]
-        assert 'Step 23: Refreshing 1 dependent profile(s): team-2...' in _output(capsys)
+        assert 'Step 24: Refreshing 1 dependent profile(s): team-2...' in _output(capsys)
         assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-2')['auto_update'] is None
 
 
@@ -546,7 +546,7 @@ class TestScheduledRun:
         assert log.parent == _platform(home, fake_scheduler).state / 'logs'
         text = log.read_text(encoding='utf-8', errors='replace')
         assert f'cc-toolbox scheduled update: profile team-1, job {JOB}' in text
-        assert 'Step 24:' in text, 'the setup output lands in the log'
+        assert 'Step 25:' in text, 'the setup output lands in the log'
         assert 'Finished: exit code 0' in text
         assert not (_platform(home, fake_scheduler).state / 'update.lock').exists(), 'the lock is released'
         fake_scheduler.reload()
@@ -578,7 +578,7 @@ class TestScheduledRun:
         assert record['exit_code'] == 0
         assert record['reason'] is None
         text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
-        assert 'Step 24:' in text, 'the setup output lands in the log when stdout was the console'
+        assert 'Step 25:' in text, 'the setup output lands in the log when stdout was the console'
         assert 'Scheduled update: job' in text
         assert 'Finished: exit code 0' in text
         assert 'The handle is invalid' not in text
@@ -687,7 +687,7 @@ class TestScheduledRun:
         assert record['exit_code'] == 0
         text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
         assert f'Took over the stale lock {lock}' in text
-        assert 'Step 24:' in _output(capsys), 'the setup ran'
+        assert 'Step 25:' in _output(capsys), 'the setup ran'
         assert not lock.exists(), 'the lock is released afterwards'
 
     @pytest.mark.usefixtures('in_process')
@@ -963,7 +963,7 @@ class TestCronFallback:
         assert record is not None
         assert record['outcome'] == 'completed'
         assert record['exit_code'] == 0
-        assert 'Step 24:' in Path(record['log']).read_text(encoding='utf-8', errors='replace')
+        assert 'Step 25:' in Path(record['log']).read_text(encoding='utf-8', errors='replace')
         cron_scheduler.reload()
         assert len(cron_scheduler.creations()) == 1, 'the scheduled run leaves its own line alone'
         assert JOB in cron_scheduler.jobs
@@ -985,7 +985,7 @@ class TestCronFallback:
         output = _output(capsys)
         problem = 'neither a systemd user manager nor the crontab command is available to schedule the job'
         assert '[!]' in output
-        assert output.count(problem) >= 2, 'the summary before consent and Step 24 both name it'
+        assert output.count(problem) >= 2, 'the summary before consent and Step 25 both name it'
         assert 'The scheduled update job (auto-update) was not applied:' in output
         assert f'The scheduled update job {JOB} cannot be registered: {problem}' in output
         assert (e2e_isolated_home['claude_dir'] / 'team-1' / 'agents' / 'core.md').is_file(), 'the rest of the setup ran'
@@ -1168,7 +1168,7 @@ class TestUnattendedCredentials:
     def test_job_for_a_private_configuration_warns_without_an_unattended_credential(
         self, stubs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A token passed with --env lives in this run only, and gh is not logged in: the summary and Step 24 warn."""
+        """A token passed with --env lives in this run only, and gh is not logged in: the summary and Step 25 warn."""
         write_cli_stub(stubs, 'gh', ['no oauth token found for github.com'], stderr=True, exit_code=1)
         private = _private_github('ghp_for_this_run', self._private_config())
 

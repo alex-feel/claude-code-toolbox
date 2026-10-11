@@ -12364,7 +12364,7 @@ class TestMainFunctionUserSettings:
         captured = capsys.readouterr()
         assert 'Step 17: Skipping hooks download (none configured)' in captured.out
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 20-21: Skipping command creation (no command-names specified)' in captured.out
+        assert 'Steps 21-22: Skipping command creation (no command-names specified)' in captured.out
         assert 'Step 14: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -12442,14 +12442,14 @@ class TestMainFunctionUserSettings:
             ),
         }
 
-        # Verify output shows the isolated Step 14 skip message and Steps 17-21
+        # Verify output shows the isolated Step 14 skip message and Steps 17-22
         captured = capsys.readouterr()
         assert 'Step 14: Writing user settings' in captured.out
         assert 'Isolated mode: user settings are built into config.json in Step 18' in captured.out
         assert 'Step 17: Downloading hooks' in captured.out
         assert 'Step 18: Creating profile configuration' in captured.out
-        assert 'Step 20: Creating launcher script' in captured.out
-        assert 'Step 21: Registering global' in captured.out
+        assert 'Step 21: Creating launcher script' in captured.out
+        assert 'Step 22: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(

@@ -492,7 +492,7 @@ def _reset_credential_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
 def _guard_real_scheduler(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail a unit test that reaches the real operating-system scheduler.
 
-    Step 24 of main() registers, re-registers or removes the daily update
+    Step 25 of main() registers, re-registers or removes the daily update
     job of a profile whose configuration declares auto-update, through one
     command runner for schtasks, launchctl, systemctl and crontab. A unit
     test must never register a real job on the machine running the suite,
@@ -664,6 +664,30 @@ def _mock_npm_shadowing_check(request: pytest.FixtureRequest, monkeypatch: pytes
         except ImportError:
             continue
         monkeypatch.setattr(module, 'find_shadowing_global_npm', lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _mock_hook_environment_preparation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make main()-flow unit tests prepare no hook environment.
+
+    The real step runs the machine's uv against the hooks a test wrote, so a
+    unit test would reach the developer's uv cache and the network. Both
+    module objects are patched (see _mock_npm_shadowing_check). E2E tests
+    keep the step and replace the sync runner with a recorder instead, in
+    the parent run and in every child run. Tests of the step itself bypass
+    this mock through a module-level reference captured at import time.
+    """
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(
+            module, 'prepare_hook_environments',
+            lambda *_args, _module=module, **_kwargs: _module.HookEnvironmentResult([], [], []),
+        )
 
 
 @pytest.fixture(autouse=True)

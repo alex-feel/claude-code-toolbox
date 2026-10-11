@@ -984,7 +984,7 @@ class TestDependentConfiguration:
         assert '--run-all-commands' not in plain.refresh.child_arguments('team-2')
 
     def test_base_source_is_refreshed_like_an_isolated_one(self, tmp_path: Path) -> None:
-        """A dependent of the base profile refreshes it as --profile base and leaves itself out of its Step 23."""
+        """A dependent of the base profile refreshes it as --profile base and leaves itself out of its Step 24."""
         claude = tmp_path / '.claude'
         manifest = _manifest(claude, None, config_source=TEAM_URL)
         manifest['config_digest'] = 'stale'
@@ -1520,7 +1520,7 @@ class TestRefreshDependents:
 
 
 class TestDependentRefreshStep:
-    """run_dependent_refresh_step() prints Step 23 and runs only when there is something to run."""
+    """run_dependent_refresh_step() prints Step 24 and runs only when there is something to run."""
 
     def test_no_dependents_and_child_run(self, capsys: pytest.CaptureFixture[str]) -> None:
         """A child run -- of --profile all, or a dependent a source refreshes -- leaves the step to its parent."""
@@ -1531,8 +1531,8 @@ class TestDependentRefreshStep:
             assert setup_environment.run_dependent_refresh_step([], source_name='team-2', child_run=True) == []
         refresh.assert_not_called()
         output = capsys.readouterr().out
-        assert output.count('Step 23: No installed profile links content from "team-1"') == 1
-        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2
+        assert output.count('Step 24: No installed profile links content from "team-1"') == 1
+        assert output.count('Step 24: Dependent profiles are refreshed by the run that started this one') == 2
         assert '--profile all' not in output
         assert 'team-2' not in output
 
@@ -1542,7 +1542,7 @@ class TestDependentRefreshStep:
         with patch.object(setup_environment, 'refresh_dependents', return_value=expected) as refresh:
             assert setup_environment.run_dependent_refresh_step([dep], source_name='s', child_run=False) == expected
         refresh.assert_called_once_with([dep], source_commands=frozenset(), run_all_commands=False)
-        assert 'Step 23: Refreshing 1 dependent profile(s): d...' in capsys.readouterr().out
+        assert 'Step 24: Refreshing 1 dependent profile(s): d...' in capsys.readouterr().out
 
     def test_source_commands_and_the_flag_reach_the_children(self) -> None:
         """The source's own commands and --run-all-commands travel to refresh_dependents()."""
@@ -1573,10 +1573,10 @@ class TestDependentRefreshStep:
         refresh.assert_called_once_with([other], source_commands=frozenset(), run_all_commands=False)
         output = capsys.readouterr().out
         assert (
-            'Step 23: Refreshing 1 other dependent profile(s): other (profile "dep" installs itself after this run)...'
+            'Step 24: Refreshing 1 other dependent profile(s): other (profile "dep" installs itself after this run)...'
         ) in output
         assert (
-            'Step 23: No other installed profile links content from "s" (profile "dep" installs itself after this run)'
+            'Step 24: No other installed profile links content from "s" (profile "dep" installs itself after this run)'
         ) in output
         assert 'refreshed by the run that started this one' not in output
 

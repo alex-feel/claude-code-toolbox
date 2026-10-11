@@ -396,7 +396,7 @@ class TestBaseProfileManifest:
             mock_exit.assert_not_called()
 
         captured = capsys.readouterr()
-        assert 'Step 19: Writing installation manifest' in captured.out
+        assert 'Step 20: Writing installation manifest' in captured.out
 
         manifest_path = claude_dir / 'manifest.json'
         assert manifest_path.exists(), 'A base-profile run must write ~/.claude/manifest.json'

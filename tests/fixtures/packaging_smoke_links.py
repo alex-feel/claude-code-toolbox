@@ -7,7 +7,7 @@ Run inside the uvx environment built from the wheel::
 Inside a temporary home the probe installs the profile smoke-1 from a
 minimal configuration, installs smoke-2 linking every entry from smoke-1,
 and re-runs smoke-1 the way the console script does: through
-cc_toolbox.cli with a sys.argv[0] that carries no .py suffix. Step 23 of
+cc_toolbox.cli with a sys.argv[0] that carries no .py suffix. Step 24 of
 that run starts the refresh of smoke-2 as ``python -m cc_toolbox.cli setup
 --profile smoke-2 --yes --child-run --skip-install --no-admin``; the probe
 records the argv the run hands to subprocess.run, lets the real child run,
@@ -137,7 +137,7 @@ def main() -> int:
         code = _run_setup(['--profile', 'smoke-1', *RUN_FLAGS])
 
     launches = [argv for argv in recorded if '--profile' in argv]
-    print(f'Step 23 launches: {launches!r}')
+    print(f'Step 24 launches: {launches!r}')
     expected = [
         sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'smoke-2',
         '--yes', '--child-run', '--skip-install', '--no-admin',

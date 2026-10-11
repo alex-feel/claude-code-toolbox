@@ -611,7 +611,7 @@ class TestRememberedNone:
             f"Links: none [remembered] (the configuration's link-dirs [{', '.join(LINKABLE_PROFILE_DIRS)}] is not "
             'applied; pass --link-dirs to replace the remembered value)'
         ) in output
-        assert 'Step 23: Refreshing 1 dependent profile(s): team-2...' in output
+        assert 'Step 24: Refreshing 1 dependent profile(s): team-2...' in output
         assert '- team-2: ok' in output
         assert _installed_at(claude_dir / 'team-2') != dependent_before
         for entry in CONTENT_ENTRIES:
@@ -1258,7 +1258,7 @@ def _run_output(capfd: pytest.CaptureFixture[str]) -> str:
 
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestSourceRunRefreshesDependents:
-    """Step 23 of a source run re-runs every profile that links content from it."""
+    """Step 24 of a source run re-runs every profile that links content from it."""
 
     def test_base_source_refreshes_every_dependent(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1282,7 +1282,7 @@ class TestSourceRunRefreshesDependents:
         assert code == 0, output
         assert 'Dependents (profiles linking content from this one, refreshed after this run):' in output
         assert '* team-1 (--profile team-1 --yes --skip-install --no-admin)' in output
-        assert 'Step 23: Refreshing 2 dependent profile(s): team-1, team-2...' in output
+        assert 'Step 24: Refreshing 2 dependent profile(s): team-1, team-2...' in output
         assert '=== Dependent profile team-1 ===' in output
         assert '* Dependent profiles refreshed from this run:' in output
         assert '- team-1: ok' in output
@@ -1296,8 +1296,8 @@ class TestSourceRunRefreshesDependents:
         assert output.count('* Installed profiles this run did not refresh:') == 1, (
             'only the base run lists the profiles it did not refresh; its children list none'
         )
-        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2, (
-            'each dependent child leaves Step 23 to the base run that started it'
+        assert output.count('Step 24: Dependent profiles are refreshed by the run that started this one') == 2, (
+            'each dependent child leaves Step 24 to the base run that started it'
         )
         assert 'the --profile all run' not in output, 'a child of a base run is not a child of --profile all'
         assert 'base (--profile base)' not in output, 'no child names the base: the base run is refreshing it right now'
@@ -1339,7 +1339,7 @@ class TestSourceRunRefreshesDependents:
 
         output = _run_output(capfd)
         assert code == 0, output
-        assert 'Step 23: Refreshing 2 dependent profile(s): team-2, team-3...' in output
+        assert 'Step 24: Refreshing 2 dependent profile(s): team-2, team-3...' in output
         source_digest = read_manifest(claude_dir / 'team-1')['config_digest']
         for name in ('team-2', 'team-3'):
             assert _theme(claude_dir / name) == 'light', name
@@ -1363,7 +1363,7 @@ class TestSourceRunRefreshesDependents:
 
         output = _run_output(capfd)
         assert code == 0, output
-        assert 'Step 23: No installed profile links content from "base"' in output
+        assert 'Step 24: No installed profile links content from "base"' in output
         assert '=== Dependent profile' not in output
         assert '* Installed profiles this run did not refresh:' in output
         for name in ('team-1', 'team-2', 'team-3'):
@@ -1473,7 +1473,7 @@ class TestSourceRunRefreshesDependents:
         output = _output(capsys)
         assert 'Dependents (profiles linking content from this one, refreshed after this run):' in output
         assert '* team-2 (--profile team-2 --yes --skip-install --no-admin)' in output
-        assert 'Step 23' not in output
+        assert 'Step 24' not in output
         assert home_state(e2e_isolated_home['home']) == before
 
     def test_children_run_with_the_twins_and_config_dir_stripped(
@@ -1494,7 +1494,7 @@ class TestSourceRunRefreshesDependents:
 
         def _recording_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
             # The run also starts other processes, such as the npm probes of
-            # Step 5; only the child runs of Step 23 start the interpreter
+            # Step 5; only the child runs of Step 24 start the interpreter
             if argv[0] == sys.executable:
                 argvs.append(list(argv))
                 envs.append(dict(kwargs['env']))
@@ -1531,7 +1531,7 @@ class TestSourceRunRefreshesDependents:
         assert code == 0, output
         assert output.index('=== Profile zeta-source ===') < output.index('=== Profile alpha-dep ===')
         assert output.count('=== Profile alpha-dep ===') == 1
-        assert 'Step 23: Dependent profiles are refreshed by the run that started this one' in output
+        assert 'Step 24: Dependent profiles are refreshed by the run that started this one' in output
         assert '=== Dependent profile alpha-dep ===' not in output
 
     def test_children_of_a_source_run_leave_the_unrefreshed_list_to_the_source(
@@ -1551,8 +1551,8 @@ class TestSourceRunRefreshesDependents:
         output = _run_output(capfd)
         assert code == 0, output
         assert output.count('=== Dependent profile ') == 2
-        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2, (
-            'each dependent child leaves Step 23 to the source run that started it'
+        assert output.count('Step 24: Dependent profiles are refreshed by the run that started this one') == 2, (
+            'each dependent child leaves Step 24 to the source run that started it'
         )
         assert 'the --profile all run' not in output, 'a child of a source run is not a child of --profile all'
         assert output.count('* Installed profiles this run did not refresh:') == 1, (
@@ -1581,7 +1581,7 @@ class TestSourceRunRefreshesDependents:
         assert run_main(['--profile', 'team-2', *SKIP, '--yes']) == 0
 
         output = _output(capsys)
-        assert 'Step 23: No installed profile links content from "team-2"' in output
+        assert 'Step 24: No installed profile links content from "team-2"' in output
         assert 'refreshed by the run that started this one' not in output
         assert '* Installed profiles this run did not refresh:' in output
         assert '- team-1 (--profile team-1)' in output
@@ -1681,7 +1681,7 @@ class TestStaleSourceRefresh:
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """team-2 re-run with a moved configuration re-runs team-1, whose Step 23 refreshes team-3 and skips team-2."""
+        """team-2 re-run with a moved configuration re-runs team-1, whose Step 24 refreshes team-3 and skips team-2."""
         cfg = _install_source(configs)
         _install_dependent(cfg, 'team-2')
         _install_dependent(cfg, 'team-3')
@@ -1715,7 +1715,7 @@ class TestStaleSourceRefresh:
         ) in output
         assert 'Refreshing the source profile "team-1" before this profile installs...' in output
         assert (
-            'Step 23: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)...'
+            'Step 24: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)...'
         ) in output
         assert output.count('=== Dependent profile team-3 ===') == 1
         assert '=== Dependent profile team-2 ===' not in output, 'the source never refreshes the profile that started it'
@@ -1764,7 +1764,7 @@ class TestStaleSourceRefresh:
         assert '* other profiles its run refreshes: team-3' in output
         assert '=== Source profile team-1 ===' in output
         assert output.count('=== Dependent profile team-3 ===') == 1
-        assert '=== Dependent profile team-2 ===' not in output, 'a fresh dependent has no manifest for Step 23 to find'
+        assert '=== Dependent profile team-2 ===' not in output, 'a fresh dependent has no manifest for Step 24 to find'
         fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
         for name in ('team-1', 'team-2', 'team-3'):
             assert _theme(claude_dir / name) == 'light', name
@@ -1800,7 +1800,7 @@ class TestStaleSourceRefresh:
         assert '* no other installed profile links content from it' in output
         assert '=== Source profile team-1 ===' in output
         assert (
-            'Step 23: No other installed profile links content from "team-1" (profile "team-2" installs itself after this run)'
+            'Step 24: No other installed profile links content from "team-1" (profile "team-2" installs itself after this run)'
         ) in output
         fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
         assert isinstance(fresh_digest, str)
@@ -2185,7 +2185,7 @@ class TestStaleSourceRefresh:
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """team-2 (all from base) re-run with a moved configuration re-runs the base, whose Step 23 refreshes team-3 only."""
+        """team-2 (all from base) re-run with a moved configuration re-runs the base, whose Step 24 refreshes team-3 only."""
         cfg = _install_base_with_dependents(configs, 'team-2', 'team-3')
         claude_dir = e2e_isolated_home['claude_dir']
         stale_digest = read_manifest(claude_dir)['config_digest']
@@ -2211,7 +2211,7 @@ class TestStaleSourceRefresh:
         assert '=== Source profile base ===' in output
         assert [argv[1:] for argv in argvs] == [[str(runner), *BASE_SOURCE_CHILD_ARGV]]
         assert output.count(
-            'Step 23: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)...',
+            'Step 24: Refreshing 1 other dependent profile(s): team-3 (profile "team-2" installs itself after this run)...',
         ) == 1
         assert output.count('=== Dependent profile team-3 ===') == 1
         assert '=== Dependent profile team-2 ===' not in output, 'the base never refreshes the profile that started it'
@@ -2432,7 +2432,7 @@ class TestStaleSourceRefresh:
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """A source whose Step 23 fails on another dependent is refreshed: this profile installs and the sibling is named."""
+        """A source whose Step 24 fails on another dependent is refreshed: this profile installs and the sibling is named."""
         cfg = _install_source(configs)
         _install_dependent(cfg, 'team-2')
         _install_dependent(cfg, 'team-3')

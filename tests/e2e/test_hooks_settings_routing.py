@@ -18,12 +18,17 @@ if TYPE_CHECKING:
 
 import pytest
 
+from scripts.setup_environment import HookEnvironmentResult
 from scripts.setup_environment import _build_hooks_json
 from scripts.setup_environment import _build_profile_settings
 from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_profile_settings_to_settings
 from tests.conftest import empty_mcp_stats
 from tests.e2e.validators import _validate_hooks_structure
+
+# The step-output tests mock the hook download, so no hook file reaches the
+# disk for Step 19 to prepare; the step reports an empty result instead
+NO_HOOK_ENVIRONMENTS = HookEnvironmentResult([], [], [])
 
 # ---------------------------------------------------------------------------
 # Inline YAML-like configs (dicts) for tests WITHOUT command-names
@@ -357,6 +362,7 @@ class TestSummaryOutputRouting:
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
              patch('sys.exit') as mock_exit, \
              patch.object(setup_environment, 'download_hook_files', return_value=True), \
+             patch.object(setup_environment, 'prepare_hook_environments', return_value=NO_HOOK_ENVIRONMENTS), \
              patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
             setup_environment.main()
             mock_exit.assert_not_called()
@@ -430,6 +436,7 @@ class TestSummaryOutputRouting:
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
              patch('sys.exit') as mock_exit, \
              patch.object(setup_environment, 'download_hook_files', return_value=True), \
+             patch.object(setup_environment, 'prepare_hook_environments', return_value=NO_HOOK_ENVIRONMENTS), \
              patch.object(setup_environment, 'generate_env_loader_files', return_value={}):
             setup_environment.main()
             mock_exit.assert_not_called()
@@ -491,6 +498,7 @@ class TestHooksSettingsRoutingStepOutput:
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
              patch('sys.exit') as mock_exit, \
              patch.object(setup_environment, 'download_hook_files', return_value=True), \
+             patch.object(setup_environment, 'prepare_hook_environments', return_value=NO_HOOK_ENVIRONMENTS), \
              patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
             setup_environment.main()
             mock_exit.assert_not_called()
@@ -500,7 +508,7 @@ class TestHooksSettingsRoutingStepOutput:
         # Step 18 writes the full profile-owned delta (not just hooks) to
         # the shared settings.json in non-command-names mode.
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 20-21: Skipping command creation' in captured.out
+        assert 'Steps 21-22: Skipping command creation' in captured.out
 
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
@@ -555,7 +563,7 @@ class TestHooksSettingsRoutingStepOutput:
         # delta makes the writer a no-op).
         assert 'Step 17: Skipping hooks download (none configured)' in captured.out
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 20-21: Skipping command creation' in captured.out
+        assert 'Steps 21-22: Skipping command creation' in captured.out
 
 
 class TestBuildHooksJsonParity:
