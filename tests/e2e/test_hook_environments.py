@@ -4,10 +4,13 @@ After a profile's hook files and settings file are in place, the setup runs
 ``uv sync --script "<hooks dir>/<file>" --python 3.12`` for every wired
 Python command hook and status-line file that declares PEP 723 metadata, on
 the path spelling the written hook command uses, in the hooks directory, and
-in the environment a session hands its hooks. Every case runs through
-main() in the isolated home with the autouse recorder of tests/e2e/conftest.py
-standing in for uv, in the parent run and in every child run, so the tests
-assert on exactly what each sync would have run.
+in the environment a session hands its hooks. After the first failed sync
+it runs ``uv python find 3.12`` once, whose exit status decides whether the
+errors block names the repair of the interpreter or the network, index and
+proxy settings. Every case runs through main() in the isolated home with the
+autouse recorder of tests/e2e/conftest.py standing in for uv, in the parent
+run and in every child run, so the tests assert on exactly what each uv
+command would have run.
 
 The golden configurations wire two Python files: e2e_test_hook.py, whose
 PEP 723 block declares no dependencies, and the plain e2e_statusline.py, so
@@ -28,6 +31,8 @@ import yaml
 from scripts import setup_environment
 from tests.e2e.hook_sync_recorder import FAILED_SYNC_STDERR
 from tests.e2e.hook_sync_recorder import FAILING_VARIABLE
+from tests.e2e.hook_sync_recorder import INTERPRETER_MISSING_VARIABLE
+from tests.e2e.hook_sync_recorder import MISSING_INTERPRETER_STDERR
 from tests.e2e.hook_sync_recorder import HookSyncRecorder
 from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_child_runner
@@ -52,6 +57,21 @@ SUMMARY_ROW = (
 COMPLETION_ROW = '* Hook environments: 1 prepared, 1 without PEP 723 metadata'
 ERRORS_HEADING = 'The following hook environments could not be prepared:'
 DOWNLOAD_SKIP_LINE = 'Skipped: the hook files failed to download'
+PROBE_ARGUMENTS = ['python', 'find', '3.12']
+PROBE_LINE = 'Checking that uv can provide Python 3.12...'
+PROBE_FAILED_LINE = 'uv cannot provide Python 3.12 for the hooks (exit code 2)'
+NETWORK_NOTE = (
+    'Check the network, index and proxy settings the hook would use; '
+    'Claude Code fails the hook the same way when it starts it.'
+)
+INTERPRETER_NOTE = (
+    'uv cannot provide Python 3.12, which the hooks run on; Claude Code fails the hook the same way when it starts it.'
+)
+REPAIR_LINE = 'Install it with: uv python install --reinstall 3.12'
+REPAIR_EXPLANATION = (
+    'This installs Python 3.12, or replaces a uv-managed copy whose files are missing; '
+    'then re-run the setup or the retry commands above.'
+)
 
 
 @pytest.fixture
@@ -96,6 +116,19 @@ def _hooks_config(name: str = 'Hook Environments') -> dict[str, Any]:
         },
         'status-line': {'file': PLAIN_HOOK},
     }
+
+
+def _two_pep723_hooks_config(repo: Path) -> dict[str, Any]:
+    """The hooks configuration with a second PEP 723 hook wired after the first."""
+    (repo / 'hooks' / SECOND_PEP723_HOOK).write_text(
+        '# /// script\n# dependencies = []\n# ///\nprint("second")\n', encoding='utf-8',
+    )
+    config = _hooks_config()
+    config['hooks']['files'].append(f'hooks/{SECOND_PEP723_HOOK}')
+    config['hooks']['events'].append(
+        {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': SECOND_PEP723_HOOK},
+    )
+    return config
 
 
 def _hook_path(hooks_dir: Path, name: str = PEP723_HOOK) -> str:
@@ -346,16 +379,12 @@ class TestFailures:
         self, e2e_isolated_home: dict[str, Path], repo: Path, hook_sync_recorder: HookSyncRecorder,
         monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """The errors block names the failed path with its retry command, and the run exits 1."""
-        (repo / 'hooks' / SECOND_PEP723_HOOK).write_text(
-            '# /// script\n# dependencies = []\n# ///\nprint("second")\n', encoding='utf-8',
-        )
-        config = _hooks_config()
-        config['hooks']['files'].append(f'hooks/{SECOND_PEP723_HOOK}')
-        config['hooks']['events'].append(
-            {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': SECOND_PEP723_HOOK},
-        )
-        cfg = write_config(repo, 'hooks.yaml', config)
+        """The errors block names the failed path, its retry command and the network note, and the run exits 1.
+
+        The probe after the failed sync runs in that sync's directory and
+        environment and finds the interpreter, so the failure lies elsewhere.
+        """
+        cfg = write_config(repo, 'hooks.yaml', _two_pep723_hooks_config(repo))
         monkeypatch.setenv(FAILING_VARIABLE, PEP723_HOOK)
         capfd.readouterr()
 
@@ -367,17 +396,84 @@ class TestFailures:
         assert code == 1, output
         hooks_dir = e2e_isolated_home['claude_dir'] / 'team-1' / 'hooks'
         failed = _hook_path(hooks_dir)
-        recorded = [record['command'] for record in hook_sync_recorder.records()]
+        records = hook_sync_recorder.records()
+        recorded = [record['command'] for record in records]
         assert all(_is_uv(command[0]) for command in recorded), recorded
         assert [command[1:] for command in recorded] == [
-            _sync_arguments(failed), _sync_arguments(_hook_path(hooks_dir, SECOND_PEP723_HOOK)),
+            _sync_arguments(failed), PROBE_ARGUMENTS, _sync_arguments(_hook_path(hooks_dir, SECOND_PEP723_HOOK)),
         ]
+        failed_sync, probe = records[0], records[1]
+        assert probe['command'][0] == failed_sync['command'][0]
+        assert (probe['cwd'], probe['uv_env'], probe['other_env_names']) == (
+            failed_sync['cwd'], failed_sync['uv_env'], failed_sync['other_env_names'],
+        )
         errors = _output_errors(
             stderr, ERRORS_HEADING, f'  - {failed}', f'retry by hand: uv sync --script "{failed}" --python 3.12',
-            FAILED_SYNC_STDERR,
+            FAILED_SYNC_STDERR, NETWORK_NOTE,
         )
-        errors += _output_errors(output, f'Preparing the environment of {SECOND_PEP723_HOOK}')
+        errors += _output_errors(output, f'Preparing the environment of {SECOND_PEP723_HOOK}', PROBE_LINE)
         assert not errors, '\n'.join(errors)
+        assert REPAIR_LINE not in output
+        assert 'uv cannot provide' not in output
+        assert stderr.index(ERRORS_HEADING) < stderr.index(NETWORK_NOTE)
+
+    def test_missing_interpreter_names_its_repair_instead_of_the_network(
+        self, e2e_isolated_home: dict[str, Path], repo: Path, hook_sync_recorder: HookSyncRecorder,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """When uv cannot provide Python 3.12, the block names the reinstall that repairs it.
+
+        Both syncs fail, and the one probe after the first answers for both.
+        """
+        cfg = write_config(repo, 'hooks.yaml', _two_pep723_hooks_config(repo))
+        monkeypatch.setenv(FAILING_VARIABLE, f'{PEP723_HOOK},{SECOND_PEP723_HOOK}')
+        monkeypatch.setenv(INTERPRETER_MISSING_VARIABLE, '1')
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1'])
+
+        captured = capfd.readouterr()
+        output = (captured.out + captured.err).replace('\r\n', '\n')
+        stderr = captured.err.replace('\r\n', '\n')
+        assert code == 1, output
+        hooks_dir = e2e_isolated_home['claude_dir'] / 'team-1' / 'hooks'
+        first = _hook_path(hooks_dir)
+        second = _hook_path(hooks_dir, SECOND_PEP723_HOOK)
+        recorded = [record['command'][1:] for record in hook_sync_recorder.records()]
+        assert recorded == [_sync_arguments(first), PROBE_ARGUMENTS, _sync_arguments(second)]
+        errors = _output_errors(
+            stderr, ERRORS_HEADING, f'  - {first}', f'  - {second}', MISSING_INTERPRETER_STDERR, PROBE_FAILED_LINE,
+            INTERPRETER_NOTE, REPAIR_LINE, REPAIR_EXPLANATION,
+        )
+        assert not errors, '\n'.join(errors)
+        assert NETWORK_NOTE not in output
+        assert stderr.index(ERRORS_HEADING) < stderr.index(INTERPRETER_NOTE) < stderr.index(REPAIR_LINE)
+        assert stderr.index(REPAIR_LINE) < stderr.index(REPAIR_EXPLANATION)
+
+    def test_missing_uv_is_never_probed_and_gets_no_note(
+        self, e2e_isolated_home: dict[str, Path], repo: Path, hook_sync_recorder: HookSyncRecorder,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without uv every candidate fails on its own Step 19 line; neither the probe nor a note follows."""
+        monkeypatch.setattr(setup_environment, '_resolve_hook_uv', lambda: None)
+        cfg = write_config(repo, 'hooks.yaml', _hooks_config())
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1'])
+
+        captured = capfd.readouterr()
+        output = (captured.out + captured.err).replace('\r\n', '\n')
+        stderr = captured.err.replace('\r\n', '\n')
+        assert code == 1, output
+        assert hook_sync_recorder.records() == []
+        hooks_dir = e2e_isolated_home['claude_dir'] / 'team-1' / 'hooks'
+        errors = _output_errors(
+            stderr, 'uv is not on PATH; the hook commands this run wrote need it', ERRORS_HEADING,
+            f'  - {_hook_path(hooks_dir)}', f'  - {_hook_path(hooks_dir, PLAIN_HOOK)}',
+        )
+        assert not errors, '\n'.join(errors)
+        for text in (PROBE_LINE, NETWORK_NOTE, INTERPRETER_NOTE, REPAIR_LINE):
+            assert text not in output, text
 
     def test_failed_hook_download_skips_the_step(
         self, repo: Path, hook_sync_recorder: HookSyncRecorder, capfd: pytest.CaptureFixture[str],

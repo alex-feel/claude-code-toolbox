@@ -28,7 +28,7 @@ from tests.e2e.validators import _validate_hooks_structure
 
 # The step-output tests mock the hook download, so no hook file reaches the
 # disk for Step 19 to prepare; the step reports an empty result instead
-NO_HOOK_ENVIRONMENTS = HookEnvironmentResult([], [], [])
+NO_HOOK_ENVIRONMENTS = HookEnvironmentResult([], [], [], None)
 
 # ---------------------------------------------------------------------------
 # Inline YAML-like configs (dicts) for tests WITHOUT command-names

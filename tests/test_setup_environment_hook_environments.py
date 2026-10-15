@@ -5,11 +5,14 @@ The toolbox writes every Python command hook and status line as ``uv run
 metadata uv builds a persistent environment on that command's first launch.
 The step runs ``uv sync --script`` on the same path string after the hooks
 and the profile's settings files are in place, in the environment a session
-hands its hooks, so the first launch installs nothing.
+hands its hooks, so the first launch installs nothing. After the first failed
+sync it asks ``uv python find`` whether uv can provide the interpreter, which
+decides the guidance of the errors block.
 
 tests/conftest.py replaces prepare_hook_environments for every unit test,
 because the real step runs the machine's uv; these tests call the
-implementation captured at import time and replace the sync runner.
+implementation captured at import time and replace the runner of the step's
+uv commands, the syncs and the interpreter probe alike.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from scripts import setup_environment
+from scripts.setup_environment import HOOK_INTERPRETER_REPAIR_COMMAND
 from scripts.setup_environment import HOOK_LAUNCHER_PYTHON_VERSION
 from scripts.setup_environment import HookEnvironmentResult
 from scripts.setup_environment import _build_file_command
@@ -32,6 +36,7 @@ from scripts.setup_environment import declares_pep723_script
 from scripts.setup_environment import hook_environment_candidate_names
 from scripts.setup_environment import hook_environment_sync_command
 from scripts.setup_environment import hook_environment_sync_command_text
+from scripts.setup_environment import hook_interpreter_probe_command
 from scripts.setup_environment import hook_sync_environment
 from scripts.setup_environment import wired_hook_file_names
 
@@ -59,18 +64,34 @@ def _hook_config(**overrides: Any) -> dict[str, Any]:
 
 
 class _Runner:
-    """Stand in for _run_hook_environment_sync() and record every call."""
+    """Stand in for _run_hook_environment_uv() and record every call.
 
-    def __init__(self, returncode: int = 0, stderr: str = '', failing: frozenset[str] = frozenset()) -> None:
+    A sync fails when ``returncode`` is non-zero or its hook path contains a
+    name in ``failing``; the interpreter probe answers ``probe_returncode``
+    with ``probe_stderr``, independently of the syncs.
+    """
+
+    def __init__(
+        self, returncode: int = 0, stderr: str = '', failing: frozenset[str] = frozenset(),
+        probe_returncode: int = 0, probe_stderr: str = '',
+    ) -> None:
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
         self.returncode = returncode
         self.stderr = stderr
         self.failing = failing
+        self.probe_returncode = probe_returncode
+        self.probe_stderr = probe_stderr
 
     def __call__(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         self.calls.append((list(command), cwd, dict(env)))
+        if command[1:3] == ['python', 'find']:
+            return subprocess.CompletedProcess(command, self.probe_returncode, '', self.probe_stderr)
         failed = self.returncode != 0 or any(name in command[3] for name in self.failing)
         return subprocess.CompletedProcess(command, 2 if failed else 0, '', self.stderr if failed else '')
+
+    def commands(self) -> list[list[str]]:
+        """Every command the step ran, in order."""
+        return [call[0] for call in self.calls]
 
 
 class TestDeclaresPep723Script:
@@ -193,6 +214,20 @@ class TestHookEnvironmentSyncCommand:
         assert setup_environment._BUILT_FILE_COMMAND_PATTERN.fullmatch(command)
 
 
+class TestHookInterpreter:
+    """The probe and the repair name the interpreter the written command requests."""
+
+    def test_probe_asks_for_the_launcher_version(self) -> None:
+        assert hook_interpreter_probe_command() == ['uv', 'python', 'find', HOOK_LAUNCHER_PYTHON_VERSION]
+        assert hook_interpreter_probe_command('C:/tools/uv.exe') == [
+            'C:/tools/uv.exe', 'python', 'find', HOOK_LAUNCHER_PYTHON_VERSION,
+        ]
+
+    def test_repair_reinstalls_the_launcher_version(self) -> None:
+        """A plain install keeps a uv-managed copy whose files are missing; --reinstall replaces it."""
+        assert f'uv python install --reinstall {HOOK_LAUNCHER_PYTHON_VERSION}' == HOOK_INTERPRETER_REPAIR_COMMAND
+
+
 class TestHookSyncEnvironment:
     """The sync runs in the environment a session hands its hooks."""
 
@@ -264,7 +299,7 @@ class TestResolveHookUv:
         assert setup_environment._resolve_hook_uv() is None
 
 
-class TestRunHookEnvironmentSync:
+class TestRunHookEnvironmentUv:
     """The runner hands uv the hooks directory and the composed environment."""
 
     def test_runs_through_run_command_in_the_hooks_directory(
@@ -278,7 +313,7 @@ class TestRunHookEnvironmentSync:
 
         monkeypatch.setattr(setup_environment, 'run_command', fake_run_command)
         command = hook_environment_sync_command('/h/a.py')
-        setup_environment._run_hook_environment_sync(command, cwd=tmp_path, env={'X': '1'})
+        setup_environment._run_hook_environment_uv(command, cwd=tmp_path, env={'X': '1'})
         assert recorded == {'cmd': command, 'capture_output': False, 'cwd': str(tmp_path), 'env': {'X': '1'}}
 
 
@@ -298,7 +333,7 @@ class TestPrepareHookEnvironments:
         self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         monkeypatch.setenv('UV_LOCKED', '1')
         config_json = tmp_path / 'profile' / 'config.json'
         config_json.write_text(json.dumps({'env': {'UV_CACHE_DIR': '/profile-cache'}}), encoding='utf-8')
@@ -308,9 +343,9 @@ class TestPrepareHookEnvironments:
             uv_executable='uv',
         )
 
-        assert result == HookEnvironmentResult(['lint.py'], ['status.py'], [])
+        assert result == HookEnvironmentResult(['lint.py'], ['status.py'], [], None)
         hook_path = (hooks_dir / 'lint.py').as_posix()
-        assert [call[0] for call in runner.calls] == [hook_environment_sync_command(hook_path, 'uv')]
+        assert runner.commands() == [hook_environment_sync_command(hook_path, 'uv')], 'no failed sync, so no probe'
         command, cwd, env = runner.calls[0]
         assert cwd == hooks_dir
         assert env['UV_CACHE_DIR'] == '/profile-cache'
@@ -322,7 +357,7 @@ class TestPrepareHookEnvironments:
 
     def test_lockfile_keeps_the_lock_settings(self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         monkeypatch.setenv('UV_LOCKED', '1')
         (hooks_dir / 'lint.py.lock').write_text('version = 1\n', encoding='utf-8')
         prepare_hook_environments(_hook_config(), hooks_dir, os_env_variables={}, settings_files=[], uv_executable='uv')
@@ -333,7 +368,7 @@ class TestPrepareHookEnvironments:
     ) -> None:
         (hooks_dir / 'status.py').write_text(PEP723_BLOCK, encoding='utf-8')
         runner = _Runner(stderr='error: No solution found', failing=frozenset({'lint.py'}))
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
 
         result = prepare_hook_environments(
             _hook_config(), hooks_dir, os_env_variables={}, settings_files=[], uv_executable='uv',
@@ -341,22 +376,90 @@ class TestPrepareHookEnvironments:
 
         assert result.failed == [(hooks_dir / 'lint.py').as_posix()]
         assert result.prepared == ['status.py']
-        assert len(runner.calls) == 2
+        assert result.interpreter_available is True
+        assert runner.commands() == [
+            hook_environment_sync_command((hooks_dir / 'lint.py').as_posix(), 'uv'),
+            hook_interpreter_probe_command('uv'),
+            hook_environment_sync_command((hooks_dir / 'status.py').as_posix(), 'uv'),
+        ]
         captured = capsys.readouterr()
         assert 'No solution found' in captured.err
         assert 'Failed to prepare the environment of lint.py (exit code 2)' in captured.err
+        assert f'Checking that uv can provide Python {HOOK_LAUNCHER_PYTHON_VERSION}...' in captured.out
+        assert 'uv cannot provide' not in captured.err
+
+    def test_probe_runs_once_in_the_first_failed_sync_environment(
+        self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every sync fails; the probe follows the first one, in its directory and environment, and never repeats."""
+        (hooks_dir / 'status.py').write_text(PEP723_BLOCK, encoding='utf-8')
+        (hooks_dir / 'status.py.lock').write_text('version = 1\n', encoding='utf-8')
+        monkeypatch.setenv('UV_LOCKED', '1')
+        runner = _Runner(returncode=2)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
+
+        result = prepare_hook_environments(
+            _hook_config(), hooks_dir, os_env_variables={'UV_CACHE_DIR': '/hook-cache'}, settings_files=[],
+            uv_executable='C:/tools/uv.exe',
+        )
+
+        assert runner.commands() == [
+            hook_environment_sync_command((hooks_dir / 'lint.py').as_posix(), 'C:/tools/uv.exe'),
+            hook_interpreter_probe_command('C:/tools/uv.exe'),
+            hook_environment_sync_command((hooks_dir / 'status.py').as_posix(), 'C:/tools/uv.exe'),
+        ]
+        (_, sync_cwd, sync_env), (_, probe_cwd, probe_env), (_, _, second_env) = runner.calls
+        assert (probe_cwd, probe_env) == (sync_cwd, sync_env)
+        assert probe_env['UV_CACHE_DIR'] == '/hook-cache'
+        assert 'UV_LOCKED' not in probe_env, 'the first failed sync has no lockfile'
+        assert second_env['UV_LOCKED'] == '1'
+        assert result.failed == [(hooks_dir / 'lint.py').as_posix(), (hooks_dir / 'status.py').as_posix()]
+        assert result.interpreter_available is True
+
+    def test_failed_probe_marks_the_interpreter_missing(
+        self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        runner = _Runner(failing=frozenset({'lint.py'}), probe_returncode=2, probe_stderr='error: No interpreter found')
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
+
+        result = prepare_hook_environments(
+            _hook_config(), hooks_dir, os_env_variables={}, settings_files=[], uv_executable='uv',
+        )
+
+        assert result == HookEnvironmentResult([], ['status.py'], [(hooks_dir / 'lint.py').as_posix()], False)
+        err = capsys.readouterr().err
+        assert 'error: No interpreter found' in err
+        assert f'uv cannot provide Python {HOOK_LAUNCHER_PYTHON_VERSION} for the hooks (exit code 2)' in err
+
+    def test_missing_file_beside_a_successful_sync_is_never_probed(
+        self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only a failed sync asks for the interpreter; a missing file says nothing about it."""
+        config = _hook_config()
+        config['hooks']['files'].append('hooks/gone.py')
+        config['hooks']['events'].append({'event': 'Stop', 'type': 'command', 'command': 'gone.py'})
+        runner = _Runner()
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
+
+        result = prepare_hook_environments(config, hooks_dir, os_env_variables={}, settings_files=[], uv_executable='uv')
+
+        assert result.failed == [(hooks_dir / 'gone.py').as_posix()]
+        assert result.prepared == ['lint.py']
+        assert result.interpreter_available is None
+        assert runner.commands() == [hook_environment_sync_command((hooks_dir / 'lint.py').as_posix(), 'uv')]
 
     def test_missing_wired_file_is_a_failure(
         self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         (hooks_dir / 'lint.py').unlink()
         result = prepare_hook_environments(
             _hook_config(), hooks_dir, os_env_variables={}, settings_files=[], uv_executable='uv',
         )
         assert result.failed == [(hooks_dir / 'lint.py').as_posix()]
         assert result.skipped == ['status.py']
+        assert result.interpreter_available is None
         assert runner.calls == []
         assert 'Hook file not found' in capsys.readouterr().err
 
@@ -364,30 +467,57 @@ class TestPrepareHookEnvironments:
         self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         result = prepare_hook_environments(
             _hook_config(), hooks_dir, os_env_variables={}, settings_files=[], uv_executable=None,
         )
         assert result.failed == [(hooks_dir / 'lint.py').as_posix(), (hooks_dir / 'status.py').as_posix()]
+        assert result.interpreter_available is None
         assert runner.calls == []
         assert 'uv is not on PATH' in capsys.readouterr().err
 
     def test_no_candidates(self, hooks_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         result = prepare_hook_environments({'hooks': {'files': ['hooks/notify.js'], 'events': [
             {'event': 'Stop', 'type': 'command', 'command': 'notify.js'},
         ]}}, hooks_dir, os_env_variables={}, settings_files=[], uv_executable='uv')
-        assert result == HookEnvironmentResult([], [], [])
+        assert result == HookEnvironmentResult([], [], [], None)
         assert result.ran is False
         assert runner.calls == []
         assert 'No Python hooks to prepare environments for' in capsys.readouterr().out
 
     def test_completion_line_counts(self) -> None:
         """The closing summary counts what was prepared and skipped; a failure ends the run in the error block."""
-        assert HookEnvironmentResult(['a.py'], ['b.py'], []).completion_line() == '1 prepared, 1 without PEP 723 metadata'
-        assert HookEnvironmentResult(['a.py', 'b.py'], [], []).completion_line() == '2 prepared'
-        assert HookEnvironmentResult([], [], ['/h/c.py']).ran is False
+        assert HookEnvironmentResult(['a.py'], ['b.py'], [], None).completion_line() == (
+            '1 prepared, 1 without PEP 723 metadata'
+        )
+        assert HookEnvironmentResult(['a.py', 'b.py'], [], [], None).completion_line() == '2 prepared'
+        assert HookEnvironmentResult([], [], ['/h/c.py'], True).ran is False
+
+
+class TestFailureNotes:
+    """The errors block explains failed syncs by whether uv can provide the interpreter."""
+
+    def test_missing_interpreter_names_the_repair(self) -> None:
+        notes = HookEnvironmentResult([], [], ['/h/a.py'], False).failure_notes()
+        assert notes == [
+            f'uv cannot provide Python {HOOK_LAUNCHER_PYTHON_VERSION}, which the hooks run on; '
+            'Claude Code fails the hook the same way when it starts it.',
+            f'Install it with: {HOOK_INTERPRETER_REPAIR_COMMAND}',
+            f'This installs Python {HOOK_LAUNCHER_PYTHON_VERSION}, or replaces a uv-managed copy whose files are '
+            'missing; then re-run the setup or the retry commands above.',
+        ]
+
+    def test_available_interpreter_points_at_the_network(self) -> None:
+        assert HookEnvironmentResult([], [], ['/h/a.py'], True).failure_notes() == [
+            'Check the network, index and proxy settings the hook would use; '
+            'Claude Code fails the hook the same way when it starts it.',
+        ]
+
+    def test_no_failed_sync_no_note(self) -> None:
+        """A missing hook file or a missing uv carries its own line at Step 19 and no note here."""
+        assert HookEnvironmentResult([], [], ['/h/a.py'], None).failure_notes() == []
 
 
 class TestRunHookEnvironmentStep:
@@ -396,7 +526,7 @@ class TestRunHookEnvironmentStep:
     def test_runs_the_step(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         monkeypatch.setattr(setup_environment, 'prepare_hook_environments', prepare_hook_environments)
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         hooks_dir = tmp_path / 'hooks'
         hooks_dir.mkdir()
         (hooks_dir / 'lint.py').write_text(PEP723_BLOCK, encoding='utf-8')
@@ -414,11 +544,11 @@ class TestRunHookEnvironmentStep:
     ) -> None:
         monkeypatch.setattr(setup_environment, 'prepare_hook_environments', prepare_hook_environments)
         runner = _Runner()
-        monkeypatch.setattr(setup_environment, '_run_hook_environment_sync', runner)
+        monkeypatch.setattr(setup_environment, '_run_hook_environment_uv', runner)
         result = setup_environment.run_hook_environment_step(
             _hook_config(), tmp_path, os_env_variables={}, settings_files=[], uv_executable='uv', download_failed=True,
         )
-        assert result == HookEnvironmentResult([], [], [])
+        assert result == HookEnvironmentResult([], [], [], None)
         assert runner.calls == []
         out = capsys.readouterr().out
         assert 'Step 19: Preparing hook environments...' in out

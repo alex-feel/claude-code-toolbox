@@ -16367,6 +16367,12 @@ HOOK_SCRIPT_LOCKFILE_SUFFIX = '.lock'
 _LOCKFILE_ONLY_UV_SETTINGS: tuple[str, ...] = ('UV_LOCKED', 'UV_FROZEN')
 # The line that opens a PEP 723 inline metadata block of type ``script``
 _PEP723_SCRIPT_TAG = '# /// script'
+# The command the errors block names when uv cannot provide the Python version
+# the hooks run on. uv counts a managed installation as present while its
+# directory exists, so a plain ``uv python install`` leaves one whose files are
+# missing as it is; ``--reinstall`` replaces it, and installs the version when
+# uv has none.
+HOOK_INTERPRETER_REPAIR_COMMAND = f'uv python install --reinstall {HOOK_LAUNCHER_PYTHON_VERSION}'
 
 
 class HookEnvironmentResult(NamedTuple):
@@ -16376,13 +16382,18 @@ class HookEnvironmentResult(NamedTuple):
         prepared: The hook files whose uv environment was built or checked.
         skipped: The Python hook files without PEP 723 metadata, which uv
             runs on the interpreter alone, so they have no environment.
-        failed: The hook files whose sync failed, each spelled as the
-            written hook command spells it.
+        failed: The hook files that could not be prepared, each spelled as
+            the written hook command spells it: a failed sync, a missing
+            hook file, or every candidate when no uv was found.
+        interpreter_available: Whether uv can provide the Python version the
+            hooks run on, asked once after the first failed sync; None when
+            no sync failed.
     """
 
     prepared: list[str]
     skipped: list[str]
     failed: list[str]
+    interpreter_available: bool | None
 
     @property
     def ran(self) -> bool:
@@ -16397,6 +16408,27 @@ class HookEnvironmentResult(NamedTuple):
         if self.skipped:
             parts.append(f'{len(self.skipped)} without PEP 723 metadata')
         return ', '.join(parts)
+
+    def failure_notes(self) -> list[str]:
+        """Explain the failed syncs below the failed files of the errors block.
+
+        Returns:
+            The repair of the interpreter when uv cannot provide it, the
+            network, index and proxy note when it can, and nothing when no
+            sync failed: a missing hook file and a missing uv carry their own
+            lines at Step 19.
+        """
+        same_at_launch = 'Claude Code fails the hook the same way when it starts it.'
+        if self.interpreter_available is None:
+            return []
+        if self.interpreter_available:
+            return [f'Check the network, index and proxy settings the hook would use; {same_at_launch}']
+        return [
+            f'uv cannot provide Python {HOOK_LAUNCHER_PYTHON_VERSION}, which the hooks run on; {same_at_launch}',
+            f'Install it with: {HOOK_INTERPRETER_REPAIR_COMMAND}',
+            f'This installs Python {HOOK_LAUNCHER_PYTHON_VERSION}, or replaces a uv-managed copy whose files are '
+            'missing; then re-run the setup or the retry commands above.',
+        ]
 
 
 def declares_pep723_script(path: Path) -> bool:
@@ -16461,6 +16493,23 @@ def hook_environment_sync_command(hook_path: str, uv_executable: str = 'uv') -> 
 def hook_environment_sync_command_text(hook_path: str) -> str:
     """Render the sync command of one hook file for a shell, the path double-quoted."""
     return ' '.join(f'"{part}"' if part == hook_path else part for part in hook_environment_sync_command(hook_path))
+
+
+def hook_interpreter_probe_command(uv_executable: str = 'uv') -> list[str]:
+    """Build the uv command that asks for the Python version the hooks run on.
+
+    ``uv python find`` looks for an interpreter in the virtual environments
+    and installations the sync considers, and never downloads one, so it
+    fails when uv has no usable interpreter of that version.
+
+    Args:
+        uv_executable: The uv to run, the one the failed sync ran.
+
+    Returns:
+        The argument vector of ``uv python find`` for the version the
+        written hook commands request.
+    """
+    return [uv_executable, 'python', 'find', HOOK_LAUNCHER_PYTHON_VERSION]
 
 
 def _settings_env_block(path: Path) -> dict[str, str]:
@@ -16528,14 +16577,18 @@ def hook_sync_environment(
     return environment
 
 
-def _run_hook_environment_sync(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    """Run one ``uv sync --script`` with uv's own output on the console.
+def _run_hook_environment_uv(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run one uv command of the hook environment step with uv's own output on the console.
 
-    The E2E suite replaces this function with a recorder, in a parent run
-    and in every child run it starts.
+    Every uv command the step runs goes through this function: each ``uv
+    sync --script`` and the ``uv python find`` that follows the first failed
+    one. The unit tests of the step and the E2E suite, in a parent run and
+    in every child run it starts, replace it, so no test runs the machine's
+    uv by accident.
 
     Args:
-        command: The argument vector hook_environment_sync_command() built.
+        command: The argument vector hook_environment_sync_command() or
+            hook_interpreter_probe_command() built.
         cwd: The hooks directory. ``uv sync --script`` reads a ``uv.toml`` or
             a ``[tool.uv]`` table from the working directory, which the
             written ``uv run --no-project`` command does not, so the sync
@@ -16546,6 +16599,33 @@ def _run_hook_environment_sync(command: list[str], *, cwd: Path, env: dict[str, 
         The completed process.
     """
     return run_command(command, capture_output=False, cwd=str(cwd), env=env)
+
+
+def probe_hook_interpreter(uv_executable: str, *, cwd: Path, env: dict[str, str]) -> bool:
+    """Ask uv whether it can provide the Python version the hooks run on.
+
+    Runs after a failed sync, with that sync's uv, working directory and
+    environment, so uv looks for the interpreter where the sync looked. Only
+    the exit status decides; uv's own output stays on the console.
+
+    Args:
+        uv_executable: The uv the failed sync ran.
+        cwd: The working directory of the failed sync.
+        env: The environment of the failed sync.
+
+    Returns:
+        True when uv finds the interpreter, so the sync failed on something
+        else; False when it does not, with an error line naming the exit
+        code.
+    """
+    info(f'Checking that uv can provide Python {HOOK_LAUNCHER_PYTHON_VERSION}...')
+    completed = _run_hook_environment_uv(hook_interpreter_probe_command(uv_executable), cwd=cwd, env=env)
+    if completed.returncode == 0:
+        return True
+    if completed.stderr:
+        error(completed.stderr.strip())
+    error(f'uv cannot provide Python {HOOK_LAUNCHER_PYTHON_VERSION} for the hooks (exit code {completed.returncode})')
+    return False
 
 
 def _resolve_hook_uv() -> str | None:
@@ -16602,44 +16682,51 @@ def prepare_hook_environments(
             None when there was none; the written hook commands need it too.
 
     Returns:
-        The prepared, skipped and failed files.
+        The prepared, skipped and failed files, and whether uv can provide
+        the interpreter, asked once after the first failed sync.
     """
     candidates = hook_environment_candidate_names(config)
-    result = HookEnvironmentResult([], [], [])
     if not candidates:
         info('No Python hooks to prepare environments for')
-        return result
+        return HookEnvironmentResult([], [], [], None)
     if uv_executable is None:
         error('uv is not on PATH; the hook commands this run wrote need it')
-        result.failed.extend((hooks_dir / name).as_posix() for name in candidates)
-        return result
+        return HookEnvironmentResult([], [], [(hooks_dir / name).as_posix() for name in candidates], None)
+    prepared: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    interpreter_available: bool | None = None
     for name in candidates:
         path = hooks_dir / name
         hook_path = path.as_posix()
         if not path.is_file():
             error(f'Hook file not found: {hook_path}')
-            result.failed.append(hook_path)
+            failed.append(hook_path)
             continue
         if not declares_pep723_script(path):
             info(f'{name}: no PEP 723 metadata, runs on the interpreter alone')
-            result.skipped.append(name)
+            skipped.append(name)
             continue
         info(f'Preparing the environment of {name}...')
         environment = hook_sync_environment(
             os_env_variables, settings_files,
             lockfile_present=path.with_name(name + HOOK_SCRIPT_LOCKFILE_SUFFIX).is_file(),
         )
-        completed = _run_hook_environment_sync(
+        completed = _run_hook_environment_uv(
             hook_environment_sync_command(hook_path, uv_executable), cwd=hooks_dir, env=environment,
         )
         if completed.returncode != 0:
             if completed.stderr:
                 error(completed.stderr.strip())
             error(f'Failed to prepare the environment of {name} (exit code {completed.returncode})')
-            result.failed.append(hook_path)
+            failed.append(hook_path)
+            # The syncs differ only in UV_LOCKED and UV_FROZEN, which the
+            # probe ignores, so the first failed sync answers for every one
+            if interpreter_available is None:
+                interpreter_available = probe_hook_interpreter(uv_executable, cwd=hooks_dir, env=environment)
         else:
-            result.prepared.append(name)
-    return result
+            prepared.append(name)
+    return HookEnvironmentResult(prepared, skipped, failed, interpreter_available)
 
 
 def run_hook_environment_step(
@@ -16666,13 +16753,13 @@ def run_hook_environment_step(
             with exit code 1.
 
     Returns:
-        The prepared, skipped and failed files; all empty when skipped.
+        The outcome prepare_hook_environments() reports; empty when skipped.
     """
     print()
     print(f'{Colors.CYAN}Step 19: Preparing hook environments...{Colors.NC}')
     if download_failed:
         info('Skipped: the hook files failed to download')
-        return HookEnvironmentResult([], [], [])
+        return HookEnvironmentResult([], [], [], None)
     return prepare_hook_environments(
         config, hooks_dir, os_env_variables=os_env_variables, settings_files=settings_files,
         uv_executable=uv_executable,
@@ -23266,7 +23353,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # for final error reporting
         download_failures: list[str] = []
         dependency_failures: list[str] = []
-        hook_environments = HookEnvironmentResult([], [], [])
+        hook_environments = HookEnvironmentResult([], [], [], None)
         dependent_results: list[DependentResult] = []
         scheduled_update_failure: str | None = None
         # The uv that builds the hook environments in Step 19, resolved on
@@ -23843,11 +23930,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     error(f'  - {hook_path}')
                     error(f'    retry by hand: {hook_environment_sync_command_text(hook_path)}')
                 print()
-                error(
-                    'Check the network, index and proxy settings the hook would use; '
-                    'Claude Code fails the hook the same way when it starts it.',
-                )
-                print()
+                failure_notes = hook_environments.failure_notes()
+                for line in failure_notes:
+                    error(line)
+                if failure_notes:
+                    print()
             if source_refresh_code:
                 assert source_refresh is not None
                 error(

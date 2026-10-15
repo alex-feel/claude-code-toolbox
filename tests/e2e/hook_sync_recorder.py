@@ -1,17 +1,21 @@
-"""A recorder standing in for the uv sync that prepares hook environments.
+"""A recorder standing in for the uv commands that prepare hook environments.
 
-Step 19 of the setup runs ``uv sync --script`` for every wired PEP 723 hook
-through one runner, ``_run_hook_environment_sync()``. The recorder takes the
-runner's place: it appends what each call would have run to a JSON-lines
-file and answers like a successful sync, so the E2E tests see the exact
-command, working directory and uv settings of every sync without reaching
-the network or the machine's uv cache. With the file named in
-RECORDER_VARIABLE, a child run (a ``--profile all`` child, a dependent
-refresh, a source refresh) records into the same file as the parent test.
+Step 19 of the setup runs ``uv sync --script`` for every wired PEP 723 hook,
+and ``uv python find`` once after the first failed sync, through one runner,
+``_run_hook_environment_uv()``. The recorder takes the runner's place: it
+appends what each call would have run to a JSON-lines file and answers like
+a successful sync or a probe that finds the interpreter, so the E2E tests
+see the exact command, working directory and uv settings of every call
+without reaching the network or the machine's uv and its cache. With the
+file named in RECORDER_VARIABLE, a child run (a ``--profile all`` child, a
+dependent refresh, a source refresh) records into the same file as the
+parent test.
 
 A test makes the sync of chosen hooks fail by naming their basenames in
 FAILING_VARIABLE, comma-separated; the recorder then answers exit code 2 and
 one error line on stderr, the way uv reports an unsatisfiable dependency.
+Independently, INTERPRETER_MISSING_VARIABLE set to ``1`` makes the probe
+answer the way uv does when it finds no interpreter of the version.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
+
+from scripts.setup_environment import HOOK_LAUNCHER_PYTHON_VERSION
 
 # The environment variable through which a test hands the record file to every
 # child run; it belongs to the test harness, not to the toolbox interface, so it
@@ -33,6 +39,16 @@ FAILING_VARIABLE = 'CCT_E2E_HOOK_SYNC_FAIL'
 FAILED_SYNC_EXIT_CODE = 2
 FAILED_SYNC_STDERR = 'error: No solution found when resolving script dependencies'
 
+# Set to 1 to make the recorder answer the interpreter probe as uv does when
+# it finds no interpreter of the version the hooks run on
+INTERPRETER_MISSING_VARIABLE = 'CCT_E2E_HOOK_PYTHON_MISSING'
+
+MISSING_INTERPRETER_EXIT_CODE = 2
+MISSING_INTERPRETER_STDERR = (
+    f'error: No interpreter found for Python {HOOK_LAUNCHER_PYTHON_VERSION} in virtual environments or managed '
+    'installations'
+)
+
 # The variables whose values the record keeps: uv's own settings decide which
 # environment a sync builds. Every other variable is recorded by name only,
 # because the machine's environment holds credentials
@@ -40,7 +56,7 @@ _RECORDED_VALUE_PREFIX = 'UV_'
 
 
 class HookSyncRecorder:
-    """Records every hook environment sync instead of running uv."""
+    """Records every uv command of the hook environment step instead of running uv."""
 
     def __init__(self, path: Path) -> None:
         """Bind the recorder to its JSON-lines file.
@@ -51,16 +67,19 @@ class HookSyncRecorder:
         self.path = path
 
     def __call__(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-        """Record one sync and answer as uv would.
+        """Record one uv command and answer as uv would.
 
         Args:
-            command: The ``uv sync --script`` argument vector.
-            cwd: The working directory the sync runs in.
-            env: The environment the sync runs in.
+            command: The ``uv sync --script`` or ``uv python find`` argument
+                vector.
+            cwd: The working directory the command runs in.
+            env: The environment the command runs in.
 
         Returns:
-            A completed process: exit code 0, or FAILED_SYNC_EXIT_CODE with
-            FAILED_SYNC_STDERR for a hook FAILING_VARIABLE names.
+            A completed process: exit code 0; FAILED_SYNC_EXIT_CODE with
+            FAILED_SYNC_STDERR for the sync of a hook FAILING_VARIABLE names;
+            MISSING_INTERPRETER_EXIT_CODE with MISSING_INTERPRETER_STDERR for
+            the probe while INTERPRETER_MISSING_VARIABLE is ``1``.
         """
         record = {
             'command': list(command),
@@ -70,6 +89,12 @@ class HookSyncRecorder:
         }
         with self.path.open('a', encoding='utf-8') as handle:
             handle.write(json.dumps(record) + '\n')
+        if command[1:3] == ['python', 'find']:
+            if os.environ.get(INTERPRETER_MISSING_VARIABLE) == '1':
+                return subprocess.CompletedProcess(
+                    command, MISSING_INTERPRETER_EXIT_CODE, stdout='', stderr=MISSING_INTERPRETER_STDERR,
+                )
+            return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
         failing = {name.strip() for name in os.environ.get(FAILING_VARIABLE, '').split(',') if name.strip()}
         script = Path(command[3]).name if len(command) > 3 else ''
         if script in failing:
@@ -77,10 +102,10 @@ class HookSyncRecorder:
         return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
 
     def records(self) -> list[dict[str, Any]]:
-        """Read every recorded sync, in call order, children's included.
+        """Read every recorded uv command, in call order, children's included.
 
         Returns:
-            One dict per sync with ``command``, ``cwd``, ``uv_env`` and
+            One dict per command with ``command``, ``cwd``, ``uv_env`` and
             ``other_env_names``; empty when nothing was recorded.
         """
         if not self.path.is_file():
@@ -88,5 +113,5 @@ class HookSyncRecorder:
         return [json.loads(line) for line in self.path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
     def clear(self) -> None:
-        """Forget every recorded sync, so a test can assert on the next run alone."""
+        """Forget every recorded command, so a test can assert on the next run alone."""
         self.path.unlink(missing_ok=True)
