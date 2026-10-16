@@ -22,6 +22,7 @@ import pytest
 
 from scripts import setup_environment
 from scripts.setup_environment import CLAUDE_MD_EXCLUDES_KEY
+from scripts.setup_environment import FIRST_ARGUMENT_COMMANDS_GUARD
 from scripts.setup_environment import HOME_FOLDER_SETTINGS_GUARD
 from scripts.setup_environment import WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD
 from scripts.setup_environment import apply_base_config_home_exclusions
@@ -316,11 +317,12 @@ class TestLaunchShTemplate:
         assert content.count(HOME_FOLDER_SETTINGS_GUARD) == 1
         guard_end = content.index(HOME_FOLDER_SETTINGS_GUARD) + len(HOME_FOLDER_SETTINGS_GUARD)
         assert _claude_start_lines(content[:guard_end]) == []
-        starts = _claude_start_lines(content[guard_end:])
+        starts = _claude_start_lines(content[guard_end:].replace(FIRST_ARGUMENT_COMMANDS_GUARD, ''))
         assert starts, content
         for line in starts:
             assert f'"${{MCP_FLAGS[@]}}" {SOURCES_FLAGS} ' in line, line
-            assert line.index(SOURCES_FLAGS) < line.index('"$@"'), line
+            assert line.index(SOURCES_FLAGS) < line.index('--settings "') < line.index('"$@"'), line
+            assert line.endswith(' "$@"'), line
 
     @pytest.mark.parametrize('system', ['Windows', 'Linux', 'Darwin'])
     def test_guard_compares_the_working_directory_with_the_home_by_identity(

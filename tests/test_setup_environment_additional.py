@@ -2058,179 +2058,87 @@ class TestDeriveBaseURLEdgeCases:
 
 
 class TestSystemPromptWithUserFlags:
-    """Test system prompt application with user-provided flags.
+    """Launchers pass the profile's options first and the caller's arguments last.
 
-    This test class covers the critical bug fix where system prompts were not
-    applied when commands were invoked with additional flags (e.g., --continue).
-    The bug was caused by incorrect argument ordering where user flags ($@)
-    were placed after --settings, disrupting Claude CLI parsing.
+    Every line that starts claude with the profile's options ends with
+    --settings and then "$@", so the system prompt and the settings apply
+    whatever the caller adds (--continue, --resume, --model, -p, a positional
+    prompt), and a subcommand such as ``mcp add`` receives every profile
+    option as a root option of Claude Code.
     """
 
-    @patch('platform.system', return_value='Windows')
-    def test_windows_launcher_arguments_order_with_prompt_replace_mode(self, _mock_system):
-        """Test Windows shared script places user args before --settings (replace mode)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
+    @pytest.mark.parametrize(
+        ('system', 'start', 'settings_variable'),
+        [
+            ('Windows', 'exec claude', 'SETTINGS_WIN'),
+            ('Linux', 'claude', 'SETTINGS_PATH'),
+            ('Darwin', 'claude', 'SETTINGS_PATH'),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ('prompt', 'mode', 'prompt_flag'),
+        [
+            ('prompt.md', 'replace', '--system-prompt-file "$PROMPT_PATH" '),
+            ('prompt.md', 'append', '--append-system-prompt-file "$PROMPT_PATH" '),
+            (None, 'replace', ''),
+        ],
+        ids=['prompt-replace', 'prompt-append', 'no-prompt'],
+    )
+    def test_settings_come_before_the_caller_arguments(
+        self,
+        tmp_path: Path,
+        system: str,
+        start: str,
+        settings_variable: str,
+        prompt: str | None,
+        mode: str,
+        prompt_flag: str,
+    ) -> None:
+        """The current-version start line passes the prompt flag and --settings ahead of "$@"."""
+        with patch('platform.system', return_value=system):
+            result = setup_environment.create_launcher_script(tmp_path, 'test-cmd', prompt, mode=mode)
 
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                'prompt.md',
-                mode='replace',
-            )
-            launcher = launcher_result[0] if launcher_result else None
+        assert result is not None
+        content = (tmp_path / 'launch.sh').read_text()
+        expected = f'{start} "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" {prompt_flag}--settings "${settings_variable}" "$@"'
+        assert expected in content
 
-            assert launcher is not None
-            shared_script = claude_dir / 'launch.sh'
-            assert shared_script.exists()
+    @pytest.mark.parametrize('system', ['Windows', 'Linux'])
+    @pytest.mark.parametrize(
+        ('prompt', 'mode'),
+        [('prompt.md', 'replace'), ('prompt.md', 'append'), (None, 'replace')],
+        ids=['prompt-replace', 'prompt-append', 'no-prompt'],
+    )
+    def test_every_profile_start_ends_with_the_caller_arguments(
+        self, tmp_path: Path, system: str, prompt: str | None, mode: str,
+    ) -> None:
+        """Every version branch passes "$@" once, last, after --settings."""
+        with patch('platform.system', return_value=system):
+            result = setup_environment.create_launcher_script(tmp_path, 'test-cmd', prompt, mode=mode)
 
-            content = shared_script.read_text()
+        assert result is not None
+        content = (tmp_path / 'launch.sh').read_text().replace(setup_environment.FIRST_ARGUMENT_COMMANDS_GUARD, '')
+        starts = [line.strip() for line in content.splitlines() if line.strip().startswith(('exec claude ', 'claude "'))]
+        assert starts
+        for line in starts:
+            assert line.endswith(' "$@"'), line
+            assert line.count('"$@"') == 1, line
+            assert line.index('--settings "') < line.index('"$@"'), line
 
-            # Verify correct argument ordering: MCP flags + prompt flag + file path + user args + settings
-            assert '--system-prompt-file' in content
-            assert (
-                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
-                '"$@" --settings "$SETTINGS_WIN"'
-            ) in content
+    @pytest.mark.parametrize('system', ['Windows', 'Linux'])
+    def test_mcp_config_is_one_argument_with_its_path(self, tmp_path: Path, system: str) -> None:
+        """--mcp-config=<path> ends the variadic option at its own value."""
+        with patch('platform.system', return_value=system):
+            result = setup_environment.create_launcher_script(tmp_path, 'test-cmd', None, has_profile_mcp_servers=True)
 
-    @patch('platform.system', return_value='Windows')
-    def test_windows_launcher_arguments_order_with_prompt_append_mode(self, _mock_system):
-        """Test Windows shared script places user args before --settings (append mode)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                'prompt.md',
-                mode='append',
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            assert launcher is not None
-            shared_script = claude_dir / 'launch.sh'
-            content = shared_script.read_text()
-
-            # Verify correct argument ordering with append mode (includes MCP flags)
-            assert '--append-system-prompt-file' in content
-            assert (
-                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" '
-                '"$@" --settings "$SETTINGS_WIN"'
-            ) in content
-
-    @patch('platform.system', return_value='Windows')
-    def test_windows_launcher_arguments_order_without_prompt(self, _mock_system):
-        """Test Windows shared script places user args before --settings (no prompt)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                None,  # No system prompt
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            assert launcher is not None
-            shared_script = claude_dir / 'launch.sh'
-            content = shared_script.read_text()
-
-            # Verify correct argument ordering without prompt (includes MCP flags)
-            assert 'claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"' in content
-
-    @patch('platform.system', return_value='Linux')
-    def test_linux_launcher_arguments_order_with_prompt_replace_mode(self, _mock_system):
-        """Test Linux launcher uses single command with user args before --settings."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                'prompt.md',
-                mode='replace',
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            assert launcher is not None
-            content = launcher.read_text()
-
-            # Should use single exec command, not if-else branches
-            assert '--system-prompt-file' in content
-            # Verify user args come before --settings (includes MCP flags)
-            assert (
-                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
-                '"$@" --settings "$SETTINGS_PATH"'
-            ) in content
-
-    @patch('platform.system', return_value='Linux')
-    def test_linux_launcher_arguments_order_with_prompt_append_mode(self, _mock_system):
-        """Test Linux launcher with append mode uses correct argument order."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                'prompt.md',
-                mode='append',
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            assert launcher is not None
-            content = launcher.read_text()
-
-            assert '--append-system-prompt-file' in content
-            assert (
-                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" '
-                '"$@" --settings "$SETTINGS_PATH"'
-            ) in content
-
-    @patch('platform.system', return_value='Linux')
-    def test_linux_launcher_arguments_order_without_prompt(self, _mock_system):
-        """Test Linux launcher without prompt uses correct argument order."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                None,  # No system prompt
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            assert launcher is not None
-            content = launcher.read_text()
-
-            # Should use single command with MCP flags
-            assert 'claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_PATH"' in content
-
-    @patch('platform.system', return_value='Darwin')
-    def test_macos_launcher_arguments_order(self, _mock_system):
-        """Test macOS launcher (same as Linux) uses correct argument order."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                'prompt.md',
-                mode='replace',
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            assert launcher is not None
-            content = launcher.read_text()
-
-            # macOS should behave like Linux
-            assert (
-                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
-                '"$@" --settings "$SETTINGS_PATH"'
-            ) in content
+        assert result is not None
+        content = (tmp_path / 'launch.sh').read_text()
+        assert '--mcp-config="$' in content
+        assert '--mcp-config "' not in content
 
     @patch('platform.system', return_value='Windows')
-    def test_windows_no_conditional_branches_for_args(self, _mock_system):
-        """Test Windows shared script doesn't use conditionals for argument handling."""
+    def test_windows_no_conditional_branches_for_args(self, _mock_system: MagicMock) -> None:
+        """The Windows shared script always passes "$@" and uses file-based prompt flags."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -2243,45 +2151,10 @@ class TestSystemPromptWithUserFlags:
             shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
-            # Should NOT contain conditional logic for $@
-            # The exec command should always include "$@"
             assert 'if [ $# -gt 0 ]' not in content
             assert 'exec claude' in content
             assert '"$@"' in content
-            # Verify file-based flags are used
             assert '--system-prompt-file' in content or '--append-system-prompt-file' in content
-
-    @patch('platform.system', return_value='Linux')
-    def test_linux_no_conditional_branches_for_args(self, _mock_system):
-        """Test Linux launcher doesn't use conditionals for argument handling."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            launcher_result = setup_environment.create_launcher_script(
-                claude_dir,
-                'test-cmd',
-                'prompt.md',
-            )
-            launcher = launcher_result[0] if launcher_result else None
-
-            content = launcher.read_text()
-
-            # Should use single command, not if-else for args
-            assert (
-                '"${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" '
-                '"$@" --settings "$SETTINGS_PATH"'
-            ) in content
-            # But the actual claude command should not be in a conditional
-            claude_lines = [line for line in content.split('\n') if line.strip().startswith('claude ')]
-            # All claude command lines should not be inside conditionals
-            for claude_line in claude_lines:
-                # The line should contain both "$@" and --settings
-                if '--settings' in claude_line:
-                    assert '"$@"' in claude_line
-                    # Verify order: user args before --settings
-                    args_pos = claude_line.index('"$@"')
-                    settings_pos = claude_line.index('--settings')
-                    assert args_pos < settings_pos, f'User args must come before --settings: {claude_line}'
 
 
 class TestConditionalSystemPromptLoading:

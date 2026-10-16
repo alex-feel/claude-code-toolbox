@@ -40,6 +40,10 @@ WINDOWS_GIT_BASH = Path(r'C:\Program Files\Git\bin\bash.exe')
 # Variable the marking loaders append to: each loader adds its own mark.
 LOADER_MARKS_VARIABLE = 'PROFILE_LOADER_MARKS'
 
+# The spelling the launchers give the profile's MCP config: one argument, so
+# the variadic option takes no caller argument as another config file.
+MCP_CONFIG_OPTION = '--mcp-config='
+
 # Variables that switch Git Bash argument conversion off; a launch starts
 # without them unless a test hands them in.
 PATH_CONVERSION_VARIABLES = ('MSYS2_ARG_CONV_EXCL', 'MSYS_NO_PATHCONV')
@@ -413,8 +417,24 @@ def same_path(value: str, expected: Path) -> bool:
     return Path(value).resolve() == expected.resolve()
 
 
+def mcp_config_values(record: LaunchRecord) -> list[str]:
+    """Return every path claude received as ``--mcp-config=<path>``, in order.
+
+    Args:
+        record: What the stub claude received.
+
+    Returns:
+        The paths, without the option name.
+    """
+    return [arg.removeprefix(MCP_CONFIG_OPTION) for arg in record.args if arg.startswith(MCP_CONFIG_OPTION)]
+
+
 def assert_reaches_profile(record: LaunchRecord, profile_dir: Path, prompt: str | None, *, mcp: bool = True) -> None:
     """Assert that a launch used every file of profile_dir and nothing else.
+
+    The launch must pass the profile's options first and end with
+    ``--probe-arg``, the last argument every caller of this helper hands the
+    entry point.
 
     Args:
         record: What the stub claude received.
@@ -425,17 +445,21 @@ def assert_reaches_profile(record: LaunchRecord, profile_dir: Path, prompt: str 
     """
     assert same_path(record.config_dir, profile_dir), f'CLAUDE_CONFIG_DIR={record.config_dir}'
     assert same_path(record.value_after('--settings'), profile_dir / 'config.json'), record.args
+    assert '--mcp-config' not in record.args, record.args
     if mcp:
         assert '--strict-mcp-config' in record.args, record.args
-        assert same_path(record.value_after('--mcp-config'), profile_dir / 'mcp.json'), record.args
+        values = mcp_config_values(record)
+        assert len(values) == 1, record.args
+        assert same_path(values[0], profile_dir / 'mcp.json'), record.args
     else:
         assert '--strict-mcp-config' not in record.args, record.args
-        assert '--mcp-config' not in record.args, record.args
+        assert mcp_config_values(record) == [], record.args
     if prompt is not None:
         prompt_flags = [arg for arg in record.args if arg in {'--system-prompt-file', '--append-system-prompt-file'}]
         assert len(prompt_flags) == 1, record.args
         assert same_path(record.value_after(prompt_flags[0]), profile_dir / 'prompts' / prompt), record.args
-    assert '--probe-arg' in record.args, record.args
+    assert record.args[-1] == '--probe-arg', record.args
+    assert record.args.index('--settings') < record.args.index('--probe-arg'), record.args
 
 
 def expected_bytes(text: str, *, lf_pinned: bool) -> bytes:

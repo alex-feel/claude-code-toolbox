@@ -19369,7 +19369,7 @@ fi
 # config.json the launcher passes with --settings. Anywhere else the working
 # project's own .claude applies as usual. -ef compares the two directories by
 # identity, so letter case, symlinks and short names on Windows make no
-# difference, and an argument the caller passes comes later and wins.
+# difference, and a --setting-sources the caller passes comes later and wins.
 HOME_FOLDER_SETTINGS_GUARD = '''# Started in the home folder, a session would read the home folder's .claude
 # (the base profile) as its project settings; keep the settings to the profile
 # there. Anywhere else the working project's own .claude applies as usual.
@@ -19379,6 +19379,105 @@ if [ "$PWD" -ef "$HOME" ]; then
 fi
 
 '''
+
+
+@dataclass(frozen=True)
+class FirstArgumentCommands:
+    """Commands Claude Code dispatches only from the start of its command line.
+
+    Claude Code reads its first arguments before its option parser runs and
+    runs these commands only from there: behind any option their words reach
+    the option parser, which turns them into a prompt or refuses them. A
+    launch.sh whose arguments form one of them starts claude with the caller's
+    arguments alone (FIRST_ARGUMENT_COMMANDS_GUARD), so such a command runs
+    without the profile's settings, MCP flags and system prompt.
+
+    Attributes:
+        names: Commands dispatched when they are the first argument.
+        two_word: Commands dispatched when they are the first two arguments.
+        after_flags: The command dispatched when it is the first argument
+            after any number of leading_flags.
+        leading_flags: The flags that may precede after_flags.
+        sole: Flags dispatched as a command only when they are the only argument.
+    """
+
+    names: tuple[str, ...]
+    two_word: tuple[tuple[str, str], ...]
+    after_flags: str
+    leading_flags: tuple[str, ...]
+    sole: tuple[str, ...]
+
+    def render_guard(self) -> str:
+        """Render the launch.sh block that starts claude with the caller's arguments alone.
+
+        Returns:
+            The bash block: it runs before every line that starts claude with
+            the profile's options and execs claude with nothing but "$@" when
+            the arguments form one of the commands.
+        """
+        second_words: dict[str, list[str]] = {}
+        for first, second in self.two_word:
+            second_words.setdefault(first, []).append(second)
+        lines = [
+            '# Claude Code dispatches these commands only from the start of its command',
+            "# line, so they start with the caller's arguments alone, without the",
+            "# profile's options.",
+            'FIRST_ARGUMENT_COMMAND=false',
+            'case "${1-}" in',
+            f'  {" | ".join(self.names)})',
+            '    FIRST_ARGUMENT_COMMAND=true ;;',
+        ]
+        for first, seconds in second_words.items():
+            condition = ' || '.join(f'[ "${{2-}}" = {second} ]' for second in seconds)
+            lines += [
+                f'  {first})',
+                f'    if {condition}; then',
+                '      FIRST_ARGUMENT_COMMAND=true',
+                '    fi ;;',
+            ]
+        lines += [
+            f'  {" | ".join(self.sole)})',
+            '    if [ "$#" -eq 1 ]; then',
+            '      FIRST_ARGUMENT_COMMAND=true',
+            '    fi ;;',
+            'esac',
+            'for arg in "$@"; do',
+            '  case "$arg" in',
+            f'    {" | ".join(self.leading_flags)}) ;;',
+            f'    {self.after_flags})',
+            '      FIRST_ARGUMENT_COMMAND=true',
+            '      break ;;',
+            '    *) break ;;',
+            '  esac',
+            'done',
+            'if [ "$FIRST_ARGUMENT_COMMAND" = true ]; then',
+            '  exec claude "$@"',
+            'fi',
+        ]
+        return '\n'.join(lines) + '\n\n'
+
+
+# What Claude Code dispatches before its option parser runs: the background
+# session commands, Remote Control and its aliases, the self-hosted runner,
+# `plugin test`, `daemon` (also behind the two permission-bypass flags), and
+# --update or --upgrade given alone. --bg and --background are found anywhere
+# on the command line, so they keep the profile's options, which the
+# background session receives with them.
+CLAUDE_FIRST_ARGUMENT_COMMANDS = FirstArgumentCommands(
+    names=(
+        'logs', 'attach', 'stop', 'kill', 'respawn', 'rm',
+        'remote-control', 'rc', 'remote', 'sync', 'bridge',
+        'self-hosted-runner',
+    ),
+    two_word=(('plugin', 'test'),),
+    after_flags='daemon',
+    leading_flags=('--dangerously-skip-permissions', '--allow-dangerously-skip-permissions'),
+    sole=('--update', '--upgrade'),
+)
+
+# Block every launch.sh runs after its guards and before any line that starts
+# claude with the profile's options.
+FIRST_ARGUMENT_COMMANDS_GUARD = CLAUDE_FIRST_ARGUMENT_COMMANDS.render_guard()
 
 
 def create_launcher_script(
@@ -19415,6 +19514,20 @@ def create_launcher_script(
     long spelling of its working directory, below the home and outside it
     alike, and WINDOWS_SLASH_ARGUMENTS_GUARD before it starts claude, so Git
     Bash hands slash commands to claude.exe unchanged.
+
+    Every line that starts a session passes the launcher's own options first
+    -- the MCP flags, SOURCES, the prompt flag and --settings -- and the
+    caller's arguments last. Claude Code's option parser reads every launcher
+    option as a root option, so a subcommand such as ``mcp add`` works through
+    the launcher, and a caller's option with the same name as a launcher
+    option comes later and wins: a caller's --settings replaces config.json
+    for that run. --mcp-config is the exception: the caller's values add to
+    the profile's mcp.json. The launcher spells its own value as
+    ``--mcp-config=<path>``, so the variadic option takes no caller argument
+    as another config file. FIRST_ARGUMENT_COMMANDS_GUARD runs before every
+    such line and starts claude with the caller's arguments alone when they
+    form a command Claude Code dispatches only from the start of its command
+    line (CLAUDE_FIRST_ARGUMENT_COMMANDS).
 
     Args:
         config_base_dir: The profile directory (e.g., ~/.claude/{cmd}/, or the
@@ -19524,10 +19637,10 @@ MCP_CONFIG_PATH="{profile_sh}/mcp.json"
 MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
+  MCP_FLAGS=(--strict-mcp-config --mcp-config="$MCP_WIN")
 fi
 
-{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
+{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}{WINDOWS_SLASH_ARGUMENTS_GUARD}{FIRST_ARGUMENT_COMMANDS_GUARD}PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
   echo "Error: System prompt not found at $PROMPT_PATH" >&2
   exit 1
@@ -19593,7 +19706,7 @@ get_file_size() {{
 # Safe prompt size threshold (4KB)
 SAFE_PROMPT_SIZE=4096
 
-''' + WINDOWS_SLASH_ARGUMENTS_GUARD
+'''
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -19609,35 +19722,35 @@ done
 # For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
 if version_ge "$CLAUDE_VERSION" "2.0.64"; then
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_WIN" "$@"
 elif [ "$HAS_CONTINUE" = true ]; then
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_WIN" "$@"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --settings "$SETTINGS_WIN" "$@"
     fi
   fi
 else
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_WIN" "$@"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
   fi
 fi
 '''
@@ -19645,20 +19758,20 @@ fi
                     # Append mode: use --append-system-prompt-file if available
                     shared_sh_content += '''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_WIN" "$@"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --settings "$SETTINGS_WIN" "$@"
   fi
 fi
 '''
@@ -19683,11 +19796,11 @@ MCP_CONFIG_PATH="{profile_sh}/mcp.json"
 MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
+  MCP_FLAGS=(--strict-mcp-config --mcp-config="$MCP_WIN")
 fi
 
-{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}''' + WINDOWS_SLASH_ARGUMENTS_GUARD + '''\
-exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
+{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}{WINDOWS_SLASH_ARGUMENTS_GUARD}\
+{FIRST_ARGUMENT_COMMANDS_GUARD}exec claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --settings "$SETTINGS_WIN" "$@"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -19718,10 +19831,10 @@ PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
 MCP_CONFIG_PATH="{profile_sh}/mcp.json"
 MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
+  MCP_FLAGS=(--strict-mcp-config --mcp-config="$MCP_CONFIG_PATH")
 fi
 
-{HOME_FOLDER_SETTINGS_GUARD}if [ ! -f "$PROMPT_PATH" ]; then
+{HOME_FOLDER_SETTINGS_GUARD}{FIRST_ARGUMENT_COMMANDS_GUARD}if [ ! -f "$PROMPT_PATH" ]; then
     echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
     echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
     exit 1
@@ -19808,37 +19921,37 @@ if version_ge "$CLAUDE_VERSION" "2.0.64"; then
     echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   fi
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_PATH" "$@"
 elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_PATH" "$@"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+      claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" "$@" --settings "$SETTINGS_PATH"
+      claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --settings "$SETTINGS_PATH" "$@"
     fi
   fi
 else
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_PATH" "$@"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
   fi
 fi
 '''
@@ -19847,20 +19960,20 @@ fi
                     launcher_content += f'''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt-file "$PROMPT_PATH" --settings "$SETTINGS_PATH" "$@"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --settings "$SETTINGS_PATH" "$@"
   fi
 fi
 '''
@@ -19882,13 +19995,14 @@ SETTINGS_PATH="{profile_sh}/config.json"
 MCP_CONFIG_PATH="{profile_sh}/mcp.json"
 MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
+  MCP_FLAGS=(--strict-mcp-config --mcp-config="$MCP_CONFIG_PATH")
 fi
 
-{HOME_FOLDER_SETTINGS_GUARD}echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+{HOME_FOLDER_SETTINGS_GUARD}{FIRST_ARGUMENT_COMMANDS_GUARD}\
+echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
-claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" "$@" --settings "$SETTINGS_PATH"
+claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --settings "$SETTINGS_PATH" "$@"
 '''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
