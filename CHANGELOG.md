@@ -1,5 +1,14 @@
 # Changelog
 
+## [8.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v8.3.0...v8.3.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* name the interpreter repair when uv cannot provide the hook Python ([#483](https://github.com/alex-feel/claude-code-toolbox/issues/483)) ([583e1f9](https://github.com/alex-feel/claude-code-toolbox/commit/583e1f9a31410486618e1cf59adbb0d83e8c638a))
+* name the interpreter repair when uv cannot start the setup or the installer ([#486](https://github.com/alex-feel/claude-code-toolbox/issues/486)) ([c5b69f2](https://github.com/alex-feel/claude-code-toolbox/commit/c5b69f2da982badab533815a3439ecf8fdf59a62))
+* pass profile options before user arguments in every launch.sh ([#485](https://github.com/alex-feel/claude-code-toolbox/issues/485)) ([fad3f0f](https://github.com/alex-feel/claude-code-toolbox/commit/fad3f0f6f1969a1ad9c96ebb4f0284312d75b672))
+
 ## [8.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.2.0...v8.3.0) (2026-10-11)
 
 
