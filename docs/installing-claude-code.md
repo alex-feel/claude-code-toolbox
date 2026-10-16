@@ -192,7 +192,7 @@ The Claude Code auto-updater may ignore disable settings in some versions:
 
 ### uv cannot provide Python 3.12
 
-The [Quick Install](#quick-install) commands run the installer with `uv run --python 3.12`. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
+The Windows, macOS and Linux [Quick Install](#quick-install) commands run the installer with `uv run --python 3.12`. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
 
 ```text
 [FAIL] uv cannot provide Python 3.12, which the installer runs on.

@@ -2584,7 +2584,7 @@ If you see an error about no configuration, ensure you set the `CLAUDE_CODE_TOOL
 
 ### uv cannot provide Python 3.12
 
-The bootstrap commands run the setup with `uv run --python 3.12`, and the commands that install Claude Code alone (see [Installing Claude Code](installing-claude-code.md#quick-install)) run the installer the same way. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
+The bootstrap commands run the setup with `uv run --python 3.12`, and the Windows, macOS and Linux commands that install Claude Code alone (see [Installing Claude Code](installing-claude-code.md#quick-install)) run the installer the same way. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
 
 ```text
 [FAIL] uv cannot provide Python 3.12, which the setup runs on.
