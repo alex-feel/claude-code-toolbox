@@ -190,6 +190,18 @@ The Claude Code auto-updater may ignore disable settings in some versions:
 
 ## Troubleshooting
 
+### uv cannot provide Python 3.12
+
+The [Quick Install](#quick-install) commands run the installer with `uv run --python 3.12`. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
+
+```text
+[FAIL] uv cannot provide Python 3.12, which the installer runs on.
+[FAIL] Install it with: uv python install --reinstall 3.12
+[FAIL] This installs Python 3.12, or replaces a uv-managed copy whose files are missing; then run this install command again.
+```
+
+Run `uv python install --reinstall 3.12`, then the install command again. The repair installs Python 3.12, or replaces a uv-managed copy whose files are missing, such as one whose interpreter executable was deleted; a plain `uv python install 3.12` leaves such a copy as it is, because uv counts an installation as present while its directory exists. With `UV_PYTHON_DOWNLOADS=never` in your environment, uv refuses the install and names the setting to change. When uv can provide the interpreter, the install command adds nothing, and the output above names the cause of the failure. Either way it exits with the code `uv run` returned; on macOS and Linux it also prints `[FAIL] Installation failed` whenever the run fails. The environment setup's bootstrap commands name the same repair (see [uv cannot provide Python 3.12](environment-configuration-guide.md#uv-cannot-provide-python-312) in the Environment Configuration Guide).
+
 ### Native Installation Fails
 
 The installer automatically tries GCS direct download before falling back to npm in `auto` mode, so most users do not need to take any action. To isolate the issue, use `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native` to see only native method output without the npm fallback. You can also try the native installer directly:

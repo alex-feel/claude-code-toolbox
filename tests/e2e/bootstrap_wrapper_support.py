@@ -1,10 +1,13 @@
 """Helpers for E2E tests that run the platform bootstrap wrappers.
 
-The bash wrappers run for real on their own platform with stand-ins for
-curl, which copies the repository's scripts instead of downloading them,
-and for uv, whose behavior each test module supplies. The Linux wrapper
-refuses to run anywhere but Linux and the macOS wrapper anywhere but macOS,
-so each one is parametrized with a skip for the other platforms.
+Each platform has two wrappers: ``setup-environment``, which runs the
+environment setup, and ``install-claude``, which runs the Claude Code
+installer. The bash wrappers run for real on their own platform with
+stand-ins for curl, which copies the repository's scripts instead of
+downloading them, and for uv, whose behavior each test module supplies. The
+Linux wrappers refuse to run anywhere but Linux and the macOS wrappers
+anywhere but macOS, so each platform is parametrized with a skip for the
+other platforms.
 """
 
 from __future__ import annotations
@@ -19,7 +22,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / 'scripts'
-WINDOWS_WRAPPER = SCRIPTS_DIR / 'windows' / 'setup-environment.ps1'
+WINDOWS_SETUP_WRAPPER = SCRIPTS_DIR / 'windows' / 'setup-environment.ps1'
+WINDOWS_INSTALL_WRAPPER = SCRIPTS_DIR / 'windows' / 'install-claude-windows.ps1'
 
 FAKE_CURL = '''\
 #!/usr/bin/env bash
@@ -39,18 +43,23 @@ cp "$E2E_SCRIPTS_DIR/$(basename "$url")" "$out"
 UNIX_WRAPPERS = [
     pytest.param(
         'linux',
-        marks=pytest.mark.skipif(not sys.platform.startswith('linux'), reason='the Linux wrapper runs only on Linux'),
+        marks=pytest.mark.skipif(not sys.platform.startswith('linux'), reason='the Linux wrappers run only on Linux'),
     ),
     pytest.param(
         'macos',
-        marks=pytest.mark.skipif(sys.platform != 'darwin', reason='the macOS wrapper runs only on macOS'),
+        marks=pytest.mark.skipif(sys.platform != 'darwin', reason='the macOS wrappers run only on macOS'),
     ),
 ]
 
 
-def unix_wrapper(platform_dir: str) -> Path:
-    """Return the bootstrap wrapper of one Unix platform."""
+def unix_setup_wrapper(platform_dir: str) -> Path:
+    """Return the setup bootstrap wrapper of one Unix platform."""
     return SCRIPTS_DIR / platform_dir / 'setup-environment.sh'
+
+
+def unix_install_wrapper(platform_dir: str) -> Path:
+    """Return the installer bootstrap wrapper of one Unix platform."""
+    return SCRIPTS_DIR / platform_dir / f'install-claude-{platform_dir}.sh'
 
 
 def run_unix_wrapper(

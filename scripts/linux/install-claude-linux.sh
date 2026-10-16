@@ -13,6 +13,10 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# The Python version the installer runs on, named once for the run, the
+# interpreter check and the repair hint
+PYTHON_VERSION="3.12"
+
 echo ""
 echo -e "${CYAN}============================================${NC}"
 echo -e "${CYAN}  Claude Code Linux Installer (Bootstrap)${NC}"
@@ -73,13 +77,23 @@ TEMP_DIR=$(mktemp -d /tmp/claude_install.XXXXXX)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 if curl -fsSL "$SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
-    if uv run --no-project --python 3.12 "$TEMP_DIR/install_claude.py"; then
-        exit 0
-    else
+    EXIT_CODE=0
+    uv run --no-project --python "$PYTHON_VERSION" "$TEMP_DIR/install_claude.py" || EXIT_CODE=$?
+    if [ "$EXIT_CODE" -ne 0 ]; then
         echo -e "${RED}[FAIL]${NC} Installation failed"
-        exit 1
+    fi
+    # uv python find never downloads, so after a failed run it tells whether uv
+    # can provide the interpreter now; only its exit status is read, and the
+    # wrapper still exits with the code uv run returned
+    if [ "$EXIT_CODE" -ne 0 ] && ! uv python find "$PYTHON_VERSION" >/dev/null 2>&1; then
+        echo ""
+        echo -e "${RED}[FAIL]${NC} uv cannot provide Python ${PYTHON_VERSION}, which the installer runs on."
+        echo -e "${RED}[FAIL]${NC} Install it with: uv python install --reinstall ${PYTHON_VERSION}"
+        echo -e "${RED}[FAIL]${NC} This installs Python ${PYTHON_VERSION}, or replaces a uv-managed copy whose files are missing; then run this install command again."
     fi
 else
     echo -e "${RED}[FAIL]${NC} Failed to download installer script"
-    exit 1
+    EXIT_CODE=1
 fi
+
+exit $EXIT_CODE

@@ -2584,7 +2584,7 @@ If you see an error about no configuration, ensure you set the `CLAUDE_CODE_TOOL
 
 ### uv cannot provide Python 3.12
 
-The bootstrap commands run the setup with `uv run --python 3.12`. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
+The bootstrap commands run the setup with `uv run --python 3.12`, and the commands that install Claude Code alone (see [Installing Claude Code](installing-claude-code.md#quick-install)) run the installer the same way. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
 
 ```text
 [FAIL] uv cannot provide Python 3.12, which the setup runs on.
@@ -2592,7 +2592,9 @@ The bootstrap commands run the setup with `uv run --python 3.12`. When that fail
 [FAIL] This installs Python 3.12, or replaces a uv-managed copy whose files are missing; then run this setup command again.
 ```
 
-Run `uv python install --reinstall 3.12`, then the bootstrap command again. The command installs Python 3.12, or replaces a uv-managed copy whose files are missing, such as one whose interpreter executable was deleted; a plain `uv python install 3.12` leaves such a copy as it is, because uv counts an installation as present while its directory exists. With `UV_PYTHON_DOWNLOADS=never` in your environment, uv refuses the install and names the setting to change. When uv can provide the interpreter, the bootstrap command adds nothing, and the output above names the cause of the failure. Either way it exits with the code `uv run` returned. Step 19 names the same repair for the interpreter the hooks run on (see [Hook Environments](#hook-environments)).
+The install commands print the same lines naming what they run: `which the installer runs on` and `then run this install command again`.
+
+Run `uv python install --reinstall 3.12`, then run the failed command again. The repair installs Python 3.12, or replaces a uv-managed copy whose files are missing, such as one whose interpreter executable was deleted; a plain `uv python install 3.12` leaves such a copy as it is, because uv counts an installation as present while its directory exists. With `UV_PYTHON_DOWNLOADS=never` in your environment, uv refuses the install and names the setting to change. When uv can provide the interpreter, the command adds nothing, and the output above names the cause of the failure. Either way it exits with the code `uv run` returned. Step 19 names the same repair for the interpreter the hooks run on (see [Hook Environments](#hook-environments)).
 
 ### Profile "NAME" was installed from another configuration
 
