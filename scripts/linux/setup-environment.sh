@@ -26,6 +26,10 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# The Python version the setup runs on, named once for the install, the run,
+# the interpreter check and the repair hint
+PYTHON_VERSION="3.12"
+
 echo ""
 echo -e "${CYAN}============================================${NC}"
 echo -e "${CYAN}  Claude Code Environment Setup (Bootstrap)${NC}"
@@ -72,9 +76,9 @@ else
     echo -e "${GREEN}[OK]${NC}   uv is already installed"
 fi
 
-# Install Python 3.12 via uv (always ensure uv manages its own Python 3.12)
-echo -e "${CYAN}[INFO]${NC} Ensuring Python 3.12 is available via uv..."
-uv python install 3.12
+# Install the Python version via uv (always ensure uv manages its own copy)
+echo -e "${CYAN}[INFO]${NC} Ensuring Python ${PYTHON_VERSION} is available via uv..."
+uv python install "$PYTHON_VERSION"
 
 # Ensure ~/.local/bin is in PATH for current session
 export PATH="$HOME/.local/bin:$PATH"
@@ -133,8 +137,17 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
    curl -fsSL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
-    uv run --no-project --python 3.12 setup_environment.py "$@"
-    EXIT_CODE=$?
+    EXIT_CODE=0
+    uv run --no-project --python "$PYTHON_VERSION" setup_environment.py "$@" || EXIT_CODE=$?
+    # uv python find never downloads, so after a failed run it tells whether uv
+    # can provide the interpreter now; only its exit status is read, and the
+    # wrapper still exits with the code uv run returned
+    if [ "$EXIT_CODE" -ne 0 ] && ! uv python find "$PYTHON_VERSION" >/dev/null 2>&1; then
+        echo ""
+        echo -e "${RED}[FAIL]${NC} uv cannot provide Python ${PYTHON_VERSION}, which the setup runs on."
+        echo -e "${RED}[FAIL]${NC} Install it with: uv python install --reinstall ${PYTHON_VERSION}"
+        echo -e "${RED}[FAIL]${NC} This installs Python ${PYTHON_VERSION}, or replaces a uv-managed copy whose files are missing; then run this setup command again."
+    fi
 else
     echo -e "${RED}[FAIL]${NC} Failed to download setup scripts"
     EXIT_CODE=1

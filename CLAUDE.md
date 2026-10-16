@@ -10,10 +10,11 @@ This is the Claude Code Toolbox - a community project providing automated instal
 
 ### Two-Tier Installation System
 
-1. **Platform-specific bootstrap scripts** (minimal ~60 lines each)
+1. **Platform-specific bootstrap scripts** (minimal)
    - Windows: PowerShell scripts in `scripts/windows/`
    - Linux/macOS: Bash scripts in `scripts/linux/` and `scripts/macos/`
    - These install `uv` (Astral's Python package manager) and run Python scripts
+   - When `uv run` exits non-zero, each `setup-environment` and `install-claude` wrapper runs `uv python find` for the Python version it keeps in one variable (`PYTHON_VERSION` in bash, `$pythonVersion` in PowerShell) with the output discarded and, only when that fails too, prints the Step 19 repair `uv python install --reinstall 3.12` in `[FAIL]` lines naming the setup or the installer, exiting with the code `uv run` returned either way (`tests/e2e/test_bootstrap_wrappers_interpreter_hint.py`).
 
 2. **Cross-platform Python scripts** (comprehensive installers)
    - `scripts/install_claude.py`: Installs Git Bash (Windows) and Claude Code via native installers with npm fallback

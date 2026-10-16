@@ -269,11 +269,11 @@ Test your changes:
 3. **Test Installation Scripts**
    ```powershell
    # Windows - test bootstrap scripts
-   .\scripts\windows\install-claude.ps1 -Verbose
+   .\scripts\windows\install-claude-windows.ps1
    .\scripts\windows\setup-environment.ps1
 
    # Linux/macOS - test bootstrap scripts
-   bash scripts/linux/install-claude.sh
+   bash scripts/linux/install-claude-linux.sh
    bash scripts/linux/setup-environment.sh
    ```
 
@@ -296,13 +296,13 @@ claude-code-toolbox/
 │   ├── install_claude.py            # Cross-platform Claude installer
 │   ├── setup_environment.py         # Cross-platform environment setup
 │   ├── windows/                     # Windows bootstrap scripts
-│   │   ├── install-claude.ps1       # Claude installation script
+│   │   ├── install-claude-windows.ps1 # Claude installation script
 │   │   └── setup-environment.ps1    # Environment setup script
 │   ├── linux/                       # Linux bootstrap scripts
-│   │   ├── install-claude.sh        # Claude installation script
+│   │   ├── install-claude-linux.sh  # Claude installation script
 │   │   └── setup-environment.sh     # Environment setup script
 │   ├── macos/                       # macOS bootstrap scripts
-│   │   ├── install-claude.sh        # Claude installation script
+│   │   ├── install-claude-macos.sh  # Claude installation script
 │   │   └── setup-environment.sh     # Environment setup script
 │   └── hooks/                       # Git hooks and validators
 ├── tests/                           # Test suite
