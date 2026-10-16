@@ -6,7 +6,9 @@ finds a ready environment on its first launch. These tests run main() with
 the real uv against a cache of their own, from a working directory whose
 uv.toml names an unreachable index, which the sync must not read because the
 written command does not. They then run the written command offline and see
-it install nothing, and see an unsatisfiable dependency fail the setup.
+it install nothing, see an unsatisfiable dependency fail the setup with the
+network, index and proxy note, and see a uv that cannot provide Python 3.12
+fail it with the command that installs or repairs the interpreter.
 """
 
 from __future__ import annotations
@@ -34,6 +36,13 @@ PEP723_HOOK = 'warm_hook.py'
 PLAIN_HOOK = 'plain_hook.py'
 UNREACHABLE_INDEX = 'http://127.0.0.1:9/simple/'
 MISSING_DEPENDENCY = 'cct-e2e-nonexistent-package==0.0.0'
+NETWORK_NOTE = 'Check the network, index and proxy settings the hook would use'
+REPAIR_LINE = 'Install it with: uv python install --reinstall 3.12'
+# The variables that would point uv at an interpreter outside the empty store
+# the interpreter test gives it
+INTERPRETER_SOURCES = (
+    'VIRTUAL_ENV', 'CONDA_PREFIX', 'UV_PYTHON', 'UV_MANAGED_PYTHON', 'UV_NO_MANAGED_PYTHON', 'UV_SYSTEM_PYTHON',
+)
 
 
 def _write_hooks(repo: Path, dependencies: str) -> None:
@@ -143,3 +152,45 @@ class TestRealUvSync:
         assert f'  - {failed}\n' in stderr, stderr
         assert f'retry by hand: uv sync --script "{failed}" --python 3.12' in stderr, stderr
         assert f'  - {Path(failed).with_name(PLAIN_HOOK).as_posix()}' not in stderr, stderr
+        assert 'Checking that uv can provide Python 3.12...' in output, output
+        assert NETWORK_NOTE in stderr, stderr
+        assert REPAIR_LINE not in stderr, stderr
+
+    def test_missing_interpreter_names_the_repair(
+        self, e2e_isolated_home: dict[str, Path], uv_cache: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A uv limited to an empty store of its own, without downloads, fails the sync and the probe alike.
+
+        The interpreter store and the directory for interpreter links lie in
+        the test's own directory, so nothing reaches the machine's uv
+        installations or ~/.local/bin.
+        """
+        del uv_cache
+        python_dir = tmp_path / 'uv-python'
+        python_dir.mkdir()
+        bin_dir = tmp_path / 'uv-python-bin'
+        monkeypatch.setenv('UV_PYTHON_INSTALL_DIR', str(python_dir))
+        monkeypatch.setenv('UV_PYTHON_BIN_DIR', str(bin_dir))
+        monkeypatch.setenv('UV_PYTHON_PREFERENCE', 'only-managed')
+        monkeypatch.setenv('UV_PYTHON_DOWNLOADS', 'never')
+        for name in INTERPRETER_SOURCES:
+            monkeypatch.delenv(name, raising=False)
+        repo = tmp_path / 'repo'
+        _write_hooks(repo, '[]')
+        cfg = write_config(repo, 'hooks.yaml', _config('no-python'))
+        capfd.readouterr()
+
+        code = run_main([str(cfg), *SKIP, '--yes'])
+
+        captured = capfd.readouterr()
+        output = (captured.out + captured.err).replace('\r\n', '\n')
+        assert code == 1, output
+        stderr = captured.err.replace('\r\n', '\n')
+        failed = (e2e_isolated_home['claude_dir'] / 'no-python' / 'hooks' / PEP723_HOOK).as_posix()
+        assert f'  - {failed}\n' in stderr, stderr
+        assert 'uv cannot provide Python 3.12 for the hooks (exit code 2)' in stderr, stderr
+        assert REPAIR_LINE in stderr, stderr
+        assert NETWORK_NOTE not in stderr, stderr
+        assert list(python_dir.iterdir()) == []
+        assert not bin_dir.exists() or list(bin_dir.iterdir()) == []
