@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from typing import cast
 
+from scripts.setup_environment import FIRST_ARGUMENT_COMMANDS_GUARD
 from scripts.setup_environment import HOME_FOLDER_SETTINGS_GUARD
 from scripts.setup_environment import WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD
 from tests.e2e.expected import EXPECTED_JSON_KEYS
@@ -881,6 +882,7 @@ def validate_launcher_script(
         errors = _validate_unix_launcher(path, content, command_name)
     errors.extend(validate_launcher_has_no_update_check(path))
     if path.name == 'launch.sh':
+        errors.extend(validate_launcher_passes_caller_arguments_last(path))
         errors.extend(validate_launcher_limits_home_folder_settings(path))
         errors.extend(validate_launcher_starts_in_the_long_working_directory(path, windows=current_platform == 'win32'))
     return errors
@@ -896,8 +898,10 @@ def validate_launcher_limits_home_folder_settings(launch_sh: Path) -> list[str]:
     before it starts claude: the guard compares the working directory with
     the home folder by identity (-ef) and fills SOURCES with
     ``--setting-sources user`` only there, and every line that starts claude
-    passes SOURCES right after the MCP flags and before the user's own
-    arguments, so an argument the user passes still wins.
+    with the profile's options passes SOURCES right after the MCP flags and
+    before the user's own arguments, so a --setting-sources the user passes
+    comes later and wins. The first-argument guard's own start, which hands
+    claude the user's arguments alone, carries no profile option.
 
     Args:
         launch_sh: The generated launch.sh.
@@ -914,12 +918,10 @@ def validate_launcher_limits_home_folder_settings(launch_sh: Path) -> list[str]:
         errors.append(f'{launch_sh}: expected the home-folder settings guard exactly once')
         return errors
     guard_end = content.index(HOME_FOLDER_SETTINGS_GUARD) + len(HOME_FOLDER_SETTINGS_GUARD)
-    starts = [
-        line.strip() for line in content.splitlines() if line.strip().startswith(('exec claude ', 'claude "'))
-    ]
+    starts = _profile_option_starts(content)
     if not starts:
         errors.append(f'{launch_sh}: no line starts claude')
-    if any(line.strip().startswith(('exec claude ', 'claude "')) for line in content[:guard_end].splitlines()):
+    if any(_is_claude_start(line) for line in content[:guard_end].splitlines()):
         errors.append(f'{launch_sh}: claude starts before the home-folder settings guard runs')
     flags = '"${MCP_FLAGS[@]}" "${SOURCES[@]}" '
     errors.extend(
@@ -927,6 +929,69 @@ def validate_launcher_limits_home_folder_settings(launch_sh: Path) -> list[str]:
         for line in starts
         if flags not in line or line.index('"${SOURCES[@]}"') > line.index('"$@"')
     )
+    return errors
+
+
+def _is_claude_start(line: str) -> bool:
+    """Return whether a launch.sh line starts claude."""
+    return line.strip().startswith(('exec claude ', 'claude "'))
+
+
+def _profile_option_starts(content: str) -> list[str]:
+    """Return the launch.sh lines that start claude with the profile's options.
+
+    The first-argument guard's own start, which hands claude the caller's
+    arguments alone, is left out.
+
+    Args:
+        content: The launch.sh text.
+
+    Returns:
+        The stripped lines, in file order.
+    """
+    lines = content.replace(FIRST_ARGUMENT_COMMANDS_GUARD, '').splitlines()
+    return [line.strip() for line in lines if _is_claude_start(line)]
+
+
+def validate_launcher_passes_caller_arguments_last(launch_sh: Path) -> list[str]:
+    """Validate that launch.sh hands Claude Code the profile's options first and the caller's arguments last.
+
+    Claude Code's option parser reads an option placed before a subcommand as
+    a root option and one placed after it as the subcommand's own, so every
+    line that starts claude with the profile's options ends with ``"$@"``,
+    after ``--settings``, and spells the MCP config as ``--mcp-config=<path>``
+    so the variadic option takes no caller argument as another config file.
+    Claude Code dispatches some commands only from the start of its command
+    line, so FIRST_ARGUMENT_COMMANDS_GUARD runs once, before every such line,
+    and starts claude with the caller's arguments alone for them.
+
+    Args:
+        launch_sh: The generated launch.sh.
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    try:
+        content = launch_sh.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher {launch_sh}: {e}']
+    errors: list[str] = []
+    if content.count(FIRST_ARGUMENT_COMMANDS_GUARD) != 1:
+        return [f'{launch_sh}: expected the first-argument command guard exactly once']
+    guard_start = content.index(FIRST_ARGUMENT_COMMANDS_GUARD)
+    guard_end = guard_start + len(FIRST_ARGUMENT_COMMANDS_GUARD)
+    if any(_is_claude_start(line) for line in content[:guard_start].splitlines()):
+        errors.append(f'{launch_sh}: claude starts before the first-argument command guard runs')
+    starts = _profile_option_starts(content[guard_end:])
+    if not starts:
+        errors.append(f'{launch_sh}: no line starts claude after the first-argument command guard')
+    for line in starts:
+        if not line.endswith(' "$@"') or line.count('"$@"') != 1:
+            errors.append(f"{launch_sh}: a claude start does not end with the caller's arguments: {line}")
+        elif '--settings "' not in line or line.index('--settings "') > line.index('"$@"'):
+            errors.append(f"{launch_sh}: a claude start passes --settings after the caller's arguments: {line}")
+    if '--mcp-config "' in content or '--mcp-config="$' not in content:
+        errors.append(f'{launch_sh}: the MCP config is not spelled as --mcp-config=<path>')
     return errors
 
 
@@ -961,7 +1026,7 @@ def validate_launcher_starts_in_the_long_working_directory(launch_sh: Path, *, w
     if content.count(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) != 1:
         return [f'{launch_sh}: expected the working-directory spelling guard exactly once']
     guard_end = content.index(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) + len(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD)
-    if any(line.strip().startswith(('exec claude ', 'claude "')) for line in content[:guard_end].splitlines()):
+    if any(_is_claude_start(line) for line in content[:guard_end].splitlines()):
         return [f'{launch_sh}: claude starts before the working-directory spelling guard runs']
     return []
 
