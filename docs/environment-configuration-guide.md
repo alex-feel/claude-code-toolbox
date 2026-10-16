@@ -1239,7 +1239,7 @@ A profile that links `hooks/` from a source prepares its own environments: its p
 
 The installation summary and `--dry-run` list the candidates before you confirm, for example `Hook environments: lint.py, status.py (uv builds an environment after download for each file with PEP 723 metadata)`. The row names candidates, because the files download after consent and Step 19 checks each one for metadata. The completion summary counts the outcome, for example `Hook environments: 1 prepared, 1 without PEP 723 metadata`. When a sync fails, the other files still sync, and the run ends in the "Setup Completed with Errors" block instead of the completion summary. After the first failed sync, Step 19 runs `uv python find 3.12` once, in the same directory and environment, to learn whether uv can provide the interpreter the hooks run on; `uv python find` never downloads, so it fails when uv has no usable Python 3.12, and Step 19 then prints `uv cannot provide Python 3.12 for the hooks (exit code N)`. The errors block lists every failed file under `The following hook environments could not be prepared:` with its path and the command that retries it, `retry by hand: uv sync --script "<path>" --python 3.12`. What follows depends on that check:
 
-- **uv cannot provide Python 3.12:** the block says so and names the repair, `Install it with: uv python install --reinstall 3.12`. The command installs Python 3.12, or replaces a uv-managed copy whose files are missing, such as one whose interpreter executable was deleted; a plain `uv python install 3.12` leaves such a copy as it is, because uv counts an installation as present while its directory exists. Run it, then re-run the setup or the `retry by hand` commands. With `UV_PYTHON_DOWNLOADS=never` in your environment, uv refuses the install and names the setting to change.
+- **uv cannot provide Python 3.12:** the block says so and names the repair, `Install it with: uv python install --reinstall 3.12`. The command installs Python 3.12, or replaces a uv-managed copy whose files are missing, such as one whose interpreter executable was deleted; a plain `uv python install 3.12` leaves such a copy as it is, because uv counts an installation as present while its directory exists. Run it, then re-run the setup or the `retry by hand` commands. With `UV_PYTHON_DOWNLOADS=never` in your environment, uv refuses the install and names the setting to change. The bootstrap commands name the same repair when uv cannot provide the Python 3.12 the setup itself runs on; see [uv cannot provide Python 3.12](#uv-cannot-provide-python-312).
 - **uv provides Python 3.12:** the block adds a note to check the network, index and proxy settings the hook would use.
 
 In both cases Claude Code fails the hook the same way when it starts it. The setup then exits with code 1, as it does for a failed [dependency](#dependencies). A wired hook file missing from the hooks directory, and no `uv` on the `PATH` the setup started with (the written hook commands need `uv` too), land in the same list without either note; Step 19 prints the reason for each (`Hook file not found: <path>`, `uv is not on PATH; ...`).
@@ -2581,6 +2581,18 @@ CLI flags take precedence over environment variables. For piped invocations, env
 ### No configuration specified
 
 If you see an error about no configuration, ensure you set the `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` variable inline with the bootstrap command, or re-run an installed profile with `--profile NAME` (or `CLAUDE_CODE_TOOLBOX_PROFILE`), which needs no configuration. See [Quick Start](#quick-start) and [Re-running a profile](#re-running-a-profile) for examples.
+
+### uv cannot provide Python 3.12
+
+The bootstrap commands run the setup with `uv run --python 3.12`. When that fails, they run `uv python find 3.12`, which never downloads, to learn whether uv can provide that interpreter now. When it cannot, they print these lines below uv's own error (for example `Python interpreter not found at <path>\python.exe`):
+
+```text
+[FAIL] uv cannot provide Python 3.12, which the setup runs on.
+[FAIL] Install it with: uv python install --reinstall 3.12
+[FAIL] This installs Python 3.12, or replaces a uv-managed copy whose files are missing; then run this setup command again.
+```
+
+Run `uv python install --reinstall 3.12`, then the bootstrap command again. The command installs Python 3.12, or replaces a uv-managed copy whose files are missing, such as one whose interpreter executable was deleted; a plain `uv python install 3.12` leaves such a copy as it is, because uv counts an installation as present while its directory exists. With `UV_PYTHON_DOWNLOADS=never` in your environment, uv refuses the install and names the setting to change. When uv can provide the interpreter, the bootstrap command adds nothing, and the output above names the cause of the failure. Either way it exits with the code `uv run` returned. Step 19 names the same repair for the interpreter the hooks run on (see [Hook Environments](#hook-environments)).
 
 ### Profile "NAME" was installed from another configuration
 

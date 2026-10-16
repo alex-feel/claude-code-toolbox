@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,12 +29,14 @@ from pathlib import Path
 import pytest
 
 from scripts import setup_environment
+from tests.e2e.bootstrap_wrapper_support import UNIX_WRAPPERS
+from tests.e2e.bootstrap_wrapper_support import WINDOWS_WRAPPER
+from tests.e2e.bootstrap_wrapper_support import run_unix_wrapper
+from tests.e2e.bootstrap_wrapper_support import unix_wrapper
 from tests.e2e.profile_support import run_main
 
 # Color codes the setup's summary rows can carry, stripped before text assertions
 _ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS_DIR = REPO_ROOT / 'scripts'
 
 PROFILE_YAML = '''\
 name: Wrapper Profile
@@ -43,21 +44,6 @@ command-names: [yaml-name]
 command-defaults: {}
 user-settings:
   theme: dark
-'''
-
-FAKE_CURL = '''\
-#!/usr/bin/env bash
-# Stand-in for curl: copy the requested repository script to the -o path
-out=""
-url=""
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        -o) out="$2"; shift 2 ;;
-        -*) shift ;;
-        *) url="$1"; shift ;;
-    esac
-done
-cp "$E2E_SCRIPTS_DIR/$(basename "$url")" "$out"
 '''
 
 FAKE_UV = '''\
@@ -74,56 +60,11 @@ exit 2
 '''
 
 
-def _unix_wrapper(platform_dir: str) -> Path:
-    """Return the bootstrap wrapper of one Unix platform."""
-    return SCRIPTS_DIR / platform_dir / 'setup-environment.sh'
-
-
 def _run_unix_wrapper(
-    tmp_path: Path,
-    wrapper: Path,
-    args: list[str],
-    extra_env: dict[str, str],
+    tmp_path: Path, wrapper: Path, args: list[str], extra_env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    """Run a bash bootstrap wrapper with stand-ins for curl and uv in an isolated home."""
-    fake_bin = tmp_path / 'fake-bin'
-    fake_bin.mkdir()
-    for name, body in (('curl', FAKE_CURL), ('uv', FAKE_UV)):
-        stand_in = fake_bin / name
-        stand_in.write_text(body, encoding='utf-8', newline='\n')
-        stand_in.chmod(0o755)
-    home = tmp_path / 'home'
-    home.mkdir(exist_ok=True)
-    env = {
-        'PATH': f'{fake_bin}{os.pathsep}{os.environ["PATH"]}',
-        'HOME': str(home),
-        'E2E_SCRIPTS_DIR': str(SCRIPTS_DIR),
-        'E2E_PYTHON': sys.executable,
-        'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1',
-        **extra_env,
-    }
-    bash = shutil.which('bash')
-    assert bash is not None
-    return subprocess.run(
-        [bash, str(wrapper), *args],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-
-
-UNIX_WRAPPERS = [
-    pytest.param(
-        'linux',
-        marks=pytest.mark.skipif(not sys.platform.startswith('linux'), reason='the Linux wrapper runs only on Linux'),
-    ),
-    pytest.param(
-        'macos',
-        marks=pytest.mark.skipif(sys.platform != 'darwin', reason='the macOS wrapper runs only on macOS'),
-    ),
-]
+    """Run a bash bootstrap wrapper whose uv runs the real setup script with the test interpreter."""
+    return run_unix_wrapper(tmp_path, wrapper, args, extra_env, uv_stand_in=FAKE_UV)
 
 
 @pytest.mark.parametrize('platform_dir', UNIX_WRAPPERS)
@@ -137,7 +78,7 @@ class TestUnixWrapper:
 
         result = _run_unix_wrapper(
             tmp_path,
-            _unix_wrapper(platform_dir),
+            unix_wrapper(platform_dir),
             [str(config), '--skip-install', '--dry-run', '--command-names', 'wrapped,wrapped-alias'],
             {},
         )
@@ -154,7 +95,7 @@ class TestUnixWrapper:
 
         result = _run_unix_wrapper(
             tmp_path,
-            _unix_wrapper(platform_dir),
+            unix_wrapper(platform_dir),
             [str(config), '--skip-install', '--dry-run'],
             {'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'from-env'},
         )
@@ -170,7 +111,7 @@ class TestUnixWrapper:
 
         result = _run_unix_wrapper(
             tmp_path,
-            _unix_wrapper(platform_dir),
+            unix_wrapper(platform_dir),
             ['--skip-install', '--dry-run', '--command-names', 'second'],
             {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': str(config)},
         )
@@ -191,7 +132,7 @@ class TestUnixWrapperLinks:
 
         result = _run_unix_wrapper(
             tmp_path,
-            _unix_wrapper(platform_dir),
+            unix_wrapper(platform_dir),
             [
                 str(config), '--skip-install', '--dry-run', '--command-names', 'linked',
                 '--link-dirs', 'projects', '--link-from', 'base',
@@ -213,7 +154,7 @@ class TestUnixWrapperLinks:
 
         result = _run_unix_wrapper(
             tmp_path,
-            _unix_wrapper(platform_dir),
+            unix_wrapper(platform_dir),
             ['--skip-install', '--dry-run'],
             {
                 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': str(config),
@@ -257,7 +198,7 @@ class TestUnixWrapperRunAllCommands:
         _install_source_and_dependent(tmp_path)
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'], {},
+            tmp_path, unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'], {},
         )
 
         output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
@@ -269,7 +210,7 @@ class TestUnixWrapperRunAllCommands:
         _install_source_and_dependent(tmp_path)
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir),
+            tmp_path, unix_wrapper(platform_dir),
             ['--profile', 'team-2', '--skip-install', '--dry-run', '--run-all-commands'], {},
         )
 
@@ -283,7 +224,7 @@ class TestUnixWrapperRunAllCommands:
         _install_source_and_dependent(tmp_path)
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'],
+            tmp_path, unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'],
             {'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'},
         )
 
@@ -332,7 +273,7 @@ class TestUnixWrapperProfileRerun:
         _install_profile_manifest(tmp_path, 'wrapped')
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'], {},
+            tmp_path, unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'], {},
         )
 
         output = result.stdout + result.stderr
@@ -344,7 +285,7 @@ class TestUnixWrapperProfileRerun:
         _install_profile_manifest(tmp_path, 'wrapped')
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), ['--skip-install', '--dry-run'],
+            tmp_path, unix_wrapper(platform_dir), ['--skip-install', '--dry-run'],
             {'CLAUDE_CODE_TOOLBOX_PROFILE': 'wrapped'},
         )
 
@@ -354,7 +295,7 @@ class TestUnixWrapperProfileRerun:
 
     def test_no_configuration_and_no_profile_is_refused_by_the_wrapper(self, platform_dir: str, tmp_path: Path) -> None:
         """Without a configuration or a profile the wrapper stops before downloading anything."""
-        result = _run_unix_wrapper(tmp_path, _unix_wrapper(platform_dir), ['--skip-install', '--dry-run'], {})
+        result = _run_unix_wrapper(tmp_path, unix_wrapper(platform_dir), ['--skip-install', '--dry-run'], {})
 
         output = result.stdout + result.stderr
         assert result.returncode == 1, output
@@ -368,7 +309,7 @@ class TestUnixWrapperProfileRerun:
         config = _install_profile_manifest(tmp_path, 'wrapped')
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'],
+            tmp_path, unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'],
             {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': str(config)},
         )
 
@@ -385,7 +326,7 @@ class TestUnixWrapperProfileRerun:
         other = _write_other_configuration(tmp_path)
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'],
+            tmp_path, unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'],
             {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': str(other)},
         )
 
@@ -406,7 +347,7 @@ class TestUnixWrapperProfileRerun:
         other = _write_other_configuration(tmp_path)
 
         result = _run_unix_wrapper(
-            tmp_path, _unix_wrapper(platform_dir), [str(other), '--profile', 'wrapped', '--skip-install', '--dry-run'],
+            tmp_path, unix_wrapper(platform_dir), [str(other), '--profile', 'wrapped', '--skip-install', '--dry-run'],
             {},
         )
 
@@ -424,7 +365,7 @@ function Invoke-WebRequest {
     Set-Content -LiteralPath $OutFile -Value ''
 }
 function uv {
-    # Arguments arrive as PowerShell values (3.12 is a number); record the text uv receives
+    # Arguments arrive as PowerShell values; record the text uv receives
     $record = @{
         args = @($args | ForEach-Object { [string]$_ })
         config = $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG
@@ -460,7 +401,7 @@ def _run_windows_wrapper(
     home = tmp_path / 'home'
     home.mkdir(exist_ok=True)
     record = tmp_path / 'record.json'
-    wrapper = SCRIPTS_DIR / 'windows' / 'setup-environment.ps1'
+    wrapper = WINDOWS_WRAPPER
     quoted_args = ' '.join("'" + arg.replace("'", "''") + "'" for arg in args)
     command = f"{WINDOWS_STAND_INS}\n& '{wrapper}' {quoted_args}\nexit $LASTEXITCODE"
     env = {**os.environ, 'USERPROFILE': str(home), 'E2E_RECORD': str(record), **extra_env}
