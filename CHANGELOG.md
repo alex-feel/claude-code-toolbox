@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.3.2](https://github.com/alex-feel/claude-code-toolbox/compare/v8.3.1...v8.3.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* install a profile's hook files as one set ([#487](https://github.com/alex-feel/claude-code-toolbox/issues/487)) ([714a477](https://github.com/alex-feel/claude-code-toolbox/commit/714a477e8728c53e7d982c9419811713f63c0321))
+
 ## [8.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v8.3.0...v8.3.1) (2026-10-16)
 
 
