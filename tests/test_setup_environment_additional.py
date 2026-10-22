@@ -1896,10 +1896,12 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
+    @patch('setup_environment.download_hook_files', return_value=True)
     @patch('pathlib.Path.mkdir')
     def test_main_with_all_features(
         self,
         _mock_mkdir,
+        mock_download_hooks,
         mock_register,
         mock_launcher,
         mock_settings,
@@ -1915,6 +1917,7 @@ class TestMainFunctionErrorPaths:
         """Test main with all configuration features enabled."""
         assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
+        del mock_download_hooks  # Unused but required for patch
         del mock_download_resource  # Unused but required for patch
 
         # Mock validation to succeed

@@ -4731,32 +4731,35 @@ class TestArtifactIsolation:
             assert result is True
 
     def test_download_hook_files_includes_helpers(self):
-        """Helpers are downloaded into the same directory as the hook scripts."""
+        """Helpers are staged and installed into the same directory as the hook scripts."""
         with tempfile.TemporaryDirectory() as tmpdir:
             hooks: dict[str, Any] = {
                 'files': ['hooks/my_hook.py'],
                 'helpers': ['hooks/shared.py'],
             }
-            with patch('setup_environment.process_resources', return_value=True) as mock_process:
+            with patch('setup_environment._download_resource_set', return_value=[]) as mock_download:
                 result = setup_environment.download_hook_files(
                     hooks,
                     Path(tmpdir),
                     'test-source',
                 )
             assert result is True
-            assert mock_process.call_args[0][0] == ['hooks/my_hook.py', 'hooks/shared.py']
+            assert mock_download.call_args[0][0] == ['hooks/my_hook.py', 'hooks/shared.py']
+            hooks_dir = Path(tmpdir) / 'hooks'
+            assert mock_download.call_args[0][1].parent == hooks_dir
+            assert mock_download.call_args[1]['installed_dir'] == hooks_dir
 
     def test_download_hook_files_helpers_only(self):
         """A hooks section carrying only helpers still downloads them."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch('setup_environment.process_resources', return_value=True) as mock_process:
+            with patch('setup_environment._download_resource_set', return_value=[]) as mock_download:
                 result = setup_environment.download_hook_files(
                     {'helpers': ['hooks/shared.py']},
                     Path(tmpdir),
                     'test-source',
                 )
             assert result is True
-            assert mock_process.call_args[0][0] == ['hooks/shared.py']
+            assert mock_download.call_args[0][0] == ['hooks/shared.py']
 
     def test_create_profile_config_claude_config_dir_injection(self):
         """Test that CLAUDE_CONFIG_DIR from user-settings.env lands in config.json."""
