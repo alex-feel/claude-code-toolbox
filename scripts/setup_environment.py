@@ -3231,7 +3231,7 @@ def _hook_file_basename(path_or_url: str) -> str:
     (standalone script policy prevents importing the model; parity enforced by
     tests/scripts/models/test_hooks_consistency_parity.py). Handles full URLs,
     Windows paths, Unix paths, and plain filenames, matching the on-disk name
-    process_resources() gives a downloaded hook file.
+    _installed_resource_name() gives an installed file.
 
     Args:
         path_or_url: The URL or path to extract the basename from.
@@ -12475,7 +12475,12 @@ def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _write_file_atomic(destination: Path, write_to: Callable[[Path], object]) -> None:
+def _write_file_atomic(
+    destination: Path,
+    write_to: Callable[[Path], object],
+    *,
+    mode_of: Path | None = None,
+) -> None:
     """Write a file atomically via a same-directory temp file and os.replace().
 
     The content is written to a uniquely-named temporary file in the
@@ -12487,17 +12492,22 @@ def _write_file_atomic(destination: Path, write_to: Callable[[Path], object]) ->
     Args:
         destination: Final file path; its parent directory must exist.
         write_to: Callable that writes the content to the given temp path.
+        mode_of: File whose permission bits the new file takes when it
+            exists; defaults to the destination. A file staged for a later
+            move into place names the installed file it replaces.
     """
+    mode_source = destination if mode_of is None else mode_of
     fd, tmp_name = tempfile.mkstemp(dir=str(destination.parent), prefix=f'.{destination.name}.', suffix='.tmp')
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
         # mkstemp creates the file with restrictive 0o600 permissions; align
-        # with the destination's existing mode (or the conventional 0o644 for
-        # new files) before writing. shutil.copy2 writers subsequently apply
-        # the source file's mode on top, matching a direct copy's semantics.
+        # with the replaced file's existing mode (or the conventional 0o644
+        # for new files) before writing. shutil.copy2 writers subsequently
+        # apply the source file's mode on top, matching a direct copy's
+        # semantics.
         if os.name != 'nt':
-            mode = destination.stat().st_mode & 0o777 if destination.exists() else 0o644
+            mode = mode_source.stat().st_mode & 0o777 if mode_source.exists() else 0o644
             os.chmod(tmp_path, mode)
         write_to(tmp_path)
         os.replace(tmp_path, destination)
@@ -12513,6 +12523,8 @@ def handle_resource(
     auth_param: str | None = None,
     rate_limiter: RateLimitCoordinator | None = None,
     auth_cache: AuthHeaderCache | None = None,
+    *,
+    installed: Path | None = None,
 ) -> bool:
     """Handle a resource - either download from URL or copy from local path.
 
@@ -12524,6 +12536,10 @@ def handle_resource(
         auth_param: Optional auth parameter for private repos
         rate_limiter: Optional coordinator sharing rate-limit state across threads
         auth_cache: Optional shared auth header cache for origin-level caching
+        installed: The file at its final location when destination is a
+            staging path; the content comparison and the overwrite message
+            read it, and nothing is written when it already holds the
+            content. Defaults to destination.
 
     Returns:
         bool: True if successful, False otherwise
@@ -12531,11 +12547,12 @@ def handle_resource(
     # Resolve the path
     resolved_path, is_remote = resolve_resource_path(resource_path, config_source, base_url)
     filename = destination.name
+    installed_file = destination if installed is None else installed
 
-    # An existing destination is overwritten, except when the new content is
+    # An existing file is overwritten, except when the new content is
     # identical: a file two profiles install to the same machine-wide
     # destination is then left untouched
-    exists = destination.exists()
+    exists = installed_file.exists()
     if exists:
         info(f'File already exists: {filename} (overwriting)')
 
@@ -12555,10 +12572,10 @@ def handle_resource(
                     resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
                 )
                 content_bytes = content.encode('utf-8')
-            if exists and _file_content_equals(destination, content_bytes):
+            if exists and _file_content_equals(installed_file, content_bytes):
                 success(f'Unchanged: {filename}')
                 return True
-            _write_file_atomic(destination, lambda p: p.write_bytes(content_bytes))
+            _write_file_atomic(destination, lambda p: p.write_bytes(content_bytes), mode_of=installed_file)
             success(f'Downloaded: {filename}')
         else:
             # Copy from local path
@@ -12567,11 +12584,11 @@ def handle_resource(
                 error(f'Local file not found: {resolved_path}')
                 return False
 
-            if exists and _file_content_equals(destination, source_path.read_bytes()):
+            if exists and _file_content_equals(installed_file, source_path.read_bytes()):
                 success(f'Unchanged: {filename}')
                 return True
             # Copy the file
-            _write_file_atomic(destination, lambda p: shutil.copy2(source_path, p))
+            _write_file_atomic(destination, lambda p: shutil.copy2(source_path, p), mode_of=installed_file)
             success(f'Copied: {filename} from {source_path}')
 
         return True
@@ -12626,20 +12643,48 @@ def process_resources(
         info(f'No {resource_type} to process')
         return True
 
+    return not _download_resource_set(
+        resources, destination_dir, resource_type, config_source, base_url, auth_param, auth_cache,
+    )
+
+
+def _download_resource_set(
+    resources: list[str],
+    destination_dir: Path,
+    resource_type: str,
+    config_source: str,
+    base_url: str | None = None,
+    auth_param: str | None = None,
+    auth_cache: AuthHeaderCache | None = None,
+    installed_dir: Path | None = None,
+) -> list[str]:
+    """Download or copy resources into a directory and report the failures.
+
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
+
+    Args:
+        resources: List of resource paths from config
+        destination_dir: Directory to save resources
+        resource_type: Type of resources (for logging)
+        config_source: Where the config was loaded from
+        base_url: Optional base URL from config
+        auth_param: Optional auth parameter for private repos
+        auth_cache: Optional shared auth header cache for origin-level caching
+        installed_dir: Directory holding the installed files when
+            destination_dir is a staging directory: a resource whose content
+            equals its installed file is not written. Defaults to
+            destination_dir itself.
+
+    Returns:
+        The file names of the resources that failed, in list order.
+    """
     info(f'Processing {resource_type}...')
 
     # Create shared auth cache if not provided
     if auth_cache is None:
         auth_cache = AuthHeaderCache(auth_param)
 
-    # Prepare download tasks
-    download_tasks: list[tuple[str, Path]] = []
-    for resource in resources:
-        # Strip query parameters from URL to get clean filename
-        clean_resource = resource.split('?')[0] if '?' in resource else resource
-        filename = Path(clean_resource).name
-        destination = destination_dir / filename
-        download_tasks.append((resource, destination))
+    download_tasks = [(resource, destination_dir / _installed_resource_name(resource)) for resource in resources]
 
     # Per-batch coordinator shares rate-limit state across download threads
     rate_limiter = RateLimitCoordinator()
@@ -12647,11 +12692,19 @@ def process_resources(
     def download_single_resource(task: tuple[str, Path]) -> bool:
         """Download a single resource and return success status."""
         resource, destination = task
-        return handle_resource(resource, destination, config_source, base_url, auth_param, rate_limiter, auth_cache)
+        installed = None if installed_dir is None else installed_dir / destination.name
+        return handle_resource(
+            resource, destination, config_source, base_url, auth_param, rate_limiter, auth_cache,
+            installed=installed,
+        )
 
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(download_tasks, download_single_resource, False, stagger_delay=0.5)
-    return all(results)
+    return [
+        destination.name
+        for (_, destination), succeeded in zip(download_tasks, results, strict=True)
+        if not succeeded
+    ]
 
 
 def _download_destination(source: str, dest: str) -> Path:
@@ -15272,6 +15325,14 @@ def command_name_conflicts(command_names: list[str], home_dir: Path) -> list[str
     return errors
 
 
+# Name prefix of the directory download_hook_files() stages a hook set in. It
+# lives inside the hooks directory, so moving a staged file into place never
+# crosses a filesystem, and it is created with the default mode, so it
+# inherits the hooks directory's permissions (its access control list on
+# Windows) and every staged file keeps them once it moves into place.
+HOOK_STAGING_PREFIX = '.staging-'
+
+
 def download_hook_files(
     hooks: dict[str, Any] | None,
     claude_user_dir: Path,
@@ -15281,12 +15342,19 @@ def download_hook_files(
     hooks_base_dir: Path | None = None,
     auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
-    """Download hook files and helper modules from configuration.
+    """Install the hook files and helper modules from configuration as one set.
 
-    Extracts the file and helper lists from hooks configuration and delegates
-    download/parallel logic to process_resources(). Helpers land in the same
-    directory as the hook scripts, so a script reaches its helper through its
-    own directory no matter which directory the profile installs into.
+    Every hooks.files and hooks.helpers entry downloads into a staging
+    directory inside the hooks directory. Only when every download succeeded
+    do the staged files move into place with os.replace(), helpers first and
+    scripts after them, so a hook that a running Claude Code session starts
+    during the installation never loads a new script beside an old or missing
+    helper. A file whose content equals its installed copy is not staged and
+    keeps its timestamp, a failed download leaves the installed files
+    unchanged, and the staging directory is removed on every outcome. Helpers
+    land in the same directory as the hook scripts, so a script reaches its
+    helper through its own directory no matter which directory the profile
+    installs into.
 
     Args:
         hooks: Hooks configuration dictionary with 'files' and 'helpers' keys.
@@ -15303,17 +15371,82 @@ def download_hook_files(
         auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
-        bool: True if all downloads successful, False otherwise.
+        bool: True when the set is installed or none is configured; False
+        when a download failed, the staging directory could not be created,
+        or a staged file could not be moved into place.
     """
     hooks_dict = hooks or {}
-    hook_sources = [*(hooks_dict.get('files') or []), *(hooks_dict.get('helpers') or [])]
+    file_sources: list[str] = list(hooks_dict.get('files') or [])
+    helper_sources: list[str] = list(hooks_dict.get('helpers') or [])
 
-    if not hook_sources:
+    if not file_sources and not helper_sources:
         info('No hook files to download')
         return True
 
     hooks_dir = hooks_base_dir if hooks_base_dir is not None else claude_user_dir / 'hooks'
-    return process_resources(hook_sources, hooks_dir, 'hook files', config_source, base_url, auth_param, auth_cache)
+    try:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = hooks_dir / f'{HOOK_STAGING_PREFIX}{os.urandom(8).hex()}'
+        staging_dir.mkdir()
+    except OSError as exc:
+        error(f'Could not create a staging directory for the hook files in {hooks_dir}: {exc}')
+        return False
+
+    try:
+        failed = _download_resource_set(
+            [*file_sources, *helper_sources], staging_dir, 'hook files', config_source, base_url,
+            auth_param, auth_cache, installed_dir=hooks_dir,
+        )
+        if failed:
+            error(
+                f'Hook files failed to download: {", ".join(failed)}; '
+                'the installed hook files were left unchanged',
+            )
+            return False
+
+        promotion_order = dict.fromkeys(
+            _installed_resource_name(source) for source in [*helper_sources, *file_sources]
+        )
+        staged = [name for name in promotion_order if (staging_dir / name).exists()]
+        if not staged:
+            info('Hook files unchanged; nothing moved into place')
+            return True
+        if _promote_staged_hook_files(staging_dir, hooks_dir, staged) is not None:
+            return False
+        success(f'{len(staged)} hook file{"" if len(staged) == 1 else "s"} moved into place')
+        return True
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _promote_staged_hook_files(staging_dir: Path, hooks_dir: Path, ordered_names: Sequence[str]) -> str | None:
+    """Move staged hook files into the hooks directory in the given order.
+
+    Each file moves with os.replace(), which replaces the installed file of
+    the same name in one step because the staging directory lies on the same
+    filesystem. The first move that raises OSError ends the pass, and the
+    error names the file and how many files had moved: the installed hook
+    files are then partially updated until the setup runs again.
+
+    Args:
+        staging_dir: Directory holding the staged files.
+        hooks_dir: Directory the files are installed into.
+        ordered_names: Names of the staged files, in the order they move.
+
+    Returns:
+        The name of the file whose move failed, or None when every file moved.
+    """
+    for moved, name in enumerate(ordered_names):
+        try:
+            os.replace(staging_dir / name, hooks_dir / name)
+        except OSError as exc:
+            error(f'Could not move hook file {name} into place: {exc}')
+            error(
+                f'{moved} of {len(ordered_names)} staged hook files were moved into place, so the installed '
+                'hook files are partially updated; re-run the setup to install the complete set',
+            )
+            return name
+    return None
 
 
 def _hook_launcher_args(file_name: str) -> list[str]:
@@ -16748,9 +16881,10 @@ def run_hook_environment_step(
         settings_files: The settings files a session of the profile reads,
             in the order Claude Code applies them.
         uv_executable: The uv the run found on PATH when it started, or None.
-        download_failed: Whether this run's hook download failed; the step
-            then has nothing complete to prepare, and the run already ends
-            with exit code 1.
+        download_failed: Whether this run's hook files were not installed
+            (a failed download or a failed move into place); the step then
+            has nothing complete to prepare, and the run already ends with
+            exit code 1.
 
     Returns:
         The outcome prepare_hook_environments() reports; empty when skipped.
