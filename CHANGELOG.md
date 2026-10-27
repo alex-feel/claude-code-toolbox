@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.3.2...v8.4.0) (2026-10-27)
+
+
+### Features
+
+* accept a command hook that runs a program on PATH in exec form ([#489](https://github.com/alex-feel/claude-code-toolbox/issues/489)) ([7e37241](https://github.com/alex-feel/claude-code-toolbox/commit/7e37241b50f9b9509bab4c83cfaaa1803d58f973))
+
 ## [8.3.2](https://github.com/alex-feel/claude-code-toolbox/compare/v8.3.1...v8.3.2) (2026-10-22)
 
 
