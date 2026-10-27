@@ -35,7 +35,6 @@ from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_config
 from tests.e2e.validators import _validate_hooks_structure
 from tests.e2e.validators import validate_hooks_in_settings_json
-from tests.e2e.validators import validate_settings
 
 # The step-output tests mock the hook download, so no hook file reaches the
 # disk for Step 19 to prepare; the step reports an empty result instead
@@ -664,8 +663,9 @@ class TestGoldenInstallWritesHookObjects:
         captured = capfd.readouterr()
         assert code == 0, captured.out + captured.err
         config_json = e2e_isolated_home['claude_dir'] / GOLDEN_COMMAND / 'config.json'
-        errors = validate_settings(config_json, golden)
-        errors += _program_hook_errors(json.loads(config_json.read_text(encoding='utf-8'))['hooks'], 'config.json')
+        hooks_json = json.loads(config_json.read_text(encoding='utf-8'))['hooks']
+        errors = _validate_hooks_structure(hooks_json, golden['hooks'])
+        errors += _program_hook_errors(hooks_json, 'config.json')
         assert not errors, '\n'.join(errors)
 
     def test_base_install_writes_program_hooks_to_settings_json(
