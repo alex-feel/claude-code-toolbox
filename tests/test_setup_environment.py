@@ -5365,14 +5365,6 @@ class TestBuildHooksJsonValueValidation:
         assert 'continueOnBlock' in out
         assert 'headers' in out
 
-    def test_direct_command_passthrough(self):
-        """Direct commands with spaces are passed through as-is."""
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
-                             'command': 'echo "hello world"'}]}
-        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
-        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
-        assert hook_cmd == 'echo "hello world"'
-
     def test_command_async_and_shell_fields(self):
         """Command-specific async and shell fields pass through."""
         hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',

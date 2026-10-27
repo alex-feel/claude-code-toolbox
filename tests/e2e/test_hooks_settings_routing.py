@@ -1,13 +1,18 @@
 """E2E tests for hooks routing to settings.json when command-names is absent.
 
 These tests verify the dual hooks routing behavior:
-- When command-names IS present: hooks written to config.json (existing behavior)
-- When command-names is ABSENT: hooks written to settings.json (new behavior)
+- When command-names IS present: hooks written to config.json
+- When command-names is ABSENT: hooks written to settings.json
+
+The golden installs run main() on both golden configurations and check the
+written hooks against the configuration, including the exact entries of the
+program hooks (exec-form command hooks naming a program on PATH).
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -17,6 +22,7 @@ if TYPE_CHECKING:
     from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from scripts.setup_environment import HookEnvironmentResult
 from scripts.setup_environment import _build_hooks_json
@@ -24,11 +30,20 @@ from scripts.setup_environment import _build_profile_settings
 from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_profile_settings_to_settings
 from tests.conftest import empty_mcp_stats
+from tests.e2e.expected import EXPECTED_PROGRAM_HOOKS
+from tests.e2e.profile_support import run_main
+from tests.e2e.profile_support import write_config
 from tests.e2e.validators import _validate_hooks_structure
+from tests.e2e.validators import validate_hooks_in_settings_json
+from tests.e2e.validators import validate_settings
 
 # The step-output tests mock the hook download, so no hook file reaches the
 # disk for Step 19 to prepare; the step reports an empty result instead
 NO_HOOK_ENVIRONMENTS = HookEnvironmentResult([], [], [], None)
+
+E2E_DIR = Path(__file__).parent
+MOCK_REPO = E2E_DIR / 'fixtures' / 'mock_repo'
+GOLDEN_COMMAND = 'e2e-test-cmd'
 
 # ---------------------------------------------------------------------------
 # Inline YAML-like configs (dicts) for tests WITHOUT command-names
@@ -597,3 +612,77 @@ class TestBuildHooksJsonParity:
         assert direct_hooks == config_hooks, (
             'Parity failure: _build_hooks_json output differs from create_profile_config'
         )
+
+
+def _golden(filename: str) -> dict[str, Any]:
+    """Load a golden configuration whose resources resolve beside the file it is written to.
+
+    Args:
+        filename: The golden configuration's file name in tests/e2e/.
+
+    Returns:
+        The configuration without base-url.
+    """
+    with (E2E_DIR / filename).open(encoding='utf-8') as handle:
+        config: dict[str, Any] = yaml.safe_load(handle)
+    config.pop('base-url', None)
+    return config
+
+
+def _program_hook_errors(hooks_json: dict[str, Any], where: str) -> list[str]:
+    """Compare each program hook event of a written hooks block with its exact expected entries."""
+    return [
+        f'{where} hooks.{event}: expected {expected!r}, got {hooks_json.get(event)!r}'
+        for event, expected in EXPECTED_PROGRAM_HOOKS.items()
+        if hooks_json.get(event) != expected
+    ]
+
+
+@pytest.fixture
+def golden_repo(tmp_path: Path) -> Path:
+    """A copy of the mock repository the golden configurations download their files from."""
+    destination = tmp_path / 'repo'
+    shutil.copytree(MOCK_REPO, destination)
+    return destination
+
+
+class TestGoldenInstallWritesHookObjects:
+    """main() installs each golden configuration and writes every hook event as configured."""
+
+    def test_isolated_install_writes_program_hooks_to_config_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_repo: Path,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """The profile's config.json carries the program hooks exactly and every other hook as configured."""
+        golden = _golden('golden_config.yaml')
+        cfg = write_config(golden_repo, 'golden.yaml', golden)
+
+        code = run_main([str(cfg), '--skip-install', '--no-admin', '--yes'])
+
+        captured = capfd.readouterr()
+        assert code == 0, captured.out + captured.err
+        config_json = e2e_isolated_home['claude_dir'] / GOLDEN_COMMAND / 'config.json'
+        errors = validate_settings(config_json, golden)
+        errors += _program_hook_errors(json.loads(config_json.read_text(encoding='utf-8'))['hooks'], 'config.json')
+        assert not errors, '\n'.join(errors)
+
+    def test_base_install_writes_program_hooks_to_settings_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_repo: Path,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """~/.claude/settings.json carries the program hooks exactly and every other hook as configured."""
+        golden = _golden('golden_config_no_command_names.yaml')
+        cfg = write_config(golden_repo, 'golden-base.yaml', golden)
+
+        code = run_main([str(cfg), '--skip-install', '--no-admin', '--yes'])
+
+        captured = capfd.readouterr()
+        assert code == 0, captured.out + captured.err
+        settings_json = e2e_isolated_home['claude_dir'] / 'settings.json'
+        errors = validate_hooks_in_settings_json(settings_json, golden['hooks'])
+        errors += _program_hook_errors(json.loads(settings_json.read_text(encoding='utf-8'))['hooks'], 'settings.json')
+        assert not errors, '\n'.join(errors)

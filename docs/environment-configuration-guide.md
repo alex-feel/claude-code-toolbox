@@ -1082,13 +1082,13 @@ Event-driven hooks that run automatically during Claude Code sessions. Five hook
 
 #### Hook Types
 
-| Type       | Description                                            | Required Fields  |
-|------------|--------------------------------------------------------|------------------|
-| `command`  | Executes a shell command or script (default)           | `command`        |
-| `http`     | Sends an HTTP POST request to a URL                    | `url`            |
-| `prompt`   | Single-turn LLM evaluation with no tool access         | `prompt`         |
-| `agent`    | Spawns a subagent with tool access for evaluation      | `prompt`         |
-| `mcp_tool` | Calls a tool on an already-configured MCP server       | `server`, `tool` |
+| Type       | Description                                                                | Required Fields  |
+|------------|----------------------------------------------------------------------------|------------------|
+| `command`  | Runs a `hooks.files` script, or a program on `PATH` in exec form (default) | `command`        |
+| `http`     | Sends an HTTP POST request to a URL                                        | `url`            |
+| `prompt`   | Single-turn LLM evaluation with no tool access                             | `prompt`         |
+| `agent`    | Spawns a subagent with tool access for evaluation                          | `prompt`         |
+| `mcp_tool` | Calls a tool on an already-configured MCP server                           | `server`, `tool` |
 
 #### Common Fields (All Hook Types)
 
@@ -1109,14 +1109,14 @@ These fields apply to all five hook types:
 
 ##### Command Hook Fields
 
-| Field          | YAML Key       | Type        | Required | Description                                                                                 |
-|----------------|----------------|-------------|----------|---------------------------------------------------------------------------------------------|
-| `command`      | `command`      | `str`       | Yes      | Script filename (must exist in `hooks.files`)                                               |
-| `config`       | `config`       | `str`       | No       | Config file reference (must exist in `hooks.files`). Toolbox-specific: appended as argument |
-| `args`         | `args`         | `list[str]` | No       | Argument list switching the command to exec form (see [Command Hooks](#command-hooks))      |
-| `async`        | `async`        | `bool`      | No       | If true, runs the command in the background without blocking                                |
-| `async-rewake` | `async-rewake` | `bool`      | No       | If true, runs in the background and wakes the model on exit code 2; implies `async`         |
-| `shell`        | `shell`        | `str`       | No       | Shell to use: `"bash"` (default) or `"powershell"`; cannot be combined with `args`          |
+| Field          | YAML Key       | Type        | Required | Description                                                                                                                                      |
+|----------------|----------------|-------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `command`      | `command`      | `str`       | Yes      | Script filename listed in `hooks.files`, or, with `args`, a program on `PATH` or an absolute path (see [Programs on PATH](#programs-on-path))    |
+| `config`       | `config`       | `str`       | No       | Config file reference (must exist in `hooks.files`). Toolbox-specific: appended as an argument to the script; never beside a program             |
+| `args`         | `args`         | `list[str]` | No       | Argument list switching the command to exec form; `[]` for none (see [Command Hooks](#command-hooks))                                            |
+| `async`        | `async`        | `bool`      | No       | If true, runs the command in the background without blocking                                                                                     |
+| `async-rewake` | `async-rewake` | `bool`      | No       | If true, wakes the model on exit code 2; runs in the background in interactive or streaming-input sessions (see [Command Hooks](#command-hooks)) |
+| `shell`        | `shell`        | `str`       | No       | Shell to use: `"bash"` (default) or `"powershell"`; cannot be combined with `args`                                                               |
 
 ##### HTTP Hook Fields
 
@@ -1180,11 +1180,13 @@ The toolbox warns about an event name outside this set but still writes it, so a
 
 #### Command Hooks
 
-Execute a script file when the event fires. The `command` field must reference a filename listed in `hooks.files`. The toolbox processes command paths by prepending the appropriate runtime (`uv run --no-project --python 3.12` for `.py`, `node` for `.js`/`.mjs`/`.cjs`); for a Python script that declares PEP 723 inline metadata, the setup also builds the uv environment that command uses, so the hook's first launch installs nothing (see [Hook Environments](#hook-environments)). Built file paths are double-quoted in the generated command, so hooks directories containing spaces (for example a Windows home like `C:/Users/John Smith`) work in every shell.
+A command hook runs a hook script listed in `hooks.files` when the event fires, or, in exec form, a program installed on the machine (see [Programs on PATH](#programs-on-path)). For a script, `command` names its filename as listed in `hooks.files`. The toolbox processes command paths by prepending the appropriate runtime (`uv run --no-project --python 3.12` for `.py`, `node` for `.js`/`.mjs`/`.cjs`); for a Python script that declares PEP 723 inline metadata, the setup also builds the uv environment that command uses, so the hook's first launch installs nothing (see [Hook Environments](#hook-environments)). Built file paths are double-quoted in the generated command, so hooks directories containing spaces (for example a Windows home like `C:/Users/John Smith`) work in every shell.
 
-The `config` field is a toolbox-specific extension: when set, the config file path is appended as an argument to the command. This field is not part of the official Claude Code hooks specification.
+The `config` field is a toolbox-specific extension: when set, the config file path is appended as an argument to the script. This field is not part of the official Claude Code hooks specification, and only a hook that runs a `hooks.files` script takes one.
 
-Setting `args` switches the hook to exec form: Claude Code resolves `command` as an executable and spawns it directly with the argument list, without any shell. The toolbox folds the launcher into that shape -- for a Python script it emits `command: "uv"` with `run --no-project --python 3.12`, the resolved script path, the config path (when set), and your `args` entries as the argument list; for a JavaScript script it emits `command: "node"` the same way. No element is quoted, because there is no shell to word-split, so spaced hooks directories are safe in exec form too. `shell` cannot be combined with `args`.
+Setting `args` switches the hook to exec form: Claude Code resolves `command` as an executable and spawns it directly with the argument list, without any shell; `args: []` selects exec form with no arguments. The toolbox folds the launcher into that shape -- for a Python script it emits `command: "uv"` with `run --no-project --python 3.12`, the resolved script path, the config path (when set), and your `args` entries as the argument list; for a JavaScript script it emits `command: "node"` the same way. No element is quoted, because there is no shell to word-split, so spaced hooks directories are safe in exec form too. `shell` cannot be combined with `args`.
+
+`async: true` runs the hook in the background. `async-rewake: true` also runs it in the background and wakes the model when the command exits with code 2. Claude Code 2.1.280 puts an `async-rewake` hook in the background only in an interactive session or in one that streams its input, so a `claude -p` run with plain input waits for the hook to finish unless `async` is also true.
 
 ```yaml
 hooks:
@@ -1210,6 +1212,57 @@ hooks:
       shell: "bash"
       status-message: "Running notification handler..."
 ```
+
+##### Programs on PATH
+
+An installed tool can ship hook commands of its own, such as a CLI that answers `my-tool hook session-start`. Wire such a command as an exec-form command hook: `command` names the program, on `PATH` or by absolute path, and `args` holds its arguments, with `args: []` for a program that takes none.
+
+```yaml
+hooks:
+  events:
+    - event: "SessionStart"
+      type: "command"
+      command: "my-tool"
+      args: ["hook", "session-start"]
+    - event: "Stop"
+      type: "command"
+      command: "my-tool"
+      args: ["hook", "stop"]
+      async-rewake: true
+      timeout: 86400
+    - event: "UserPromptSubmit"
+      type: "command"
+      command: "my-tool"
+      args: ["hook", "prompt-submit"]
+      async: true
+```
+
+The toolbox writes each hook as declared into the profile's `config.json` with `command-names`, or into `~/.claude/settings.json` without (see [Hooks Routing](#hooks-routing)). An event without a `matcher` lands in the `""` matcher group:
+
+```json
+{
+  "SessionStart": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "my-tool", "args": ["hook", "session-start"]}]}
+  ],
+  "Stop": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "my-tool", "args": ["hook", "stop"], "asyncRewake": true, "timeout": 86400}]}
+  ],
+  "UserPromptSubmit": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "my-tool", "args": ["hook", "prompt-submit"], "async": true}]}
+  ]
+}
+```
+
+Claude Code spawns the program without a shell: it looks a bare name up on `PATH`, runs an absolute path as given, and hands each `args` entry to the program as one argument. In Claude Code 2.1.280, a program it cannot find fails the hook with a non-blocking error, and the session goes on.
+
+The setup tells a program from a script, and refuses the entries that mix them, by these rules:
+
+- A `command` equal to a `hooks.files` basename always runs that script, in either form. Only a name that matches no `hooks.files` entry is a program. A script that component selection drops stays a script: an event that still names it is a dangling reference, and the setup stops (see [components](#components)).
+- A program needs exec form. A shell-form entry (no `args`) whose `command` matches no `hooks.files` entry fails validation with `hooks.events command "<command>" not found in hooks.files`, and the message names `args` as the way to declare a program. The setup stops before it installs anything, so it never drops the hook silently. Shell form stays reserved for `hooks.files` scripts, whose command the toolbox builds from the installed script path.
+- `config` cannot accompany a program. The toolbox passes a config file only to a `hooks.files` script, so the setup refuses an entry that sets both; give the program its options in `args`.
+- A `command` that names a `hooks.helpers` entry is an error in both forms (see [File Consistency Rules](#file-consistency-rules)).
+
+The toolbox neither downloads nor installs the program. Install it on every machine the profile runs on, for example through [`dependencies`](#dependencies), so it is on the `PATH` Claude Code starts with. A program needs no `hooks.files` entry, so a `hooks` block may declare `events` alone, and [Hook Environments](#hook-environments) (Step 19) prepares no environment for it.
 
 #### Hook Environments
 
@@ -1325,13 +1378,13 @@ Hook file references are validated for **command hooks only**. HTTP, prompt, age
 The rules are enforced in two layers. The Pydantic model validates configurations that do not declare `inherit`; for a config that declares `inherit`, cross-references are decidable only on the resolved composition, so the model skips them. The setup script then validates every fully resolved configuration at runtime -- before the admin check, remote file validation, and any installation work -- listing all violations and exiting with code 1. When component selection filters the configuration, the setup re-validates the filtered result: a dangling event or `status-line` reference is still an error, while a file stranded by a deselected component is tolerated (see [Component Selection](#components)). A composition whose hook events or status-line reference a missing hook file therefore fails at setup time, not at hook execution.
 
 1. Every file listed in `hooks.files` must be used by at least one command hook event or the `status-line` configuration
-2. Every `command` in command hook events must exist in `hooks.files`
-3. Every `config` in command hook events must exist in `hooks.files`
+2. Every `command` of a shell-form command hook (one without `args`) must exist in `hooks.files`; an exec-form command hook (one with `args`) may instead name a program on `PATH` or an absolute path (see [Programs on PATH](#programs-on-path))
+3. Every `config` in command hook events must exist in `hooks.files`, and only a hook whose `command` names a `hooks.files` script may set one
 4. If `status-line` is configured, its `file` and `config` must exist in `hooks.files`
 5. If `status-line` is configured but `hooks` is not defined, that is an error
 6. No filename may appear in both `hooks.files` and `hooks.helpers`
 
-Entries in `hooks.helpers` are exempt from rule 1 -- they exist precisely to be unreferenced. Naming a helper as a `command`, a `config`, or a `status-line` `file`/`config` is an error that tells you to move the entry to `hooks.files`, because a referenced script or config is launched by Claude Code rather than imported by a script.
+Entries in `hooks.helpers` are exempt from rule 1 -- they exist precisely to be unreferenced. Naming a helper as a `command` (with or without `args`), a `config`, or a `status-line` `file`/`config` is an error that tells you to move the entry to `hooks.files`, because a referenced script or config is launched by Claude Code rather than imported by a script.
 
 #### Hook Helpers
 
@@ -1371,21 +1424,24 @@ Setup installs `hooks.files` and `hooks.helpers` as one set, and a `files-to-dow
 
 #### Supported Script Types
 
-For command hooks:
+For a `hooks.files` script, the toolbox picks the launcher by file extension:
 
-- Python: `.py`
-- JavaScript: `.js`, `.mjs`, `.cjs`
+- Python: `.py`, `.pyw` (through `uv run`)
+- JavaScript: `.js`, `.mjs`, `.cjs` (through `node`)
+
+Any other script runs directly, as an executable file. A program that a command hook names in exec form gets no launcher (see [Programs on PATH](#programs-on-path)).
 
 #### Pass-Through Architecture
 
 The setup script processes hooks differently based on type:
 
-| Hook Type | File Processing                                                | Pass-Through Fields                                    |
-|-----------|----------------------------------------------------------------|--------------------------------------------------------|
-| `command` | Yes (Python via `uv run`, JavaScript via `node`, other as-is)  | `async`, `shell` + common fields                       |
-| `http`    | No (pure pass-through)                                         | `url`, `headers`, `allowed-env-vars` + common fields   |
-| `prompt`  | No (pure pass-through)                                         | `prompt`, `model` + common fields                      |
-| `agent`   | No (pure pass-through)                                         | `prompt`, `model` + common fields                      |
+| Hook Type  | File Processing                                                                                                                   | Pass-Through Fields                                                           |
+|------------|-----------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
+| `command`  | Script: launcher by file type (Python via `uv run`, JavaScript via `node`, any other file directly); program: written as declared | `args`, `async`, `async-rewake` (as `asyncRewake`), `shell` + common fields   |
+| `http`     | No (pure pass-through)                                                                                                            | `url`, `headers`, `allowed-env-vars` (as `allowedEnvVars`) + common fields    |
+| `prompt`   | No (pure pass-through)                                                                                                            | `prompt`, `model`, `continue-on-block` (as `continueOnBlock`) + common fields |
+| `agent`    | No (pure pass-through)                                                                                                            | `prompt`, `model` + common fields                                             |
+| `mcp_tool` | No (pure pass-through)                                                                                                            | `server`, `tool`, `input` + common fields                                     |
 
 #### Complete Hooks Example
 
@@ -1412,6 +1468,11 @@ hooks:
       async: true
       shell: "bash"
       status-message: "Running security check..."
+    # Program on PATH, run in exec form (not listed in hooks.files)
+    - event: "SessionStart"
+      type: "command"
+      command: "my-tool"
+      args: ["hook", "session-start"]
     # HTTP webhook
     - event: "PostToolUse"
       matcher: "Write"
@@ -1531,7 +1592,7 @@ An inherited registry survives composition like any other undeclared key: a key 
 
 Deselection also uninstalls. A re-run that deselects a component removes what an earlier run installed for it: deselected MCP servers are removed via `claude mcp remove` for every non-profile scope (`user`, `local`, `project`; the profile `mcp.json` is rebuilt from the filtered configuration each run), toolbox-written hook entries of deselected events are stripped from the shared `settings.json` (matched quote-insensitively on the command, so entries written by versions that built unquoted paths still match), and deselected skill directories, agent/command/rule files, hook files, and downloaded files are deleted from their install locations. The removal plan derives entirely from the current configuration (every claimed item is named there), so no on-disk state is required; removals appear in the installation summary as `[REMOVE]` rows and are previewed without acting under `--dry-run`. Dependencies are never uninstalled: arbitrary install commands cannot be reversed.
 
-Deselection is also re-validated. After the selection filter is applied, the setup re-runs the hooks-files consistency check on the filtered configuration: a surviving hook event or `status-line` reference whose file was dropped with a deselected component stops the setup with exit code 1 and the guidance `The selected components leave hook references dangling` (fix by selecting the component that provides the file, or by claiming the event and its file together in the registry). A file stranded in the opposite direction -- kept while its only referencing event was deselected -- is tolerated as deselection residue and only downloads unused.
+Deselection is also re-validated. After the selection filter is applied, the setup re-runs the hooks-files consistency check on the filtered configuration: a surviving hook event or `status-line` reference whose file was dropped with a deselected component stops the setup with exit code 1 and the guidance `The selected components leave hook references dangling` (fix by selecting the component that provides the file, or by claiming the event and its file together in the registry). The check covers exec-form events too: a `command` with `args` that names a `hooks.files` script the selection dropped is a dangling reference, and the setup never runs it as a program on PATH. A file stranded in the opposite direction -- kept while its only referencing event was deselected -- is tolerated as deselection residue and only downloads unused.
 
 ## Advanced Topics
 
@@ -1554,7 +1615,7 @@ When configurations are inherited across different sources (e.g., a GitHub-hoste
 
 **How it works:**
 
-- Each parent config's relative resource paths (agents, rules, slash-commands, hook files and helpers, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, not paths, so they are never rewritten
+- Each parent config's relative resource paths (agents, rules, slash-commands, hook files and helpers, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, or for an exec-form `command` a program name or absolute path, not resource paths, so they are never rewritten
 - The resolution uses the parent config's own `config_source` (where it was loaded from) and `base-url`
 - Child (leaf) config paths continue to be resolved at validation time using the leaf's own source
 
@@ -2728,7 +2789,13 @@ skills:
 
 ### hooks.events command not found in hooks.files
 
-Every `command` referenced in hook events must be listed in `hooks.files`. Ensure the filenames match exactly.
+A shell-form command hook (one without `args`) names a `command` that `hooks.files` does not list. For a hook script, list it in `hooks.files` and match the filename exactly. For a program installed on the machine, declare `args` so the hook runs it in exec form, with `args: []` when the program takes no arguments (see [Programs on PATH](#programs-on-path)).
+
+When `The selected components leave hook references dangling` follows the error, the event names a `hooks.files` script that a deselected component provides, in shell form or in exec form. Select that component, or claim the event and its file together in the [components](#components) registry.
+
+### hooks.events config is set beside a program command
+
+A command hook that runs a program also declares `config`. The toolbox passes a config file only to a `hooks.files` script, so remove `config` and give the program its options in `args`.
 
 ### hooks.events command is declared in hooks.helpers
 

@@ -5,8 +5,8 @@ of the Pydantic model validator of the same name in environment_config.py (the
 standalone script policy prevents a cross-import, so the two implementations
 are deliberate duplicates). These tests run a shared corpus of configuration
 shapes through both sides and enforce identical accept/reject verdicts, plus
-strict parity of the basename derivation and of the hooks.helpers error
-wording both sides rely on.
+strict parity of the basename derivation and of the hooks.helpers and
+program-command error wording both sides rely on.
 
 The corpus covers only shapes both sides can evaluate: the model rejects
 structural violations (non-string entries, unknown hook types) at the typing
@@ -148,6 +148,118 @@ CONSISTENCY_CORPUS: list[tuple[str, dict[str, Any], bool]] = [
     ),
     ('no-hooks-at-all', {}, True),
     ('null-hooks', {'hooks': None}, True),
+    (
+        'exec-form-program-on-path',
+        {
+            'hooks': {
+                'files': [],
+                'events': [
+                    {
+                        'event': 'Stop',
+                        'type': 'command',
+                        'command': 'my-tool',
+                        'args': ['hook', 'stop'],
+                        'async-rewake': True,
+                        'timeout': 86400,
+                    },
+                ],
+            },
+        },
+        True,
+    ),
+    (
+        'exec-form-program-empty-args',
+        {
+            'hooks': {
+                'files': [],
+                'events': [{'event': 'SessionStart', 'command': 'my-tool', 'args': []}],
+            },
+        },
+        True,
+    ),
+    (
+        'exec-form-absolute-path-program',
+        {
+            'hooks': {
+                'events': [
+                    {'event': 'Stop', 'command': '/usr/local/bin/my-tool', 'args': ['hook', 'stop']},
+                ],
+            },
+        },
+        True,
+    ),
+    (
+        'exec-form-program-beside-listed-script',
+        {
+            'hooks': {
+                'files': ['hooks/a.py'],
+                'events': [
+                    {'event': 'PostToolUse', 'command': 'a.py'},
+                    {'event': 'UserPromptSubmit', 'command': 'my-tool', 'args': ['hook'], 'async': True},
+                ],
+            },
+        },
+        True,
+    ),
+    (
+        'exec-form-listed-script-with-config',
+        {
+            'hooks': {
+                'files': ['hooks/a.py', 'configs/c.yaml'],
+                'events': [
+                    {'event': 'PostToolUse', 'command': 'a.py', 'config': 'c.yaml', 'args': ['--fix']},
+                ],
+            },
+        },
+        True,
+    ),
+    (
+        'shell-form-program-refused',
+        {
+            'hooks': {
+                'files': [],
+                'events': [{'event': 'Stop', 'command': 'my-tool'}],
+            },
+        },
+        False,
+    ),
+    (
+        'shell-form-program-with-arguments-refused',
+        {
+            'hooks': {
+                'files': ['hooks/a.py'],
+                'events': [
+                    {'event': 'PostToolUse', 'command': 'a.py'},
+                    {'event': 'Stop', 'command': 'my-tool hook stop'},
+                ],
+            },
+        },
+        False,
+    ),
+    (
+        'config-beside-program',
+        {
+            'hooks': {
+                'files': ['hooks/a.py', 'configs/c.yaml'],
+                'events': [
+                    {'event': 'PostToolUse', 'command': 'a.py', 'config': 'c.yaml'},
+                    {'event': 'Stop', 'command': 'my-tool', 'config': 'c.yaml', 'args': ['hook']},
+                ],
+            },
+        },
+        False,
+    ),
+    (
+        'exec-form-command-references-helper',
+        {
+            'hooks': {
+                'files': [],
+                'helpers': ['hooks/shared.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'shared.py', 'args': []}],
+            },
+        },
+        False,
+    ),
     (
         'helper-duplicates-file-basename',
         {
@@ -365,6 +477,58 @@ def test_helper_reference_message_parity(reference_kind: str, reference: str) ->
     assert runtime_module._hook_helper_reference_message(
         reference_kind, reference,
     ) == model_module._hook_helper_reference_message(reference_kind, reference)
+
+
+@pytest.mark.parametrize(
+    'available_files',
+    [set(), {'b.py', 'a.py'}],
+)
+def test_unlisted_command_message_parity(available_files: set[str]) -> None:
+    """Both sides word the shell-form unlisted-command error identically."""
+    assert runtime_module._hook_unlisted_command_message(
+        'my-tool', available_files,
+    ) == model_module._hook_unlisted_command_message('my-tool', available_files)
+
+
+def test_program_config_message_parity() -> None:
+    """Both sides word the config-beside-a-program error identically."""
+    assert runtime_module._hook_program_config_message(
+        'my-tool', 'c.yaml?ref=main',
+    ) == model_module._hook_program_config_message('my-tool', 'c.yaml?ref=main')
+
+
+@pytest.mark.parametrize(
+    ('label', 'config', 'expected_message'),
+    [
+        (
+            'shell-form-program',
+            {'hooks': {'files': [], 'events': [{'event': 'Stop', 'command': 'my-tool'}]}},
+            runtime_module._hook_unlisted_command_message('my-tool', set()),
+        ),
+        (
+            'config-beside-program',
+            {
+                'hooks': {
+                    'files': ['configs/c.yaml'],
+                    'events': [{'event': 'Stop', 'command': 'my-tool', 'config': 'c.yaml', 'args': []}],
+                },
+            },
+            runtime_module._hook_program_config_message('my-tool', 'c.yaml'),
+        ),
+    ],
+    ids=['shell-form-program', 'config-beside-program'],
+)
+def test_program_command_errors_reach_both_sides(
+    label: str,
+    config: dict[str, Any],
+    expected_message: str,
+) -> None:
+    """Each side reports the program-command rule with the shared message."""
+    del label
+    assert expected_message in validate_hooks_files_consistency(config)
+    with pytest.raises(ValidationError) as exc_info:
+        EnvironmentConfig.model_validate({'name': 'hooks-parity-probe', **config})
+    assert expected_message in str(exc_info.value)
 
 
 def test_inherit_asymmetry_model_skips_runtime_enforces() -> None:

@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 import setup_environment
@@ -391,6 +393,43 @@ class TestExecuteDeselectionCleanup:
         final = json.loads((cl_dir / 'settings.json').read_text())
         assert final.get('hooks') in (None, {})
 
+    @pytest.mark.parametrize('script_deselected', [True, False], ids=['script-deselected', 'script-kept'])
+    def test_non_isolated_run_strips_exec_form_script_hook(self, tmp_path: Path, script_deselected: bool) -> None:
+        """An exec-form hook naming a hooks.files script is stripped from the shared settings.json.
+
+        The writer folds a listed script into the launcher's argument list, so
+        the reconciliation builds the deselected events against every
+        hooks.files entry of the configuration, whether the script leaves with
+        its event or another component keeps it.
+        """
+        dirs = self._dirs(tmp_path)
+        events = [{
+            'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+            'command': 'linter.py', 'args': ['--fix'], 'id': 'lint-exec',
+        }]
+        files = ['hooks/linter.py']
+        fake_home = tmp_path / 'home'
+        cl_dir = fake_home / ('.cla' + 'ude')
+        cl_dir.mkdir(parents=True)
+        written = setup_environment._build_hooks_json({'files': files, 'events': events}, dirs['hookfiles'])
+        assert written != setup_environment._build_hooks_json({'events': events}, dirs['hookfiles'])
+        (cl_dir / 'settings.json').write_text(json.dumps({'hooks': written, 'model': 'opus'}))
+        deselected: dict[str, list[Any]] = {
+            'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [], 'files-to-download': [],
+            'hooks-files': files if script_deselected else [],
+            'hooks-events': events,
+        }
+        surviving = {'hooks': {'files': [] if script_deselected else files, 'events': []}}
+        with patch.object(setup_environment, 'get_real_user_home', return_value=fake_home):
+            setup_environment.execute_deselection_cleanup(
+                deselected, surviving,
+                agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+                rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+                hooks_dir=dirs['hookfiles'], is_isolated=False,
+            )
+        assert json.loads((cl_dir / 'settings.json').read_text()) == {'hooks': {}, 'model': 'opus'}
+
     def test_profile_scope_needs_no_explicit_removal(self, tmp_path: Path) -> None:
         """Profile-scoped servers are reconciled by the mcp.json rebuild."""
         dirs = self._dirs(tmp_path)
@@ -436,7 +475,7 @@ class TestStripHooksFromSettings:
         settings_path.write_text(json.dumps({'hooks': hooks_json, 'model': 'opus'}))
 
         removed = setup_environment._strip_hooks_from_settings(
-            settings_path, deselected_events, hooks_dir,
+            settings_path, deselected_events, hooks_dir, hook_files=[],
         )
 
         assert removed == 1
@@ -449,10 +488,12 @@ class TestStripHooksFromSettings:
     def test_missing_file_and_empty_plan_are_noops(self, tmp_path: Path) -> None:
         """No file or no deselected events means nothing to reconcile."""
         hooks_dir = tmp_path
-        assert setup_environment._strip_hooks_from_settings(tmp_path / 'absent.json', [{'event': 'Stop'}], hooks_dir) == 0
+        assert setup_environment._strip_hooks_from_settings(
+            tmp_path / 'absent.json', [{'event': 'Stop'}], hooks_dir, hook_files=[],
+        ) == 0
         settings_path = tmp_path / 'settings.json'
         settings_path.write_text('{}')
-        assert setup_environment._strip_hooks_from_settings(settings_path, [], hooks_dir) == 0
+        assert setup_environment._strip_hooks_from_settings(settings_path, [], hooks_dir, hook_files=[]) == 0
 
     def test_pre_quoting_entries_still_match(self, tmp_path: Path) -> None:
         """Entries written before path quoting existed are still stripped.
@@ -480,7 +521,7 @@ class TestStripHooksFromSettings:
         }))
 
         removed = setup_environment._strip_hooks_from_settings(
-            settings_path, deselected_events, hooks_dir,
+            settings_path, deselected_events, hooks_dir, hook_files=['hooks/linter.py'],
         )
 
         assert removed == 1
@@ -504,62 +545,64 @@ class TestStripHooksFromSettings:
         }))
 
         removed = setup_environment._strip_hooks_from_settings(
-            settings_path, deselected_events, hooks_dir,
+            settings_path, deselected_events, hooks_dir, hook_files=['hooks/linter.py'],
         )
 
         assert removed == 0
         final = json.loads(settings_path.read_text())
         assert len(final['hooks']['PostToolUse'][0]['hooks']) == 1
 
-    def test_direct_command_quote_variant_is_never_matched(self, tmp_path: Path) -> None:
-        """Two distinct direct commands differing only in quoting never match.
+    def test_program_command_quote_variant_is_never_matched(self, tmp_path: Path) -> None:
+        """A program command is compared exactly, never quote-insensitively.
 
-        Quote-insensitive matching applies only to built file-reference
-        commands; in a direct command, quotes are literal shell syntax, so
-        deselecting 'echo "deselected"' must not remove a kept hook whose
-        command is 'echo deselected'.
+        Quote-insensitive matching applies only to built script commands; in
+        any other command quotes are literal content, so deselecting the
+        program my-tool must not remove a kept hook whose command is
+        '"my-tool"'.
         """
         hooks_dir = tmp_path / 'hookfiles'
         hooks_dir.mkdir()
         deselected_events = [
-            {'event': 'Notification', 'matcher': '', 'type': 'command',
-             'command': 'echo "deselected"', 'id': 'noisy'},
+            {'event': 'Stop', 'type': 'command', 'command': 'my-tool',
+             'args': ['hook', 'stop'], 'id': 'tool-stop'},
         ]
         settings_path = tmp_path / 'settings.json'
         settings_path.write_text(json.dumps({
-            'hooks': {'Notification': [{'matcher': '', 'hooks': [
-                {'type': 'command', 'command': 'echo deselected'},
+            'hooks': {'Stop': [{'matcher': '', 'hooks': [
+                {'type': 'command', 'command': '"my-tool"', 'args': ['hook', 'stop']},
             ]}]},
         }))
 
         removed = setup_environment._strip_hooks_from_settings(
-            settings_path, deselected_events, hooks_dir,
+            settings_path, deselected_events, hooks_dir, hook_files=[],
         )
 
         assert removed == 0
         final = json.loads(settings_path.read_text())
-        assert len(final['hooks']['Notification'][0]['hooks']) == 1
+        assert len(final['hooks']['Stop'][0]['hooks']) == 1
 
-    def test_identical_direct_command_is_matched_exactly(self, tmp_path: Path) -> None:
-        """A deselected direct command still strips its own exact entry."""
+    def test_deselected_program_command_strips_its_entry(self, tmp_path: Path) -> None:
+        """A deselected program on PATH strips the exact entry the writer wrote."""
         hooks_dir = tmp_path / 'hookfiles'
         hooks_dir.mkdir()
         deselected_events = [
-            {'event': 'Notification', 'matcher': '', 'type': 'command',
-             'command': 'echo "deselected"', 'id': 'noisy'},
+            {'event': 'Stop', 'type': 'command', 'command': 'my-tool',
+             'args': ['hook', 'stop'], 'async-rewake': True, 'timeout': 86400, 'id': 'tool-stop'},
         ]
         settings_path = tmp_path / 'settings.json'
         settings_path.write_text(json.dumps({
-            'hooks': {'Notification': [{'matcher': '', 'hooks': [
-                {'type': 'command', 'command': 'echo "deselected"'},
+            'hooks': {'Stop': [{'matcher': '', 'hooks': [
+                {'type': 'command', 'command': 'my-tool', 'args': ['hook', 'stop'],
+                 'asyncRewake': True, 'timeout': 86400},
             ]}]},
         }))
 
         removed = setup_environment._strip_hooks_from_settings(
-            settings_path, deselected_events, hooks_dir,
+            settings_path, deselected_events, hooks_dir, hook_files=[],
         )
 
         assert removed == 1
+        assert json.loads(settings_path.read_text()) == {'hooks': {}}
 
     def test_built_file_command_pattern_locks_builder_grammar(self, tmp_path: Path) -> None:
         """The quote-normalization gate matches exactly the builder's output shapes."""
@@ -596,7 +639,7 @@ class TestStripHooksFromSettings:
         }))
 
         removed = setup_environment._strip_hooks_from_settings(
-            settings_path, deselected_events, hooks_dir,
+            settings_path, deselected_events, hooks_dir, hook_files=['hooks/linter.py'],
         )
 
         assert removed == 0

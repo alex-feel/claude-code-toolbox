@@ -177,6 +177,24 @@ hooks:
         - "--level"
         - "2"
       id: "e2e-exec"
+    # Command hooks naming a program on PATH: the command is no hooks.files
+    # script, so args (exec form) is required and the command is written
+    # verbatim as the executable, args as its argument list
+    - event: "Stop"
+      type: "command"
+      command: "e2e-hook-program"
+      args:
+        - "hook"
+        - "stop"
+      async-rewake: true
+      timeout: 86400
+    - event: "UserPromptSubmit"
+      type: "command"
+      command: "e2e-hook-program"
+      args:
+        - "hook"
+        - "prompt-submit"
+      async: true
     # MCP tool hook example (calls a tool on an already-configured MCP server)
     - event: "PostToolUse"
       matcher: "Edit"

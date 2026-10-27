@@ -16,10 +16,12 @@ from typing import Any
 
 import pytest
 
+from scripts.setup_environment import LinkSource
 from scripts.setup_environment import _build_file_command
 from scripts.setup_environment import _build_hooks_json
 from scripts.setup_environment import _build_profile_settings
 from scripts.setup_environment import _hook_file_basename
+from scripts.setup_environment import replay_source_snapshot
 from scripts.setup_environment import validate_hooks_files_consistency
 
 
@@ -423,6 +425,201 @@ class TestHooksHelpersConsistency:
         assert errors == ['hooks.helpers[0] must be a string path or URL']
 
 
+class TestProgramCommands:
+    """Runtime verdicts for command hooks that name a program instead of a script."""
+
+    @staticmethod
+    def _config(*events: dict[str, Any], files: list[str] | None = None) -> dict[str, Any]:
+        """Return a hooks config with the given events and hooks.files list."""
+        return {'hooks': {'files': files or [], 'events': list(events)}}
+
+    @pytest.mark.parametrize(
+        'command',
+        ['my-tool', '/usr/local/bin/my-tool', 'C:/Program Files/My Tool/my-tool.exe'],
+    )
+    def test_exec_form_program_accepted(self, command: str) -> None:
+        """A command naming no hooks.files entry is a program when args is set."""
+        config = self._config(
+            {'event': 'Stop', 'type': 'command', 'command': command, 'args': ['hook', 'stop'],
+             'async-rewake': True, 'timeout': 86400},
+        )
+        assert validate_hooks_files_consistency(config) == []
+
+    def test_exec_form_program_with_empty_args_accepted(self) -> None:
+        """An empty args list declares a program that takes no arguments."""
+        config = self._config({'event': 'SessionStart', 'command': 'my-tool', 'args': []})
+        assert validate_hooks_files_consistency(config) == []
+
+    def test_program_does_not_excuse_unused_files(self) -> None:
+        """A program never counts as a use of a hooks.files entry."""
+        config = self._config(
+            {'event': 'Stop', 'command': 'my-tool', 'args': []},
+            files=['hooks/a.py'],
+        )
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert "unused files: ['a.py']" in errors[0]
+
+    def test_shell_form_program_refused_naming_args(self) -> None:
+        """Without args a command naming no hooks.files entry is refused."""
+        config = self._config({'event': 'Stop', 'command': 'my-tool'}, files=['hooks/a.py'])
+        config['hooks']['events'].append({'event': 'PostToolUse', 'command': 'a.py'})
+        assert validate_hooks_files_consistency(config) == [(
+            'hooks.events command "my-tool" not found in hooks.files. '
+            "Available files: ['a.py']. "
+            'A command that is not a hooks.files script runs as a program in exec form: '
+            'name the program (on PATH or by absolute path) in command and give its '
+            'arguments in args, using args: [] when it takes none.'
+        )]
+
+    def test_shell_form_command_line_refused(self) -> None:
+        """A shell command line is refused; the program and its arguments go in args."""
+        config = self._config({'event': 'Stop', 'command': 'my-tool hook stop'})
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert errors[0].startswith(
+            'hooks.events command "my-tool hook stop" not found in hooks.files. Available files: none.',
+        )
+
+    def test_null_args_is_shell_form(self) -> None:
+        """A bare args key (null) declares no exec form, so the program is refused."""
+        config = self._config({'event': 'Stop', 'command': 'my-tool', 'args': None})
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert 'command "my-tool" not found in hooks.files' in errors[0]
+
+    def test_config_beside_program_refused(self) -> None:
+        """Only a hooks.files script receives a config, so a program cannot take one."""
+        config = self._config(
+            {'event': 'PostToolUse', 'command': 'a.py', 'config': 'c.yaml'},
+            {'event': 'Stop', 'command': 'my-tool', 'config': ' c.yaml ', 'args': ['hook']},
+            files=['hooks/a.py', 'configs/c.yaml'],
+        )
+        assert validate_hooks_files_consistency(config) == [(
+            'hooks.events config "c.yaml" is set beside command "my-tool", which is '
+            'a program, not a hooks.files script. config is passed only to a hooks.files '
+            'script; a program takes its arguments in args.'
+        )]
+
+    def test_exec_form_helper_command_keeps_helper_error(self) -> None:
+        """A command naming a helper stays a misplaced declaration in exec form."""
+        config = {
+            'hooks': {
+                'files': [],
+                'helpers': ['hooks/shared.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'shared.py', 'args': []}],
+            },
+        }
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert 'hooks.events command "shared.py" is declared in hooks.helpers' in errors[0]
+
+    def test_exec_form_listed_script_with_config_accepted(self) -> None:
+        """A listed script keeps its config in exec form and marks both files used."""
+        config = self._config(
+            {'event': 'PostToolUse', 'command': 'a.py', 'config': 'c.yaml', 'args': ['--fix']},
+            files=['hooks/a.py', 'configs/c.yaml'],
+        )
+        assert validate_hooks_files_consistency(config) == []
+
+
+class TestDeclaredFiles:
+    """Post-selection verdicts for references to hooks.files scripts a selection dropped."""
+
+    @staticmethod
+    def _recheck(files: list[str], declared: list[str], *events: dict[str, Any]) -> list[str]:
+        """Run the post-selection recheck on the filtered hooks.files and the declared list."""
+        config = {'hooks': {'files': files, 'events': list(events)}}
+        return validate_hooks_files_consistency(
+            config, require_all_files_used=False, declared_files=declared,
+        )
+
+    def test_exec_form_reference_to_dropped_script_is_dangling(self) -> None:
+        """A dropped script named in exec form is a dangling reference, never a program."""
+        errors = self._recheck(
+            [], ['hooks/lint.py'],
+            {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
+             'command': 'lint.py', 'args': ['--fix']},
+        )
+        assert errors == ['hooks.events command "lint.py" not found in hooks.files. Available files: none']
+
+    def test_exec_form_reference_with_empty_args_to_dropped_script_is_dangling(self) -> None:
+        """An empty args list does not turn a dropped script into a program."""
+        errors = self._recheck(
+            ['hooks/keep.py'], ['hooks/keep.py', 'https://example.com/hooks/lint.py?ref=main'],
+            {'event': 'PostToolUse', 'command': ' lint.py ', 'args': []},
+            {'event': 'Stop', 'command': 'keep.py'},
+        )
+        assert errors == [
+            "hooks.events command \"lint.py\" not found in hooks.files. Available files: ['keep.py']",
+        ]
+
+    def test_shell_form_reference_to_dropped_script_names_no_program_form(self) -> None:
+        """A dropped script in shell form gets the plain dangling-reference message."""
+        errors = self._recheck(
+            [], ['hooks/lint.py'],
+            {'event': 'PostToolUse', 'command': 'lint.py'},
+        )
+        assert errors == ['hooks.events command "lint.py" not found in hooks.files. Available files: none']
+
+    def test_dropped_script_and_its_config_both_reported(self) -> None:
+        """The config beside a dropped script is a dangling reference, not a program config."""
+        errors = self._recheck(
+            [], ['hooks/lint.py', 'configs/lint.yaml'],
+            {'event': 'PostToolUse', 'command': 'lint.py', 'config': 'lint.yaml', 'args': ['--fix']},
+        )
+        assert errors == [
+            'hooks.events command "lint.py" not found in hooks.files. Available files: none',
+            'hooks.events config "lint.yaml" not found in hooks.files. Available files: none',
+        ]
+
+    def test_surviving_script_and_program_keep_their_verdicts(self) -> None:
+        """Declared files change nothing for a surviving script or a program."""
+        errors = self._recheck(
+            ['hooks/keep.py'], ['hooks/keep.py', 'hooks/lint.py'],
+            {'event': 'PostToolUse', 'command': 'keep.py', 'args': ['--fix']},
+            {'event': 'Stop', 'command': 'my-tool', 'args': ['hook', 'stop']},
+        )
+        assert errors == []
+
+    def test_unlisted_shell_form_program_keeps_args_advice(self) -> None:
+        """A shell-form command that was never declared still names args as the program form."""
+        errors = self._recheck(
+            [], ['hooks/lint.py'],
+            {'event': 'Stop', 'command': 'my-tool'},
+        )
+        assert len(errors) == 1
+        assert errors[0].startswith('hooks.events command "my-tool" not found in hooks.files. Available files: none. ')
+        assert 'give its arguments in args' in errors[0]
+
+    def test_source_snapshot_replay_exits_on_a_dropped_exec_form_script(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Replaying a source's selection rechecks exec-form references to the scripts it drops."""
+        config = {
+            'name': 'Stranded Exec Form',
+            'agents': ['agents/keep.md'],
+            'hooks': {
+                'files': ['hooks/lint.py'],
+                'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
+                            'command': 'lint.py', 'args': ['--fix']}],
+            },
+            'components': [
+                {'name': 'core', 'includes': {'agents': ['agents/keep.md']}},
+                {'name': 'lint', 'default': False, 'includes': {'hooks': ['hooks/lint.py']}},
+            ],
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            replay_source_snapshot(config, LinkSource('source', tmp_path, None))
+
+        assert exc_info.value.code == 1
+        assert (
+            'hooks.events command "lint.py" not found in hooks.files. Available files: none'
+            in capsys.readouterr().err
+        )
+
+
 class TestBuildHooksJsonFileReferenceClassification:
     """hooks.files-aware file-reference classification in _build_hooks_json."""
 
@@ -439,29 +636,61 @@ class TestBuildHooksJsonFileReferenceClassification:
         expected = (tmp_path / 'my hook.sh').as_posix()
         assert command == f'"{expected}"'
 
-    def test_unlisted_command_with_spaces_stays_direct(self, tmp_path: Path) -> None:
-        """A space-containing command absent from hooks.files passes through as-is."""
+    def test_shell_form_builds_script_command_without_files_list(self, tmp_path: Path) -> None:
+        """Shell form always runs a hooks.files script, even when no files list is given.
+
+        The deselection reconciliation builds the removed events without the
+        files list, so a spaced script name must still resolve to its path.
+        """
+        hooks = {
+            'events': [
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'my hook.sh'},
+            ],
+        }
+        built = _build_hooks_json(hooks, tmp_path)
+        command = built['PreToolUse'][0]['hooks'][0]['command']
+        assert command == f'"{(tmp_path / "my hook.sh").as_posix()}"'
+
+    def test_exec_form_program_written_exactly(self, tmp_path: Path) -> None:
+        """A program on PATH is written with its declared fields and nothing else."""
         hooks = {
             'files': ['hooks/a.py'],
             'events': [
                 {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'a.py'},
-                {'event': 'Notification', 'matcher': '', 'type': 'command', 'command': 'echo "done"'},
+                {'event': 'Stop', 'type': 'command', 'command': 'my-tool', 'args': ['hook', 'stop'],
+                 'async-rewake': True, 'timeout': 86400},
+                {'event': 'UserPromptSubmit', 'type': 'command', 'command': 'my-tool',
+                 'args': ['hook', 'prompt-submit'], 'async': True},
+                {'event': 'SessionStart', 'type': 'command', 'command': 'my-tool', 'args': []},
             ],
         }
         built = _build_hooks_json(hooks, tmp_path)
-        assert built['Notification'][0]['hooks'][0]['command'] == 'echo "done"'
+        assert built['Stop'] == [{'matcher': '', 'hooks': [
+            {'type': 'command', 'command': 'my-tool', 'args': ['hook', 'stop'],
+             'asyncRewake': True, 'timeout': 86400},
+        ]}]
+        assert built['UserPromptSubmit'] == [{'matcher': '', 'hooks': [
+            {'type': 'command', 'command': 'my-tool', 'args': ['hook', 'prompt-submit'], 'async': True},
+        ]}]
+        assert built['SessionStart'] == [{'matcher': '', 'hooks': [
+            {'type': 'command', 'command': 'my-tool', 'args': []},
+        ]}]
 
-    def test_no_files_key_keeps_space_heuristic(self, tmp_path: Path) -> None:
-        """Without hooks.files, spaceless commands stay file references."""
+    def test_exec_form_listed_script_classified_as_the_validator_does(self, tmp_path: Path) -> None:
+        """A command equal to a listed basename folds into the launcher in exec form.
+
+        A local hooks.files path keeps its query string in its basename, and
+        the validator matches the command against that basename, so the
+        writer folds the same command into the hooks directory.
+        """
         hooks = {
-            'events': [
-                {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'a.py'},
-            ],
+            'files': ['hooks/win.pyw?ref=main'],
+            'events': [{'event': 'Stop', 'type': 'command', 'command': 'win.pyw?ref=main', 'args': ['--x']}],
         }
-        built = _build_hooks_json(hooks, tmp_path)
-        command = built['PostToolUse'][0]['hooks'][0]['command']
-        expected = (tmp_path / 'a.py').as_posix()
-        assert command == f'uv run --no-project --python 3.12 "{expected}"'
+        assert validate_hooks_files_consistency({'hooks': hooks}) == []
+        hook = _build_hooks_json(hooks, tmp_path)['Stop'][0]['hooks'][0]
+        assert hook['command'] == 'uv'
+        assert hook['args'] == ['run', '--no-project', '--python', '3.12', (tmp_path / 'win.pyw').as_posix(), '--x']
 
 
 class TestBuildFileCommandQuoting:

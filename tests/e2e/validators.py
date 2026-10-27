@@ -22,6 +22,7 @@ from typing import cast
 from scripts.setup_environment import FIRST_ARGUMENT_COMMANDS_GUARD
 from scripts.setup_environment import HOME_FOLDER_SETTINGS_GUARD
 from scripts.setup_environment import WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD
+from scripts.setup_environment import _hook_file_basename
 from tests.e2e.expected import EXPECTED_JSON_KEYS
 
 
@@ -552,6 +553,57 @@ def _validate_permissions(actual: dict[str, Any], expected: dict[str, Any]) -> l
     return errors
 
 
+def is_program_hook(event_config: dict[str, Any], hooks_config: dict[str, Any]) -> bool:
+    """Tell whether a hook event runs a program rather than a hooks.files script.
+
+    A command hook in exec form (it declares args) whose command names no
+    hooks.files entry is a program on PATH or an absolute path: the setup
+    writes its command verbatim as the executable and its args as the whole
+    argument list.
+
+    Args:
+        event_config: One entry of hooks.events from the YAML configuration
+        hooks_config: The YAML hooks section the entry belongs to
+
+    Returns:
+        True for an exec-form command hook naming no hooks.files entry
+    """
+    if event_config.get('type', 'command') != 'command' or event_config.get('args') is None:
+        return False
+    listed = {_hook_file_basename(str(entry)) for entry in hooks_config.get('files') or []}
+    return str(event_config.get('command', '')).strip() not in listed
+
+
+def expected_program_hook(event_config: dict[str, Any]) -> dict[str, Any]:
+    """Build the exact hook object the setup writes for a program hook event.
+
+    Args:
+        event_config: An exec-form command entry of hooks.events naming no
+            hooks.files entry (see is_program_hook())
+
+    Returns:
+        The command and args exactly as declared, plus every background and
+        common field the entry sets, under its Claude Code (camelCase) name
+    """
+    hook: dict[str, Any] = {
+        'type': 'command',
+        'command': event_config['command'],
+        'args': [str(argument) for argument in event_config['args']],
+    }
+    yaml_to_json = {
+        'async': 'async',
+        'async-rewake': 'asyncRewake',
+        'if': 'if',
+        'status-message': 'statusMessage',
+        'once': 'once',
+        'timeout': 'timeout',
+    }
+    for yaml_key, json_key in yaml_to_json.items():
+        if event_config.get(yaml_key) is not None:
+            hook[json_key] = event_config[yaml_key]
+    return hook
+
+
 def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) -> list[str]:
     """Validate hooks structure in settings.json.
 
@@ -564,6 +616,8 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
 
     Supports all 5 hook types: command, http, prompt, agent, mcp_tool.
     Also validates common fields (if, status-message, once, timeout) pass-through.
+    A program hook (see is_program_hook()) must appear in its matcher group
+    as exactly the object expected_program_hook() builds.
 
     Args:
         actual: Actual hooks dict from generated file
@@ -746,6 +800,13 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                     f"expected {expected_val!r}, "
                                     f"got {hook.get(json_field)!r}",
                                 )
+                if is_program_hook(event_config, config):
+                    expected_hook = expected_program_hook(event_config)
+                    if expected_hook not in inner_hooks:
+                        errors.append(
+                            f"Program hook '{event_name}' matcher '{expected_matcher}' lacks the exact "
+                            f'object {expected_hook!r}; found {inner_hooks!r}',
+                        )
                 break
 
         if not found_matcher and expected_matcher:
