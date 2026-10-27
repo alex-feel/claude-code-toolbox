@@ -297,6 +297,51 @@ def _hook_helper_reference_message(reference_kind: str, reference: str) -> str:
     )
 
 
+def _hook_unlisted_command_message(command: str, available_files: set[str]) -> str:
+    """Build the error for a shell-form command that names no hooks.files entry.
+
+    Exact mirror of the helper of the same name in setup_environment.py
+    (standalone script policy prevents a cross-import; verdict parity is
+    enforced by tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        command: The command as the author wrote it, whitespace-stripped.
+        available_files: Basenames listed in hooks.files.
+
+    Returns:
+        The error message.
+    """
+    available = sorted(available_files) if available_files else 'none'
+    return (
+        f'hooks.events command "{command}" not found in hooks.files. '
+        f'Available files: {available}. '
+        'A command that is not a hooks.files script runs as a program in exec form: '
+        'name the program (on PATH or by absolute path) in command and give its '
+        'arguments in args, using args: [] when it takes none.'
+    )
+
+
+def _hook_program_config_message(command: str, config: str) -> str:
+    """Build the error for a config beside a command that is a program.
+
+    Exact mirror of the helper of the same name in setup_environment.py
+    (standalone script policy prevents a cross-import; verdict parity is
+    enforced by tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        command: The program command, whitespace-stripped.
+        config: The config reference as the author wrote it, whitespace-stripped.
+
+    Returns:
+        The error message.
+    """
+    return (
+        f'hooks.events config "{config}" is set beside command "{command}", which is '
+        'a program, not a hooks.files script. config is passed only to a hooks.files '
+        'script; a program takes its arguments in args.'
+    )
+
+
 def _normalize_scope(scope_value: str | list[str] | None) -> list[str]:
     """Normalize scope value to a list of lowercase scope strings.
 
@@ -765,7 +810,7 @@ class HookEvent(BaseModel):
     """Hook event configuration.
 
     Supports five hook types matching the official Claude Code hooks specification:
-    - command: Executes a shell command (requires 'command' field)
+    - command: Runs a hooks.files script, or with 'args' a program on PATH (requires 'command' field)
     - http: Sends HTTP POST request (requires 'url' field)
     - prompt: Uses single-turn LLM evaluation (requires 'prompt' field)
     - agent: Spawns a subagent with tool access (requires 'prompt' field)
@@ -811,16 +856,19 @@ class HookEvent(BaseModel):
     # Command hook fields
     command: str | None = Field(
         None,
-        description='Command to execute (required for command hooks)',
+        description='Hook script listed in hooks.files, or, when args is set, a program on PATH '
+        'or an absolute path (required for command hooks)',
     )
     config: str | None = Field(
         None,
-        description='Optional config file reference to pass as argument to hook command',
+        description='Optional hooks.files config file passed as an argument to the hooks.files '
+        'script named in command',
     )
     args: list[str] | None = Field(
         None,
         description='Argument list switching the command to exec form: the executable is spawned '
-        'directly with these arguments appended, without any shell parsing',
+        'directly with these arguments appended, without any shell parsing; an empty list runs '
+        'a program that takes no arguments',
     )
     async_execution: bool | None = Field(
         None,
@@ -830,8 +878,9 @@ class HookEvent(BaseModel):
     async_rewake: bool | None = Field(
         None,
         alias='async-rewake',
-        description='If true, runs the command in the background and wakes the model when it exits '
-        'with code 2 (blocking error); implies async',
+        description='If true, wakes the model when the command exits with code 2 (blocking error); '
+        'Claude Code runs it in the background in an interactive session or one that streams its input, '
+        'and a claude -p run with plain input waits for it unless async is also true',
     )
     shell: Literal['bash', 'powershell'] | None = Field(
         None,
@@ -2137,12 +2186,19 @@ class EnvironmentConfig(BaseModel):
 
         Ensures:
         1. Each file in hooks.files is used somewhere (events or status-line)
-        2. Each file referenced in hooks.events (command hooks only) exists in hooks.files
+        2. Each command and config a command hook references exists in
+           hooks.files, except that an exec-form hook (one declaring args)
+           may name a program on PATH or an absolute path as its command;
+           such a hook takes no config, because config is passed only to a
+           hooks.files script
         3. The status-line.file (if configured) exists in hooks.files
         4. No basename is declared in both hooks.files and hooks.helpers
 
-        Note: Prompt hooks (type='prompt') do not use command or config files,
-        so they are excluded from file consistency validation.
+        A shell-form command (no args) that names no hooks.files entry is
+        refused with a message naming args as the way to declare a program.
+
+        Note: Prompt, http, agent, and mcp_tool hooks do not use command or
+        config files, so they are excluded from file consistency validation.
 
         hooks.helpers entries are shared modules the hook scripts import at run
         time. They are never referenced as a command, config, or status-line
@@ -2197,31 +2253,38 @@ class EnvironmentConfig(BaseModel):
         # Track which files are used
         used_files: set[str] = set()
 
-        # Rule 2: Check that each command hook's command and config exists in hooks.files
-        # Only command hooks use file references; http/prompt/agent hooks are excluded
+        # Rule 2: Check that each command hook's command and config exists in
+        # hooks.files, or that an exec-form command is a program without a
+        # config. Only command hooks use file references; http/prompt/agent
+        # hooks are excluded
         for event in self.hooks.events:
             # Skip non-command hooks - only command hooks reference files
             if event.type in ('prompt', 'http', 'agent', 'mcp_tool'):
                 continue
 
             # For command hooks, validate command and config files
+            program_command: str | None = None
             if event.command:
                 command_file = event.command.strip()
                 if command_file:
-                    if command_file not in available_files:
-                        if command_file in helper_files:
-                            raise ValueError(
-                                _hook_helper_reference_message('hooks.events command', command_file),
-                            )
+                    if command_file in available_files:
+                        used_files.add(command_file)
+                    elif command_file in helper_files:
                         raise ValueError(
-                            f'hooks.events command "{command_file}" not found in hooks.files. '
-                            f'Available files: {sorted(available_files) if available_files else "none"}',
+                            _hook_helper_reference_message('hooks.events command', command_file),
                         )
-                    used_files.add(command_file)
+                    elif event.args is None:
+                        raise ValueError(_hook_unlisted_command_message(command_file, available_files))
+                    else:
+                        # Exec form: a command naming no hooks.files entry is a
+                        # program on PATH or an absolute path, spawned as given
+                        program_command = command_file
 
             # Check config file reference if present
             if event.config:
                 config_file = event.config.strip()
+                if program_command is not None:
+                    raise ValueError(_hook_program_config_message(program_command, config_file))
                 # Strip query parameters from config filename (same as setup_environment.py)
                 clean_config = config_file.split('?')[0] if '?' in config_file else config_file
                 config_basename = _extract_basename(clean_config)

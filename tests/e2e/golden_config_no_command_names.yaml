@@ -116,6 +116,7 @@ hooks:
       matcher: "Bash"
       type: "prompt"
       prompt: "Consider security implications before executing bash commands"
+      continue-on-block: true
       timeout: 30
     - event: "PostToolUse"
       matcher: "Write"
@@ -141,9 +142,45 @@ hooks:
       type: "command"
       command: "e2e_test_hook.py"
       async: true
+      async-rewake: true
       shell: "bash"
       status-message: "Running notification handler..."
       id: "e2e-notify"
+    - event: "PreToolUse"
+      matcher: "Task"
+      type: "command"
+      command: "e2e_test_hook.py"
+      args:
+        - "--strict"
+        - "--level"
+        - "2"
+      id: "e2e-exec"
+    # Command hooks naming a program on PATH: the command is no hooks.files
+    # script, so args (exec form) is required and the command is written
+    # verbatim as the executable, args as its argument list
+    - event: "Stop"
+      type: "command"
+      command: "e2e-hook-program"
+      args:
+        - "hook"
+        - "stop"
+      async-rewake: true
+      timeout: 86400
+    - event: "UserPromptSubmit"
+      type: "command"
+      command: "e2e-hook-program"
+      args:
+        - "hook"
+        - "prompt-submit"
+      async: true
+    - event: "PostToolUse"
+      matcher: "Edit"
+      type: "mcp_tool"
+      server: "e2e-http-server"
+      tool: "lint_file"
+      input:
+        file_path: "${tool_input.file_path}"
+      timeout: 20
 
 # MCP Servers - NO profile scopes (those require command-names)
 mcp-servers:
@@ -264,6 +301,7 @@ components:
       hooks:
         - "e2e-post-edit"
         - "e2e-notify"
+        - "e2e-exec"
         - "hooks/e2e_test_hook.py"
         - "configs/e2e-hook-config.yaml"
   - name: "mcp-http"

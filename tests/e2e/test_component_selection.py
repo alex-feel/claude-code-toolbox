@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -19,6 +20,8 @@ import yaml
 
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
+from tests.e2e.profile_support import run_main
+from tests.e2e.profile_support import write_config
 from tests.e2e.validators import validate_selected_artifacts
 
 GOLDEN_CONFIGS = ['golden_config.yaml', 'golden_config_no_command_names.yaml']
@@ -311,3 +314,60 @@ class TestMainDeselectionWiring:
 
         assert (agents_dir / 'kept.md').exists()
         assert not (agents_dir / 'deselected.md').exists()
+
+    def test_non_isolated_rerun_strips_deselected_exec_form_script_hook(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A base re-run that deselects a component strips its exec-form script hook from settings.json.
+
+        The first run installs both components, writing an exec-form hook
+        whose hooks.files script is folded into the launcher's argument list;
+        the re-run deselects the component claiming that event and its
+        script, removes the script and strips the entry, while the kept
+        component's hook stays as written.
+        """
+        repo = tmp_path / 'repo'
+        (repo / 'hooks').mkdir(parents=True)
+        (repo / 'hooks' / 'kept.py').write_text('print("kept")\n', encoding='utf-8')
+        (repo / 'hooks' / 'lint.py').write_text('print("lint")\n', encoding='utf-8')
+        cfg = write_config(repo, 'hooks.yaml', {
+            'name': 'Hook Deselection',
+            'hooks': {
+                'files': ['hooks/kept.py', 'hooks/lint.py'],
+                'events': [
+                    {'event': 'Stop', 'type': 'command', 'command': 'kept.py', 'id': 'kept-stop'},
+                    {
+                        'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+                        'command': 'lint.py', 'args': ['--fix'], 'id': 'lint-exec',
+                    },
+                ],
+            },
+            'components': [
+                {'name': 'core', 'includes': {'hooks': ['hooks/kept.py', 'kept-stop']}},
+                {'name': 'extra', 'includes': {'hooks': ['hooks/lint.py', 'lint-exec']}},
+            ],
+        })
+        settings_json = e2e_isolated_home['claude_dir'] / 'settings.json'
+        hooks_dir = e2e_isolated_home['claude_dir'] / 'hooks'
+
+        code = run_main([str(cfg), '--skip-install', '--no-admin', '--yes'])
+        captured = capfd.readouterr()
+        assert code == 0, captured.out + captured.err
+        installed = json.loads(settings_json.read_text(encoding='utf-8'))['hooks']
+        lint_entry = installed['PostToolUse'][0]['hooks'][0]
+        assert lint_entry['command'] == 'uv'
+        assert Path(lint_entry['args'][-2]).name == 'lint.py'
+        assert lint_entry['args'][-1] == '--fix'
+        assert (hooks_dir / 'lint.py').exists()
+
+        code = run_main([str(cfg), '--skip-install', '--no-admin', '--yes', '--without', 'extra'])
+        captured = capfd.readouterr()
+        assert code == 0, captured.out + captured.err
+        final = json.loads(settings_json.read_text(encoding='utf-8'))['hooks']
+        assert 'PostToolUse' not in final, final
+        assert final['Stop'] == installed['Stop']
+        assert not (hooks_dir / 'lint.py').exists()
+        assert (hooks_dir / 'kept.py').exists()

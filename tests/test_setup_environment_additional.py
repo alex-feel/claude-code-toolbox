@@ -1494,17 +1494,18 @@ class TestCreateSettingsComplex:
             assert result is True
 
     def test_create_profile_config_non_python_hook(self):
-        """Test hook configuration with non-Python script."""
+        """A non-Python, non-JavaScript hook script runs directly from the hooks directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             hooks = {
+                'files': ['hooks/check.sh'],
                 'events': [
                     {
                         'event': 'PreToolUse',
                         'matcher': 'Bash',
                         'type': 'command',
-                        'command': 'echo "test"',
+                        'command': 'check.sh',
                     },
                 ],
             }
@@ -1517,9 +1518,8 @@ class TestCreateSettingsComplex:
             settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
-            # Command should be used as-is
             hook_cmd = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
-            assert hook_cmd == 'echo "test"'
+            assert hook_cmd == f'"{(claude_dir / "hooks" / "check.sh").as_posix()}"'
 
     def test_create_profile_config_save_failure(self):
         """Test handling save failure."""

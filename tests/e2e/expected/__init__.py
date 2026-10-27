@@ -11,6 +11,8 @@ The module exports:
     - EXPECTED_PATHS: Dict mapping logical names to expected path templates
     - COMMON_FILES: List of files common to all platforms
     - EXPECTED_JSON_KEYS: Dict of expected keys in generated JSON files
+    - EXPECTED_PROGRAM_HOOKS: Dict mapping hook event names to the exact hooks
+      entries the golden configurations' program hooks produce
     - EXPECTED_NPM_LAYOUT: Dict mapping the npm copies of a Node.js installation
       and of the npm global prefix to path templates
 
@@ -24,6 +26,7 @@ import sys
 # Import common values available on all platforms
 from .common import COMMON_FILES
 from .common import EXPECTED_JSON_KEYS
+from .common import EXPECTED_PROGRAM_HOOKS
 
 # Platform detection and dynamic import
 # Type checkers understand these conditional imports
@@ -47,4 +50,5 @@ __all__ = [
     'EXPECTED_JSON_KEYS',
     'EXPECTED_NPM_LAYOUT',
     'EXPECTED_PATHS',
+    'EXPECTED_PROGRAM_HOOKS',
 ]

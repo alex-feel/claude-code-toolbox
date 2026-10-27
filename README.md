@@ -19,7 +19,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Rules** -- user-scope rule files for coding standards, security policies, and project conventions
 - **Skills** -- multi-file skill packages for complex agent capabilities
 - **System prompts** -- replace or append to the default Claude Code prompt in the commands an isolated profile installs
-- **Hooks** -- five hook types: command (shell scripts, shell or exec form), HTTP (webhooks), prompt (LLM evaluation), agent (subagent with tools), and MCP tool (a tool on a configured MCP server), plus shared helper modules delivered beside the hook scripts
+- **Hooks** -- five hook types: command (hook scripts in shell or exec form, or an installed program on `PATH`, such as a tool's own hook command, in exec form), HTTP (webhooks), prompt (LLM evaluation), agent (subagent with tools), and MCP tool (a tool on a configured MCP server), plus shared helper modules delivered beside the hook scripts
 - **Ready-to-run Python hooks** -- Python hooks and status-line scripts run through `uv run`, and for each one that lists its packages in PEP 723 inline metadata the setup builds its uv environment right after the scripts land, on the same path and with the environment variables your sessions hand the hook, so the first launch inside Claude Code installs nothing; a package that cannot install fails the setup with the script's name and the command to retry, instead of failing the hook within its timeout in a session
 - **User and global settings** -- `user-settings` is raw `settings.json` content (camelCase keys) and `global-config` is raw `~/.claude.json` content, covering model selection, permissions, effort levels, thinking mode, environment variables, and every other Claude Code setting
 - **Status line** -- custom status bar scripts for real-time session information
@@ -91,6 +91,11 @@ hooks:
       matcher: "Edit|MultiEdit|Write"
       type: "command"
       command: "linter.py"
+    # An installed program on PATH runs in exec form, with its arguments in args
+    - event: "SessionStart"
+      type: "command"
+      command: "my-tool"
+      args: ["hook", "session-start"]
 ```
 
 This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) for all configuration keys.

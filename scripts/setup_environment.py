@@ -3291,10 +3291,58 @@ def _hook_helper_reference_message(reference_kind: str, reference: str) -> str:
     )
 
 
+def _hook_unlisted_command_message(command: str, available_files: set[str]) -> str:
+    """Build the error for a shell-form command that names no hooks.files entry.
+
+    Runtime twin of the helper of the same name in
+    scripts/models/environment_config.py (standalone script policy prevents
+    importing the model; verdict parity is enforced by
+    tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        command: The command as the author wrote it, whitespace-stripped.
+        available_files: Basenames listed in hooks.files.
+
+    Returns:
+        The error message.
+    """
+    available = sorted(available_files) if available_files else 'none'
+    return (
+        f'hooks.events command "{command}" not found in hooks.files. '
+        f'Available files: {available}. '
+        'A command that is not a hooks.files script runs as a program in exec form: '
+        'name the program (on PATH or by absolute path) in command and give its '
+        'arguments in args, using args: [] when it takes none.'
+    )
+
+
+def _hook_program_config_message(command: str, config: str) -> str:
+    """Build the error for a config beside a command that is a program.
+
+    Runtime twin of the helper of the same name in
+    scripts/models/environment_config.py (standalone script policy prevents
+    importing the model; verdict parity is enforced by
+    tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        command: The program command, whitespace-stripped.
+        config: The config reference as the author wrote it, whitespace-stripped.
+
+    Returns:
+        The error message.
+    """
+    return (
+        f'hooks.events config "{config}" is set beside command "{command}", which is '
+        'a program, not a hooks.files script. config is passed only to a hooks.files '
+        'script; a program takes its arguments in args.'
+    )
+
+
 def validate_hooks_files_consistency(
     config: dict[str, Any],
     *,
     require_all_files_used: bool = True,
+    declared_files: Iterable[str] = (),
 ) -> list[str]:
     """Validate hooks files, events, and status-line consistency at runtime.
 
@@ -3309,9 +3357,18 @@ def validate_hooks_files_consistency(
     time instead of at hook execution. Checks:
 
     1. Each file in hooks.files is used by a command hook event or status-line
-    2. Each command hook's command and config exists in hooks.files
+    2. Each command hook's command and config exist in hooks.files, except
+       that an exec-form hook (one declaring args) may name a program on PATH
+       or an absolute path as its command; such a hook takes no config,
+       because config is passed only to a hooks.files script
     3. The status-line file and config (if configured) exist in hooks.files
     4. No basename is declared in both hooks.files and hooks.helpers
+
+    A shell-form command (no args) that names no hooks.files entry is refused
+    with a message naming args as the way to declare a program, so a program
+    is never run through a shell built from a hooks.files path. A command
+    naming a script that declared_files lists but the filtered hooks.files no
+    longer carries is a dangling reference in either form, never a program.
 
     hooks.helpers entries are shared modules the hook scripts import at run
     time. They are never referenced as a command, config, or status-line file,
@@ -3331,6 +3388,12 @@ def validate_hooks_files_consistency(
             its claims covered asymmetrically (the hook-claim asymmetry
             warning covers authoring), while a dangling event or status-line
             reference is always an error.
+        declared_files: The configuration's hooks.files entries before
+            component selection filtered them, passed by the post-selection
+            recheck. An event command naming one of their basenames that the
+            filtered hooks.files no longer carries refers to a script the
+            selection dropped, so it is reported as a dangling reference
+            instead of being taken for a program on PATH.
 
     Returns:
         List of error messages; empty when hooks references are consistent.
@@ -3403,11 +3466,17 @@ def validate_hooks_files_consistency(
 
     available_display = sorted(available_files) if available_files else 'none'
 
+    # Scripts the configuration declared before component selection: a
+    # command naming one that the filtered list no longer carries refers to
+    # a script the selection dropped, never to a program on PATH
+    declared_basenames = {_hook_file_basename(file_path) for file_path in declared_files}
+
     # Track which files are used
     used_files: set[str] = set()
 
     # Rule 2: Check that each command hook's command and config exists in
-    # hooks.files. Only command hooks use file references; http/prompt/agent
+    # hooks.files, or that an exec-form command is a program without a
+    # config. Only command hooks use file references; http/prompt/agent
     # hooks are excluded.
     for event_index, event_raw in enumerate(cast(list[object], events_raw)):
         if not isinstance(event_raw, dict):
@@ -3419,6 +3488,7 @@ def validate_hooks_files_consistency(
             continue
 
         # For command hooks, validate command and config files
+        program_command: str | None = None
         command_raw = event.get('command')
         if command_raw:
             if not isinstance(command_raw, str):
@@ -3427,15 +3497,21 @@ def validate_hooks_files_consistency(
             else:
                 command_file = command_raw.strip()
                 if command_file:
-                    if command_file not in available_files:
-                        errors.append(
-                            _hook_helper_reference_message('hooks.events command', command_file)
-                            if command_file in helper_files
-                            else f'hooks.events command "{command_file}" not found in hooks.files. '
-                                 f'Available files: {available_display}',
-                        )
-                    else:
+                    if command_file in available_files:
                         used_files.add(command_file)
+                    elif command_file in helper_files:
+                        errors.append(_hook_helper_reference_message('hooks.events command', command_file))
+                    elif command_file in declared_basenames:
+                        errors.append(
+                            f'hooks.events command "{command_file}" not found in hooks.files. '
+                            f'Available files: {available_display}',
+                        )
+                    elif event.get('args') is None:
+                        errors.append(_hook_unlisted_command_message(command_file, available_files))
+                    else:
+                        # Exec form: a command naming no hooks.files entry is a
+                        # program on PATH or an absolute path, spawned as given
+                        program_command = command_file
 
         # Check config file reference if present
         config_raw = event.get('config')
@@ -3443,6 +3519,8 @@ def validate_hooks_files_consistency(
             if not isinstance(config_raw, str):
                 errors.append(f'hooks.events[{event_index}] config must be a string')
                 structure_broken = True
+            elif program_command is not None:
+                errors.append(_hook_program_config_message(program_command, config_raw.strip()))
             else:
                 config_file = config_raw.strip()
                 # Strip query parameters from the config filename (same as
@@ -4046,8 +4124,9 @@ def has_deselected_items(deselected: dict[str, list[Any]]) -> bool:
 
 # Output grammar of _build_file_command(): optional launcher prefix, quoted
 # script path, optional quoted config path. Only commands of this shape may
-# be compared quote-insensitively; in a direct command, quotes are literal
-# shell syntax and stripping them would conflate distinct commands.
+# be compared quote-insensitively; an exec-form command (a launcher, a script
+# path, or a program on PATH) never has it, and in any other command quotes
+# are literal content, so stripping them would conflate distinct commands.
 _BUILT_FILE_COMMAND_PATTERN = re.compile(
     rf'(?:uv run --no-project --python {re.escape(HOOK_LAUNCHER_PYTHON_VERSION)} |node )?"[^"]*"(?: "[^"]*")?',
 )
@@ -4060,9 +4139,10 @@ def _hook_entries_equal(built: dict[str, Any], existing: object) -> bool:
     command matches the _build_file_command() output grammar, it is compared
     with double quotes stripped from both sides, because entries written
     before path quoting existed carry the same file-reference command
-    unquoted. A direct command (passed through verbatim by
-    _build_hooks_json()) keeps its quotes as literal content and is compared
-    exactly, so two direct commands differing only in quoting never match.
+    unquoted. Any other command, such as an exec-form executable (a launcher,
+    a script path, or a program on PATH) or a hand-written command on disk,
+    keeps its quotes as literal content and is compared exactly, so two
+    commands differing only in quoting never match.
 
     Args:
         built: Hook entry dict produced by _build_hooks_json().
@@ -4094,14 +4174,18 @@ def _strip_hooks_from_settings(
     settings_path: Path,
     deselected_events: list[dict[str, Any]],
     hooks_dir: Path,
+    *,
+    hook_files: list[Any],
 ) -> int:
     """Remove deselected hook entries from a shared settings.json file.
 
     The shared-settings merge is a list union that never drops an existing
     entry, so hook events written by an earlier run survive deselection
     there. This builds the exact JSON the deselected events generate (via
-    the same builder the writer uses) and removes matching entries from the
-    file: hook dicts are matched inside same-matcher groups via
+    the same builder the writer uses, given the same hooks.files list, so an
+    exec-form command naming a listed script is folded into the launcher's
+    argument list exactly as it was written) and removes matching entries
+    from the file: hook dicts are matched inside same-matcher groups via
     _hook_entries_equal() (quote-insensitive on the command, so entries
     written before path quoting existed still match), emptied groups and
     event keys are dropped.
@@ -4110,6 +4194,9 @@ def _strip_hooks_from_settings(
         settings_path: Path to the shared settings.json file.
         deselected_events: Raw hook event dicts dropped by the selection.
         hooks_dir: Directory hook file references resolve against.
+        hook_files: Every hooks.files entry of the configuration, the
+            deselected ones included, which decides whether an exec-form
+            command is a listed script or a program.
 
     Returns:
         Number of hook entries removed; 0 when the file or matches are absent.
@@ -4125,7 +4212,7 @@ def _strip_hooks_from_settings(
     if not isinstance(hooks_json, dict):
         return 0
 
-    to_remove = _build_hooks_json({'events': deselected_events}, hooks_dir)
+    to_remove = _build_hooks_json({'files': hook_files, 'events': deselected_events}, hooks_dir)
     removed = 0
     for event_name, remove_groups in to_remove.items():
         existing_groups = hooks_json.get(event_name)
@@ -4215,6 +4302,9 @@ def execute_deselection_cleanup(
             the install wrote into the profile, never the base copy.
         surviving_config: The filtered configuration (after
             apply_component_selection), used to protect surviving targets.
+            Its hooks.files entries together with the deselected ones form
+            the configuration's full hooks.files list, against which the
+            deselected hook events are rebuilt for reconciliation.
         agents_dir: Directory agent files install into.
         commands_dir: Directory slash-command files install into.
         rules_dir: Directory rule files install into.
@@ -4237,12 +4327,14 @@ def execute_deselection_cleanup(
         except OSError as e:
             warning(f'Cannot remove {path}: {e}')
 
+    surviving_hooks = surviving_config.get('hooks')
+    surviving_hook_files = cast(
+        list[Any],
+        cast(dict[str, Any], surviving_hooks).get('files') or [] if isinstance(surviving_hooks, dict) else [],
+    )
+
     def _surviving_names(section: str) -> set[str]:
-        if section == 'hooks-files':
-            hooks_raw = surviving_config.get('hooks')
-            items = cast(dict[str, Any], hooks_raw).get('files') or [] if isinstance(hooks_raw, dict) else []
-        else:
-            items = surviving_config.get(section) or []
+        items = surviving_hook_files if section == 'hooks-files' else surviving_config.get(section) or []
         return {_installed_resource_name(item) for item in cast(list[object], items)}
 
     for section, target_dir, description, entry in (
@@ -4351,9 +4443,33 @@ def execute_deselection_cleanup(
         settings_path = get_real_user_home() / '.claude' / 'settings.json'
         removed = _strip_hooks_from_settings(
             settings_path, deselected['hooks-events'], hooks_dir,
+            hook_files=[*surviving_hook_files, *deselected['hooks-files']],
         )
         if removed:
             success(f'Removed {removed} deselected hook entr{"y" if removed == 1 else "ies"} from settings.json')
+
+
+def configured_hook_files(config: dict[str, Any]) -> list[str]:
+    """Return the string entries of the configuration's hooks.files list.
+
+    Taken before apply_component_selection() filters the list, it is what
+    the post-selection recheck passes as validate_hooks_files_consistency()'s
+    declared_files.
+
+    Args:
+        config: Fully resolved configuration dictionary.
+
+    Returns:
+        The string entries as written, in order; empty when hooks or its
+        files list is absent or not the expected shape.
+    """
+    hooks_raw = config.get('hooks')
+    if not isinstance(hooks_raw, dict):
+        return []
+    files_raw = cast(dict[str, Any], hooks_raw).get('files')
+    if not isinstance(files_raw, list):
+        return []
+    return [file_path for file_path in cast(list[object], files_raw) if isinstance(file_path, str)]
 
 
 def apply_component_selection(
@@ -15610,6 +15726,13 @@ def _build_hooks_json(
     Generates absolute POSIX paths for hook file references. Supports all five
     hook types: command, http, prompt, agent, mcp_tool.
 
+    A shell-form command hook (no args) always names a hooks.files script,
+    because validate_hooks_files_consistency() refuses any other, so its
+    command is built from the script path. An exec-form command hook folds a
+    script listed in hooks.files into the launcher's argument list and keeps
+    any other command, a program on PATH or an absolute path, verbatim as
+    the executable.
+
     Used by create_profile_config() (per-environment config.json, atomic
     overwrite in isolated mode) and indirectly by
     write_profile_settings_to_settings() via _build_profile_settings()
@@ -15630,12 +15753,12 @@ def _build_hooks_json(
     if not hook_events:
         return result
 
-    # Basenames listed in hooks.files: a listed name is always a file
-    # reference, even when it contains spaces, so the space heuristic in the
-    # command branch below only classifies commands that are not listed
+    # Basenames listed in hooks.files, derived the way
+    # validate_hooks_files_consistency() derives them, so an exec-form
+    # command is a script or a program by the validator's own verdict
     hook_files_raw = hooks.get('files')
     listed_basenames: set[str] = {
-        _hook_file_basename(f).strip()
+        _hook_file_basename(f)
         for f in (hook_files_raw if isinstance(hook_files_raw, list) else [])
         if isinstance(f, str)
     }
@@ -15728,18 +15851,7 @@ def _build_hooks_json(
         hook_config: dict[str, Any]
 
         if hook_type == 'command':
-            # Command hooks require file path processing
             assert command is not None
-
-            # Build the proper command based on file type
-            # Strip query parameters from command if present
-            clean_command = command.split('?')[0] if '?' in command else command
-
-            # Check if this looks like a file reference or a direct command:
-            # any basename listed in hooks.files is a file reference (even
-            # with spaces); otherwise commands with spaces, like
-            # 'echo "test"', are direct commands used as-is
-            is_file_reference = clean_command in listed_basenames or ' ' not in clean_command
 
             args = hook.get('args')
             if args is not None:
@@ -15748,10 +15860,9 @@ def _build_hooks_json(
                 # resolved script path move into the argument list unquoted.
                 # Only a basename listed in hooks.files is folded this way;
                 # any other command IS the executable (a bare name resolves
-                # via PATH, an absolute path is spawned as-is), so the shell
-                # form's no-space heuristic must not reroute it into hooks_dir
+                # via PATH, an absolute path is spawned as-is)
                 extra_args = [str(a) for a in args] if isinstance(args, list) else [str(args)]
-                if clean_command in listed_basenames:
+                if command.strip() in listed_basenames:
                     executable, exec_args = _build_file_exec_command(command, config, hooks_dir)
                 else:
                     executable, exec_args = command, []
@@ -15766,11 +15877,10 @@ def _build_hooks_json(
                         '(exec form spawns the executable without a shell)',
                     )
             else:
-                # An unlisted command with spaces is a direct command used as-is
-                full_command = _build_file_command(command, config, hooks_dir) if is_file_reference else command
+                # Shell form always runs a hooks.files script
                 hook_config = {
                     'type': hook_type,
-                    'command': full_command,
+                    'command': _build_file_command(command, config, hooks_dir),
                 }
                 if hook.get('shell') is not None:
                     hook_config['shell'] = hook['shell']
@@ -21847,8 +21957,11 @@ def replay_source_snapshot(config: dict[str, Any], source: LinkSource) -> tuple[
         sys.exit(1)
     selection = resolve_component_selection(components_list, replay_args, picker=None)
     if selection.is_active:
+        declared_hook_files = configured_hook_files(candidate)
         apply_component_selection(candidate, selection)
-        post_selection_errors = validate_hooks_files_consistency(candidate, require_all_files_used=False)
+        post_selection_errors = validate_hooks_files_consistency(
+            candidate, require_all_files_used=False, declared_files=declared_hook_files,
+        )
         if post_selection_errors:
             for err in post_selection_errors:
                 error(err)
@@ -22945,14 +23058,16 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         selection = resolve_component_selection(components_list, args, picker=picker)
         deselected = collect_deselected_items(config, selection)
         if selection.is_active:
+            declared_hook_files = configured_hook_files(config)
             apply_component_selection(config, selection)
             # Post-selection recheck: deselection can strand an event or
             # status-line reference whose file a deselected component
-            # claimed. Reference resolution must hold on the filtered
-            # config; unused files are legitimate deselection residue
-            # covered by the hook-claim asymmetry warning.
+            # claimed, in shell form and in exec form alike. Reference
+            # resolution must hold on the filtered config; unused files are
+            # legitimate deselection residue covered by the hook-claim
+            # asymmetry warning.
             post_selection_errors = validate_hooks_files_consistency(
-                config, require_all_files_used=False,
+                config, require_all_files_used=False, declared_files=declared_hook_files,
             )
             if post_selection_errors:
                 for err in post_selection_errors:

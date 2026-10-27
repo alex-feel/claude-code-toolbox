@@ -214,6 +214,79 @@ class TestHooksHelpers:
         assert 'status-line.file "sl.py" is declared in hooks.helpers' in str(exc_info.value)
 
 
+class TestHookProgramCommands:
+    """Test Rule 2 for command hooks that name a program instead of a hooks.files script."""
+
+    def test_exec_form_program_accepted(self) -> None:
+        """A command naming no hooks.files entry is a program when args is set."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'hooks': {
+                'events': [
+                    {'event': 'Stop', 'command': 'my-tool', 'args': ['hook', 'stop'],
+                     'async-rewake': True, 'timeout': 86400},
+                    {'event': 'UserPromptSubmit', 'command': 'my-tool', 'args': ['hook', 'prompt-submit'],
+                     'async': True},
+                ],
+            },
+        })
+        assert config.hooks is not None
+        stop, prompt_submit = config.hooks.events
+        assert (stop.command, stop.args, stop.async_rewake, stop.timeout) == (
+            'my-tool', ['hook', 'stop'], True, 86400,
+        )
+        assert (prompt_submit.command, prompt_submit.args, prompt_submit.async_execution) == (
+            'my-tool', ['hook', 'prompt-submit'], True,
+        )
+
+    def test_exec_form_program_with_empty_args_accepted(self) -> None:
+        """An empty args list declares a program that takes no arguments."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'hooks': {'events': [{'event': 'SessionStart', 'command': 'my-tool', 'args': []}]},
+        })
+        assert config.hooks is not None
+        assert config.hooks.events[0].args == []
+
+    def test_shell_form_program_refused_naming_args(self) -> None:
+        """Without args a command naming no hooks.files entry is refused."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'hooks': {'events': [{'event': 'Stop', 'command': 'my-tool'}]},
+            })
+        message = str(exc_info.value)
+        assert 'hooks.events command "my-tool" not found in hooks.files' in message
+        assert 'give its arguments in args, using args: [] when it takes none' in message
+
+    def test_config_beside_program_refused(self) -> None:
+        """Only a hooks.files script receives a config, so a program cannot take one."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'hooks': {
+                    'files': ['hooks/a.py', 'configs/c.yaml'],
+                    'events': [
+                        {'event': 'PostToolUse', 'command': 'a.py', 'config': 'c.yaml'},
+                        {'event': 'Stop', 'command': 'my-tool', 'config': 'c.yaml', 'args': ['hook']},
+                    ],
+                },
+            })
+        assert 'hooks.events config "c.yaml" is set beside command "my-tool"' in str(exc_info.value)
+
+    def test_exec_form_helper_command_keeps_helper_error(self) -> None:
+        """A command naming a helper stays a misplaced declaration in exec form."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'hooks': {
+                    'helpers': ['hooks/shared.py'],
+                    'events': [{'event': 'PostToolUse', 'command': 'shared.py', 'args': []}],
+                },
+            })
+        assert 'hooks.events command "shared.py" is declared in hooks.helpers' in str(exc_info.value)
+
+
 class TestEventFileReferences:
     """Test Rule 2: Each file in hooks.events must exist in hooks.files."""
 

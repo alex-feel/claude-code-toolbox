@@ -14,6 +14,7 @@ A run without command-names writes its own {claude_dir}/manifest.json and
 {claude_dir}/resolved-config.yaml for the base profile, with the same key set.
 """
 
+from typing import Any
 from typing import Final
 
 # Files created on ALL platforms (these are just the common JSON and YAML files)
@@ -79,5 +80,42 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
         'mcp_servers',
         'files_written',
         'auto_update',
+    ],
+}
+
+# The hooks entries the golden configurations' program hooks produce, keyed by
+# event: a command hook in exec form whose command names no hooks.files entry
+# keeps the command verbatim as the executable and args as its whole argument
+# list, with async, asyncRewake and timeout exactly as declared, and an
+# omitted matcher becomes the "" group. Both golden configurations declare
+# these two events only once, so each event's list in the written config.json
+# and settings.json is exactly this one group.
+EXPECTED_PROGRAM_HOOKS: Final[dict[str, list[dict[str, Any]]]] = {
+    'Stop': [
+        {
+            'matcher': '',
+            'hooks': [
+                {
+                    'type': 'command',
+                    'command': 'e2e-hook-program',
+                    'args': ['hook', 'stop'],
+                    'asyncRewake': True,
+                    'timeout': 86400,
+                },
+            ],
+        },
+    ],
+    'UserPromptSubmit': [
+        {
+            'matcher': '',
+            'hooks': [
+                {
+                    'type': 'command',
+                    'command': 'e2e-hook-program',
+                    'args': ['hook', 'prompt-submit'],
+                    'async': True,
+                },
+            ],
+        },
     ],
 }
