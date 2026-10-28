@@ -1,7 +1,8 @@
 """E2E tests for keeping an installed Node.js on the newest release of its LTS line.
 
-With ``install-nodejs: true`` and a Node.js already installed, the setup reads
-the release index and schedule of the Node.js project before the
+With ``install-nodejs: true`` and no Node.js, the installation summary names
+what Step 5 installs on the platform. With a Node.js already installed, the
+setup reads the release index and schedule of the Node.js project before the
 installation summary, names the decision there (and in --dry-run), carries
 it out in Step 5 through the channel that owns the installation and repeats
 the outcome in the completion summary. Every test runs main() in the
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -241,6 +243,46 @@ class TestNothingToUpgrade:
             'Node.js 20.19.0 left unchanged: release line 20 reached end of life on 2026-04-30; '
             'the active LTS line is 26'
         ) in output
+
+
+def _platform_installs() -> str | None:
+    """Name what Step 5 installs on this machine without Node.js, as the fixtures and the platform decide."""
+    if sys.platform == 'win32':
+        return "winget's OpenJS.NodeJS.LTS package, else the official installer of the newest LTS release"
+    if sys.platform == 'darwin':
+        # The Homebrew fixtures hold no node@26 yet, so the newest supported line Homebrew carries is 24
+        homebrew = "Homebrew's node@24 (24.22.1)" if shutil.which('brew') else 'Homebrew, then its node@24 (24.22.1)'
+        return f'{homebrew}, else the official installer package of the newest LTS release'
+    if Path('/etc/debian_version').exists():
+        return 'the nodejs package of the NodeSource LTS repository'
+    return None
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestNoNodeInstalled:
+    """Without Node.js, the summaries name what Step 5 installs on the platform."""
+
+    def test_dry_run_names_what_step_5_installs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        node_command_recorder: NodeCommandRecorder,
+    ) -> None:
+        # The official Windows installer's directory of this test holds no node
+        monkeypatch.setenv('PROGRAMFILES', str(tmp_path / 'Program Files'))
+
+        code, output = _run(tmp_path, capsys, ['--dry-run', '--skip-install'], **{'command-names': ['node-check']})
+
+        assert code == 0, output
+        installs = _platform_installs()
+        if installs is None:
+            assert (
+                '  * Node.js: not found; Step 5 installs Node.js only on Debian and Ubuntu among Linux distributions, '
+                'so install Node.js 18.0.0 or newer by hand'
+            ) in output
+            assert '[machine-wide] Node.js' not in output
+        else:
+            assert f'  * Node.js: not found; Step 5 installs {installs}\n' in output
+            assert f'[machine-wide] Node.js: install {installs} (used by every profile)' in output
+        assert node_command_recorder.records() == []
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='the machine-wide installation and its UAC gate exist on Windows')

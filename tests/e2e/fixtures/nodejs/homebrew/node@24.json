@@ -1,0 +1,15 @@
+{
+  "name": "node@24",
+  "full_name": "node@24",
+  "desc": "Open-source, cross-platform JavaScript runtime environment",
+  "versions": {
+    "stable": "24.22.1",
+    "head": null,
+    "bottle": true
+  },
+  "keg_only": true,
+  "deprecated": false,
+  "deprecation_date": "2027-10-30",
+  "disabled": false,
+  "disable_date": "2028-10-30"
+}

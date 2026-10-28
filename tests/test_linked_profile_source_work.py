@@ -246,14 +246,16 @@ class TestSummaryRendering:
         plan = setup_environment.InstallationPlan(
             config_name='Team', config_source='team.yaml', config_source_type='local', config_version=None,
             command_names=['team-2'], install_nodejs=True, dependency_commands={'common': ['npm install -g x']},
-            node_upgrade=setup_environment.NodeUpgradePlan('install', reason='not found'),
+            node_upgrade=setup_environment.NodeUpgradePlan(
+                'install', reason='not found', installs=('the nodejs package of the NodeSource LTS repository',),
+            ),
         )
 
         text = self._render(plan)
 
         assert 'from source' not in text
         assert 'Left to source profile' not in text
-        assert '  * Node.js: not found; Step 5 installs the newest LTS release' in text
+        assert '  * Node.js: not found; Step 5 installs the nodejs package of the NodeSource LTS repository' in text
         assert '  * Claude Code: install (version: latest)' in text
 
     def test_dependents_rows_carry_the_flag_the_children_receive(self) -> None:

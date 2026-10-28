@@ -2,13 +2,16 @@
 
 Step 5 keeps an installed Node.js on the newest release of its LTS line:
 plan_node_upgrade() runs the node the step checks and reads the Node.js
-release index and schedule, and Step 5 runs winget, msiexec, brew, the macOS
+release index and schedule (on a Mac without Node.js, the schedule and
+Homebrew's formulae), and Step 5 runs winget, msiexec, brew, the macOS
 installer or apt-get through ``_run_nodejs_command()`` and downloads an
 official installer through ``_download_nodejs_installer()``. For the E2E
 tests:
 
 - the release documents come from ``tests/e2e/fixtures/nodejs`` and are read
   against RELEASE_DAY, so the decisions never change with the calendar;
+  Homebrew's formulae come from its ``homebrew`` directory, and a formula
+  without a fixture answers HTTP 404 (node@26 has none, as on that day);
   UNREACHABLE_VARIABLE (``index`` or ``schedule``) makes one unreachable;
 - the machine's own Node.js stays out of every test: a node outside the
   directory CONFINEMENT_VARIABLE names (the pytest base temporary
@@ -27,6 +30,7 @@ CLAUDE_CODE_TOOLBOX_ namespace.
 
 from __future__ import annotations
 
+import email.message
 import json
 import os
 import stat
@@ -39,6 +43,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from scripts.setup_environment import NODE_HOMEBREW_FORMULA_URL
 from scripts.setup_environment import NodeInstallation
 
 FIXTURE_DIR = Path(__file__).parent / 'fixtures' / 'nodejs'
@@ -60,18 +65,26 @@ ALL_VARIABLES = (
 
 
 def release_document(url: str) -> object:
-    """Answer one release document from the fixtures, as nodejs.org and GitHub answer it.
+    """Answer one release document from the fixtures, as nodejs.org, GitHub and Homebrew answer it.
 
     Args:
-        url: The index or schedule URL the setup reads.
+        url: The index, schedule or Homebrew formula URL the setup reads.
 
     Returns:
         The parsed fixture.
 
     Raises:
+        urllib.error.HTTPError: HTTP 404 for a Homebrew formula no fixture
+            stands for, as Homebrew answers a formula it does not carry.
         urllib.error.URLError: The document is the one UNREACHABLE_VARIABLE
             names, or no fixture stands for the URL.
     """
+    formula_prefix = NODE_HOMEBREW_FORMULA_URL.split('{formula}', 1)[0]
+    if url.startswith(formula_prefix):
+        fixture = FIXTURE_DIR / 'homebrew' / url.removeprefix(formula_prefix)
+        if not fixture.is_file():
+            raise urllib.error.HTTPError(url, 404, 'Not Found', email.message.Message(), None)
+        return json.loads(fixture.read_text(encoding='utf-8'))
     name = 'index' if url.endswith('/index.json') else 'schedule' if url.endswith('/schedule.json') else None
     if name is None or os.environ.get(UNREACHABLE_VARIABLE) == name:
         raise urllib.error.URLError('Temporary failure in name resolution')

@@ -83,32 +83,6 @@ def _plan(
         return plan_node_upgrade(today=today)
 
 
-class TestPlanWithoutAUsableNode:
-    """Without Node.js 18 or newer, Step 5 installs as it always did."""
-
-    def test_no_node_installs(self) -> None:
-        with patch.object(setup_environment, '_locate_node', return_value=None):
-            plan = plan_node_upgrade(today=TODAY)
-        assert plan == NodeUpgradePlan('install', reason='not found')
-        assert plan.summary_lines() == ['Node.js: not found; Step 5 installs the newest LTS release']
-
-    def test_node_without_a_version_installs(self, tmp_path: Path) -> None:
-        plan = _plan(tmp_path / 'node', None)
-        assert plan.action == 'install'
-        assert plan.reason == f'{tmp_path / "node"} reports no version'
-
-    def test_node_below_the_minimum_installs(self, tmp_path: Path) -> None:
-        plan = _plan(tmp_path / 'node', 'v16.20.2')
-        assert plan.action == 'install'
-        assert plan.reason == '16.20.2 is older than 18.0.0'
-
-    def test_no_release_data_is_read_for_an_installation(self, tmp_path: Path) -> None:
-        fetch = MagicMock()
-        plan = _plan(tmp_path / 'node', 'v16.20.2', documents=fetch)
-        assert plan.action == 'install'
-        fetch.assert_not_called()
-
-
 class TestPlanReleaseData:
     """The release index and schedule decide; a document that cannot be read changes nothing."""
 
@@ -764,9 +738,6 @@ class TestSummaries:
 
         assert writes(_upgrade_plan('homebrew')) == [
             'Node.js: upgrade 24.19.0 -> 24.22.1 through brew upgrade node@24 (used by every profile)',
-        ]
-        assert writes(NodeUpgradePlan('install', reason='not found')) == [
-            'Node.js: install the newest LTS release (used by every profile)',
         ]
         assert writes(NodeUpgradePlan('current', installed='24.22.1', newest='24.22.1')) == []
         assert writes(None) == []

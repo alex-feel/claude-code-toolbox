@@ -117,7 +117,11 @@ MIN_NODE_VERSION = '18.0.0'
 NODE_RELEASE_INDEX_URL = 'https://nodejs.org/dist/index.json'
 # The start, LTS, maintenance and end dates of every Node.js release line
 NODE_RELEASE_SCHEDULE_URL = 'https://raw.githubusercontent.com/nodejs/Release/main/schedule.json'
-# Seconds one read of the release index or the release schedule may take
+# Homebrew's document of one formula (``node@<major>``); a formula Homebrew does
+# not carry answers HTTP 404
+NODE_HOMEBREW_FORMULA_URL = 'https://formulae.brew.sh/api/formula/{formula}.json'
+# Seconds one read of the release index, the release schedule or a Homebrew
+# formula may take
 NODE_RELEASE_FETCH_TIMEOUT_SECONDS = 30
 # The winget package of the official Node.js LTS installer
 NODE_LTS_WINGET_ID = 'OpenJS.NodeJS.LTS'
@@ -11457,6 +11461,11 @@ def _check_winget_available() -> bool:
     return shutil.which('winget') is not None
 
 
+def _check_homebrew_available() -> bool:
+    """Check if Homebrew's brew is on PATH."""
+    return shutil.which('brew') is not None
+
+
 def _is_debian_family() -> bool:
     """Whether this Linux machine is Debian or a distribution built on it, such as Ubuntu."""
     return Path('/etc/debian_version').exists()
@@ -11526,7 +11535,10 @@ def _install_nodejs_winget(scope: str = 'user') -> bool:
 
 
 def _fetch_node_release_json(url: str) -> object:
-    """Read one JSON document the Node.js project publishes.
+    """Read one JSON document about Node.js releases.
+
+    The documents are the release index and the release schedule of the
+    Node.js project and Homebrew's formula of a release line.
 
     A certificate verification failure is retried once without
     verification, as the installer download is. A response that is not
@@ -11719,9 +11731,17 @@ def _install_nodejs_direct() -> bool:
         return False
 
 
-def _install_nodejs_homebrew() -> bool:
-    """Install Node.js LTS using Homebrew on macOS."""
-    if not shutil.which('brew'):
+def _install_nodejs_homebrew(formula: str) -> bool:
+    """Install and link Homebrew's formula of a Node.js LTS line on macOS, installing Homebrew first when needed.
+
+    Args:
+        formula: The keg-only formula (``node@<major>``) plan_node_upgrade()
+            picked with _homebrew_node_formula().
+
+    Returns:
+        True when brew installed the formula; a failed link only warns.
+    """
+    if not _check_homebrew_available():
         info('Installing Homebrew first...')
         result = _run_nodejs_command([
             '/bin/bash',
@@ -11732,21 +11752,21 @@ def _install_nodejs_homebrew() -> bool:
         if result.returncode != 0:
             return False
 
-    info('Installing Node.js LTS (v22) using Homebrew...')
+    info(f'Installing Node.js with Homebrew ({formula})...')
     _run_nodejs_command(['brew', 'update'])
-    result = _run_nodejs_command(['brew', 'install', 'node@22'])
+    result = _run_nodejs_command(['brew', 'install', formula])
     assert result is not None
 
     if result.returncode != 0:
         return False
 
-    # node@22 is keg-only; create symlinks so node is available in PATH
-    link_result = _run_nodejs_command(['brew', 'link', '--force', '--overwrite', 'node@22'])
+    # The formula is keg-only; link it so node is available in PATH
+    link_result = _run_nodejs_command(['brew', 'link', '--force', '--overwrite', formula])
     assert link_result is not None
     if link_result.returncode != 0:
-        warning('brew link failed for node@22; node may not be in PATH')
+        warning(f'brew link failed for {formula}; node may not be in PATH')
 
-    success('Node.js LTS installed via Homebrew')
+    success(f'Node.js installed via Homebrew ({formula})')
     return True
 
 
@@ -11791,12 +11811,17 @@ def _verify_nodejs_version() -> bool:
     return _compare_node_versions(node_version, MIN_NODE_VERSION)
 
 
-def _ensure_nodejs() -> bool:
+def _ensure_nodejs(*, homebrew_formula: str | None) -> bool:
     """Ensure Node.js is installed and meets minimum version.
 
     Provides standalone Node.js installation for general purposes
     (e.g., npx-based MCP servers). Does not check Claude Code npm
     compatibility since this script does not install Claude Code.
+
+    Args:
+        homebrew_formula: The Homebrew formula macOS installs first (see
+            _homebrew_node_formula()); None goes straight to the official
+            installer package.
 
     Returns:
         True if Node.js is installed and meets requirements, False otherwise.
@@ -11843,8 +11868,10 @@ def _ensure_nodejs() -> bool:
                 return True
 
     elif system == 'Darwin':
-        # Try Homebrew first
-        if _install_nodejs_homebrew() and _verify_nodejs_version():
+        # Try Homebrew's formula of the newest supported LTS line it carries first
+        if homebrew_formula is None:
+            info('Skipping Homebrew: no Homebrew formula of a supported Node.js LTS line is known')
+        elif _install_nodejs_homebrew(homebrew_formula) and _verify_nodejs_version():
             return True
 
         # Fallback to direct download
@@ -12188,12 +12215,12 @@ class NodeUpgradePlan:
 
     plan_node_upgrade() decides it once, before the elevation gate and the
     installation summary: ``install`` when no Node.js 18 or newer runs (Step
-    5 installs the newest LTS release with _ensure_nodejs()); ``upgrade``
-    when the installed release line is a supported LTS line, a newer release
-    of that line exists, and the channel that owns the installation can
-    install it; ``current`` when the installed release is the newest of its
-    line; ``unchanged`` when Step 5 leaves an outdated Node.js alone, with the
-    reason.
+    5 installs with _ensure_nodejs() through the channels ``installs``
+    names); ``upgrade`` when the installed release line is a supported LTS
+    line, a newer release of that line exists, and the channel that owns the
+    installation can install it; ``current`` when the installed release is
+    the newest of its line; ``unchanged`` when Step 5 leaves an outdated
+    Node.js alone, with the reason.
 
     Attributes:
         action: The decision.
@@ -12209,6 +12236,10 @@ class NodeUpgradePlan:
         elevation_unavailable: Whether the run cannot elevate for an upgrade
             that needs it (--no-admin in a process without administrator
             rights).
+        installs: For ``install``, what Step 5 installs, in the order it
+            tries the channels; empty where it has no installer.
+        homebrew_formula: For ``install`` on macOS, the formula Step 5
+            installs first (see _homebrew_node_formula()).
     """
 
     action: Literal['install', 'upgrade', 'current', 'unchanged']
@@ -12221,6 +12252,8 @@ class NodeUpgradePlan:
     remedy: str | None = None
     notice: str | None = None
     elevation_unavailable: bool = False
+    installs: tuple[str, ...] = ()
+    homebrew_formula: str | None = None
 
     @property
     def needs_elevation(self) -> bool:
@@ -12242,10 +12275,19 @@ class NodeUpgradePlan:
         major = (self.newest or '').split('.')[0]
         return f"Homebrew's node@{major}" if self.channel == 'homebrew' else 'the NodeSource repository'
 
+    def install_text(self) -> str:
+        """Name what Step 5 installs, each channel after the one it falls back from."""
+        return ', else '.join(self.installs)
+
     def summary_lines(self) -> list[str]:
         """Render the installation summary rows: the decision, then the remedy and the notice."""
-        if self.action == 'install':
-            lines = [f'Node.js: {self.reason}; Step 5 installs the newest LTS release']
+        if self.action == 'install' and self.installs:
+            lines = [f'Node.js: {self.reason}; Step 5 installs {self.install_text()}']
+        elif self.action == 'install':
+            lines = [(
+                f'Node.js: {self.reason}; Step 5 installs Node.js only on Debian and Ubuntu among Linux '
+                f'distributions, so install Node.js {MIN_NODE_VERSION} or newer by hand'
+            )]
         elif self.action == 'upgrade':
             lines = [f'Node.js: {self.installed} -> {self.newest} through {self.channel_text()}']
             if self.needs_elevation:
@@ -12273,18 +12315,118 @@ class NodeUpgradePlan:
 
     def machine_wide_row(self) -> str | None:
         """Describe the installation or upgrade among the machine-wide writes of an isolated run."""
-        if self.action == 'install':
-            return 'Node.js: install the newest LTS release (used by every profile)'
+        if self.action == 'install' and self.installs:
+            return f'Node.js: install {self.install_text()} (used by every profile)'
         if self.action == 'upgrade':
             return f'Node.js: upgrade {self.installed} -> {self.newest} through {self.channel_text()} (used by every profile)'
         return None
+
+
+class HomebrewNodeFormula(NamedTuple):
+    """Homebrew's formula of one Node.js LTS line.
+
+    Attributes:
+        name: The formula (``node@<major>``).
+        version: The release the formula holds.
+    """
+
+    name: str
+    version: str
+
+
+def _homebrew_node_formula(today: date) -> tuple[HomebrewNodeFormula | None, str | None]:
+    """Pick the Homebrew formula Step 5 installs on a Mac without Node.js.
+
+    Homebrew carries an LTS line as the keg-only formula ``node@<major>``
+    and publishes it some time after the line becomes LTS; its unversioned
+    ``node`` formula follows the newest release rather than an LTS line.
+    Among the lines the release schedule names as supported LTS lines on
+    the day, the pick is the newest one whose formula Homebrew carries.
+
+    Args:
+        today: The day the schedule is read against.
+
+    Returns:
+        The formula and None, or None and the reason Step 5 skips Homebrew:
+        the schedule or a formula cannot be read, or Homebrew carries none
+        of the supported lines.
+    """
+    try:
+        lines = _node_release_lines(_fetch_node_release_json(NODE_RELEASE_SCHEDULE_URL))
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        return None, f'the Node.js release schedule at {NODE_RELEASE_SCHEDULE_URL} could not be read: {e}'
+    names = [f'node@{major}' for major in sorted(lines, reverse=True) if lines[major].supported(today)]
+    for name in names:
+        url = NODE_HOMEBREW_FORMULA_URL.format(formula=name)
+        try:
+            document = _fetch_node_release_json(url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            return None, f"Homebrew's formula {name} at {url} could not be read: {e}"
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            return None, f"Homebrew's formula {name} at {url} could not be read: {e}"
+        versions = cast(dict[str, Any], document).get('versions') if isinstance(document, dict) else None
+        version = cast(dict[str, Any], versions).get('stable') if isinstance(versions, dict) else None
+        if not isinstance(version, str):
+            return None, f"Homebrew's formula {name} at {url} names no stable version"
+        return HomebrewNodeFormula(name, version), None
+    return None, f'Homebrew carries none of {", ".join(names)}'
+
+
+def _node_install_plan(
+    reason: str, today: date | None, *, installed: str | None = None, executable: str | None = None,
+) -> NodeUpgradePlan:
+    """Plan the installation of Node.js on a machine without a usable one.
+
+    Names what _ensure_nodejs() installs on the platform, in the order it
+    tries: winget's LTS package, then the official installer of the newest
+    LTS release, on Windows; Homebrew's formula of the newest supported LTS
+    line it carries (installing Homebrew first when brew is missing), then
+    the official installer package of the newest LTS release, on macOS; the
+    NodeSource LTS repository on Debian and Ubuntu; nothing on other Linux
+    distributions.
+
+    Args:
+        reason: Why Node.js is installed.
+        today: The day the release schedule is read against on macOS; None
+            reads _node_release_today().
+        installed: The release the unusable node reports, when it reports one.
+        executable: The unusable node, when one resolves.
+
+    Returns:
+        The ``install`` plan.
+    """
+    system = platform.system()
+    formula: HomebrewNodeFormula | None = None
+    if system == 'Windows':
+        installs: tuple[str, ...] = (
+            f"winget's {NODE_LTS_WINGET_ID} package", 'the official installer of the newest LTS release',
+        )
+    elif system == 'Darwin':
+        package = 'the official installer package of the newest LTS release'
+        formula, skipped = _homebrew_node_formula(today or _node_release_today())
+        if formula is None:
+            installs = (f'{package} (Homebrew is skipped: {skipped})',)
+        elif _check_homebrew_available():
+            installs = (f"Homebrew's {formula.name} ({formula.version})", package)
+        else:
+            installs = (f'Homebrew, then its {formula.name} ({formula.version})', package)
+    elif _is_debian_family():
+        installs = ('the nodejs package of the NodeSource LTS repository',)
+    else:
+        installs = ()
+    return NodeUpgradePlan(
+        'install', installed=installed, executable=executable, reason=reason, installs=installs,
+        homebrew_formula=formula.name if formula is not None else None,
+    )
 
 
 def plan_node_upgrade(*, today: date | None = None) -> NodeUpgradePlan:
     """Decide what Step 5 does with the Node.js on this machine.
 
     The node Step 5 checks (_locate_node()) runs ``node --version``. Without
-    Node.js 18 or newer the plan installs, as _ensure_nodejs() does. Otherwise
+    Node.js 18 or newer the plan installs (see _node_install_plan()). Otherwise
     the release index and the release schedule of the Node.js project decide:
     a release line that is not a supported LTS line on the day (an
     odd-numbered line, a line past its end of life, a line not yet LTS)
@@ -12305,15 +12447,14 @@ def plan_node_upgrade(*, today: date | None = None) -> NodeUpgradePlan:
     """
     installation = _locate_node()
     if installation is None:
-        return NodeUpgradePlan('install', reason='not found')
+        return _node_install_plan('not found', today)
     parts = _node_version_parts(installation.path)
     if parts is None:
-        return NodeUpgradePlan('install', executable=installation.path, reason=f'{installation.path} reports no version')
+        return _node_install_plan(f'{installation.path} reports no version', today, executable=installation.path)
     installed = _format_node_version(parts)
     if not _compare_node_versions(installed, MIN_NODE_VERSION):
-        return NodeUpgradePlan(
-            'install', installed=installed, executable=installation.path,
-            reason=f'{installed} is older than {MIN_NODE_VERSION}',
+        return _node_install_plan(
+            f'{installed} is older than {MIN_NODE_VERSION}', today, installed=installed, executable=installation.path,
         )
 
     documents: list[object] = []
@@ -12553,8 +12694,9 @@ def install_nodejs_if_requested(config: dict[str, Any], plan: NodeUpgradePlan | 
 
     Does nothing without ``install-nodejs: true``. Otherwise follows the plan
     main() decided before the summary: ``install`` runs the standalone
-    _ensure_nodejs() (which finds a Node.js 18 or newer, or installs the
-    newest LTS release with fallbacks, and updates PATH); ``current`` and
+    _ensure_nodejs() with the plan's Homebrew formula (it finds a Node.js 18
+    or newer, or installs through the channels the plan names, and updates
+    PATH); ``current`` and
     ``unchanged`` change nothing and say why; ``upgrade`` runs
     _upgrade_nodejs(). A newer active LTS line is named and never installed.
 
@@ -12574,7 +12716,7 @@ def install_nodejs_if_requested(config: dict[str, Any], plan: NodeUpgradePlan | 
     assert plan is not None, 'main() decides the Node.js plan whenever install-nodejs is set'
 
     if plan.action == 'install':
-        if not _ensure_nodejs():
+        if not _ensure_nodejs(homebrew_formula=plan.homebrew_formula):
             error('Node.js installation failed')
             return NodeStepResult(False)
         # Refresh PATH from registry on Windows to pick up new installation
