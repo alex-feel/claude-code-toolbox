@@ -103,6 +103,24 @@ def error(msg: str) -> None:
     print(f'{Colors.RED}[FAIL]{Colors.NC} {msg}', file=sys.stderr)
 
 
+def _line_buffer_output_streams() -> None:
+    """Make stdout and stderr write every line as it is printed, whatever they are connected to.
+
+    Python buffers stdout in blocks when it is a file or a pipe, while each
+    child process this program starts writes straight to the descriptors it
+    inherits and stderr writes every line at once. A redirected run would
+    hold its own stdout lines back until the buffer fills, so the file would
+    show them after the output of children started later and after error
+    lines printed later. A stream without ``reconfigure()``, such as an
+    in-memory buffer a caller put in place of a standard stream, is left as
+    it is.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is not None:
+            reconfigure(line_buffering=True)
+
+
 def banner() -> None:
     """Print installation banner."""
     os_name = platform.system()
@@ -4514,6 +4532,7 @@ environment variables:
 
 def main() -> None:
     """Main installation flow."""
+    _line_buffer_output_streams()
     # Answer -h/--help with the usage text before anything else: the script
     # builds no ArgumentParser, and silently starting an installation on a
     # help request would modify the system
