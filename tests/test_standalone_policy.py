@@ -111,6 +111,22 @@ class TestPreferWindowsExecutableIdentity:
         )
 
 
+class TestLineBufferOutputStreamsIdentity:
+    """Enforce that _line_buffer_output_streams() is identical in both scripts."""
+
+    def test_line_buffer_output_streams_bodies_identical(self) -> None:
+        ic_func = _extract_function_source(_read_source(INSTALL_CLAUDE), '_line_buffer_output_streams')
+        se_func = _extract_function_source(_read_source(SETUP_ENVIRONMENT), '_line_buffer_output_streams')
+
+        ic_normalized = '\n'.join(line.rstrip() for line in ic_func.splitlines())
+        se_normalized = '\n'.join(line.rstrip() for line in se_func.splitlines())
+
+        assert ic_normalized == se_normalized, (
+            '_line_buffer_output_streams() has diverged between install_claude.py '
+            'and setup_environment.py. Both copies must remain identical.'
+        )
+
+
 class TestColorsClassIdentity:
     """Enforce that Colors class is identical in both scripts."""
 
