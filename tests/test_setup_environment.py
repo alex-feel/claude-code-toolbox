@@ -2833,36 +2833,40 @@ class TestRequestAdminElevationIfNeeded:
 
 
 class TestInstallNodejsIfRequested:
-    """Test install_nodejs_if_requested() function."""
+    """Test install_nodejs_if_requested() with an installation plan."""
 
-    def test_not_requested_returns_true(self):
-        """Test that function returns True when install-nodejs is not set."""
+    INSTALL_PLAN = setup_environment.NodeUpgradePlan('install', reason='not found')
+
+    def test_not_requested_returns_available(self):
+        """Without install-nodejs the step does nothing and needs no plan."""
         config: dict = {'name': 'Test'}
-        result = setup_environment.install_nodejs_if_requested(config)
-        assert result is True
+        result = setup_environment.install_nodejs_if_requested(config, None)
+        assert result == setup_environment.NodeStepResult(True)
 
-    def test_false_returns_true(self):
-        """Test that function returns True when install-nodejs is False."""
+    def test_false_returns_available(self):
+        """install-nodejs: false does nothing."""
         config = {'install-nodejs': False}
-        result = setup_environment.install_nodejs_if_requested(config)
-        assert result is True
+        result = setup_environment.install_nodejs_if_requested(config, None)
+        assert result == setup_environment.NodeStepResult(True)
 
+    @patch('setup_environment._get_node_version', return_value='v24.22.1')
     @patch('setup_environment._ensure_nodejs')
-    def test_true_calls_ensure_nodejs(self, mock_ensure):
-        """Test that function calls _ensure_nodejs standalone."""
+    def test_install_plan_calls_ensure_nodejs(self, mock_ensure, mock_version):
+        """An install plan runs the standalone _ensure_nodejs() and reports the version."""
+        assert mock_version.return_value == 'v24.22.1'
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
-        result = setup_environment.install_nodejs_if_requested(config)
-        assert result is True
+        result = setup_environment.install_nodejs_if_requested(config, self.INSTALL_PLAN)
+        assert result == setup_environment.NodeStepResult(True, 'Node.js: 24.22.1')
         mock_ensure.assert_called_once()
 
     @patch('setup_environment._ensure_nodejs')
-    def test_installation_failure_returns_false(self, mock_ensure):
-        """Test that function returns False when _ensure_nodejs fails."""
+    def test_installation_failure_reports_unavailable(self, mock_ensure):
+        """A failed installation leaves Node.js unavailable, which stops the setup."""
         mock_ensure.return_value = False
         config = {'install-nodejs': True}
-        result = setup_environment.install_nodejs_if_requested(config)
-        assert result is False
+        result = setup_environment.install_nodejs_if_requested(config, self.INSTALL_PLAN)
+        assert result.available is False
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
     @patch('setup_environment._ensure_nodejs')
@@ -2871,7 +2875,7 @@ class TestInstallNodejsIfRequested:
         """Test that PATH is refreshed on Windows after installation."""
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
-        setup_environment.install_nodejs_if_requested(config)
+        setup_environment.install_nodejs_if_requested(config, self.INSTALL_PLAN)
         mock_refresh.assert_called_once()
 
     @patch('platform.system', return_value='Linux')
@@ -2883,17 +2887,8 @@ class TestInstallNodejsIfRequested:
         assert mock_system.return_value == 'Linux'
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
-        setup_environment.install_nodejs_if_requested(config)
+        setup_environment.install_nodejs_if_requested(config, self.INSTALL_PLAN)
         mock_refresh.assert_not_called()
-
-    @patch('setup_environment._ensure_nodejs')
-    def test_nodejs_v25_accepted_via_install_nodejs_flag(self, mock_ensure):
-        """Node.js v25 is accepted when install-nodejs: true (general purpose)."""
-        mock_ensure.return_value = True
-        config = {'install-nodejs': True}
-        result = setup_environment.install_nodejs_if_requested(config)
-        assert result is True
-        mock_ensure.assert_called_once()
 
 
 class TestFetchUrlWithAuth:

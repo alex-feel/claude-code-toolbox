@@ -667,6 +667,33 @@ def _mock_npm_shadowing_check(request: pytest.FixtureRequest, monkeypatch: pytes
 
 
 @pytest.fixture(autouse=True)
+def _mock_node_upgrade_planning(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make main()-flow unit tests plan the Node.js step as an installation.
+
+    The real planner runs the node of the machine running the suite and reads
+    the Node.js release index and schedule over the network, and a planned
+    upgrade would make Step 5 run winget, brew or apt-get. The replacement
+    plans ``install``, so Step 5 calls _ensure_nodejs() exactly as a run
+    without a Node.js upgrade does; the tests that care patch that function.
+    Both module objects are patched (see _mock_npm_shadowing_check). E2E tests
+    run the real planner against stub installations, release fixtures and a
+    recorder of the commands. Tests of the planner itself bypass this mock
+    through a module-level reference captured at import time.
+    """
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(
+            module, 'plan_node_upgrade',
+            lambda *_args, _module=module, **_kwargs: _module.NodeUpgradePlan('install', reason='not found'),
+        )
+
+
+@pytest.fixture(autouse=True)
 def _mock_hook_environment_preparation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make main()-flow unit tests prepare no hook environment.
 

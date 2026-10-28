@@ -246,13 +246,14 @@ class TestSummaryRendering:
         plan = setup_environment.InstallationPlan(
             config_name='Team', config_source='team.yaml', config_source_type='local', config_version=None,
             command_names=['team-2'], install_nodejs=True, dependency_commands={'common': ['npm install -g x']},
+            node_upgrade=setup_environment.NodeUpgradePlan('install', reason='not found'),
         )
 
         text = self._render(plan)
 
         assert 'from source' not in text
         assert 'Left to source profile' not in text
-        assert '  * Node.js: install if needed' in text
+        assert '  * Node.js: not found; Step 5 installs the newest LTS release' in text
         assert '  * Claude Code: install (version: latest)' in text
 
     def test_dependents_rows_carry_the_flag_the_children_receive(self) -> None:
@@ -341,7 +342,7 @@ class TestElevationReasonsOverride:
         args = setup_environment.argparse.Namespace(skip_install=False, no_admin=False, dry_run=False)
         with patch.object(setup_environment, 'admin_elevation_reasons', return_value=[]) as reasons:
             setup_environment.request_admin_elevation_if_needed({'x': 1}, args, skip_install=True)
-        reasons.assert_called_once_with({'x': 1}, args, skip_install=True, scheduled_update=None)
+        reasons.assert_called_once_with({'x': 1}, args, skip_install=True, scheduled_update=None, node_upgrade=None)
 
     def test_source_refresh_reasons_come_first_and_count_for_a_run_with_none_of_its_own(
         self, capsys: pytest.CaptureFixture[str],

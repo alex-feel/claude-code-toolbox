@@ -45,7 +45,9 @@ from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from datetime import UTC
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -111,7 +113,16 @@ FILE_REFERENCE_KEYS: frozenset[str] = frozenset({
 
 # Node.js installation constants (standalone -- no imports from install_claude.py)
 MIN_NODE_VERSION = '18.0.0'
-NODE_LTS_API = 'https://nodejs.org/dist/index.json'
+# Every Node.js release with its version and date, newest first
+NODE_RELEASE_INDEX_URL = 'https://nodejs.org/dist/index.json'
+# The start, LTS, maintenance and end dates of every Node.js release line
+NODE_RELEASE_SCHEDULE_URL = 'https://raw.githubusercontent.com/nodejs/Release/main/schedule.json'
+# Seconds one read of the release index or the release schedule may take
+NODE_RELEASE_FETCH_TIMEOUT_SECONDS = 30
+# The winget package of the official Node.js LTS installer
+NODE_LTS_WINGET_ID = 'OpenJS.NodeJS.LTS'
+# Seconds one probe of the installed Node.js package may take
+NODE_PROBE_TIMEOUT_SECONDS = 30
 
 # All valid top-level configuration keys for unknown key detection.
 # Claude Code settings.json content is declared via 'user-settings' and
@@ -934,6 +945,7 @@ def admin_elevation_reasons(
     *,
     skip_install: bool | None = None,
     scheduled_update: 'ScheduledUpdatePlan | None' = None,
+    node_upgrade: 'NodeUpgradePlan | None' = None,
 ) -> list[str]:
     """List the operations of this run that need administrator rights on Windows.
 
@@ -948,6 +960,9 @@ def admin_elevation_reasons(
             registering, re-registering or removing it needs an elevated
             run. Without the plan, a configuration that declares auto-update
             counts as needing it.
+        node_upgrade: What the run's Step 5 does with Node.js, when the run
+            has the step; an upgrade of the machine-wide installation of the
+            official installer needs an elevated run.
 
     Returns:
         One description per operation that needs elevation, in installation
@@ -960,6 +975,10 @@ def admin_elevation_reasons(
     if not (args.skip_install if skip_install is None else skip_install):
         # Installing Node.js and Git typically requires admin on Windows
         reasons.append('Installing Claude Code (includes Node.js and Git)')
+
+    node_reason = node_upgrade.elevation_reason() if node_upgrade is not None else None
+    if node_reason is not None:
+        reasons.append(node_reason)
 
     dependencies = config.get('dependencies', {})
     if dependencies:
@@ -990,6 +1009,7 @@ def request_admin_elevation_if_needed(
     skip_install: bool | None = None,
     source_refresh_reasons: Sequence[str] = (),
     scheduled_update: 'ScheduledUpdatePlan | None' = None,
+    node_upgrade: 'NodeUpgradePlan | None' = None,
 ) -> None:
     """Relaunch through UAC when this run needs administrator rights it lacks.
 
@@ -1011,6 +1031,8 @@ def request_admin_elevation_if_needed(
             repeating any of them.
         scheduled_update: The run's decision about the profile's daily update
             job (see admin_elevation_reasons()).
+        node_upgrade: What the run's Step 5 does with Node.js (see
+            admin_elevation_reasons()).
     """
     if args.no_admin:
         return
@@ -1018,7 +1040,7 @@ def request_admin_elevation_if_needed(
     reasons.extend(
         reason
         for reason in admin_elevation_reasons(
-            config, args, skip_install=skip_install, scheduled_update=scheduled_update,
+            config, args, skip_install=skip_install, scheduled_update=scheduled_update, node_upgrade=node_upgrade,
         )
         if reason not in reasons
     )
@@ -1200,6 +1222,9 @@ class InstallationPlan:
     # What this run's version pin does to the binary other profiles use
     pin_effect: str | None = None
     install_nodejs: bool = False
+    # What Step 5 does with the Node.js on the machine; None when the run
+    # does not run the Node.js step
+    node_upgrade: 'NodeUpgradePlan | None' = None
     skip_install: bool = False
     keep_installed_claude: bool = False
     claude_install_reason: str | None = None
@@ -9726,6 +9751,7 @@ def collect_machine_wide_writes(
     has_dependency_commands: bool,
     pin_effect: str | None = None,
     scheduled_update: 'ScheduledUpdatePlan | None' = None,
+    node_upgrade: 'NodeUpgradePlan | None' = None,
 ) -> list[str]:
     """Name every write of an isolated run that reaches beyond its profile.
 
@@ -9734,11 +9760,11 @@ def collect_machine_wide_writes(
     the one Claude Code binary and the installMethod the installer records
     in the base ~/.claude.json, a version pin holding that binary, the IDE
     extension Step 2 installs at that pin into every detected VS Code
-    family IDE, the machine-wide environment controls, the command wrappers
-    in ~/.local/bin, project-scope MCP registrations in the working
-    directory, files-to-download destinations outside the profile, and the
-    side effects of dependency commands. The summary lists them before
-    consent.
+    family IDE, the Node.js installation or upgrade of Step 5, the
+    machine-wide environment controls, the command wrappers in
+    ~/.local/bin, project-scope MCP registrations in the working directory,
+    files-to-download destinations outside the profile, and the side
+    effects of dependency commands. The summary lists them before consent.
 
     Args:
         profile_dir: The isolated profile directory.
@@ -9762,6 +9788,8 @@ def collect_machine_wide_writes(
         scheduled_update: The run's decision about the profile's daily
             update job, which lives in the OS scheduler and the toolbox
             state directory, or None.
+        node_upgrade: What Step 5 does with the one Node.js of the machine,
+            or None when the run does not run the Node.js step.
 
     Returns:
         One line per machine-wide write, in execution order.
@@ -9784,6 +9812,9 @@ def collect_machine_wide_writes(
                 f'IDE extension {IDE_EXTENSION_ID} {pinned_version}: installed into '
                 f'{", ".join(ide_clis)} (used by every profile)',
             )
+    node_row = node_upgrade.machine_wide_row() if node_upgrade is not None else None
+    if node_row is not None:
+        writes.append(node_row)
     for key, value in os_level_env.items():
         if value is None:
             writes.append(f'OS environment: delete {key}')
@@ -10128,8 +10159,11 @@ def display_installation_summary(
     if plan.install_nodejs:
         if source_work is not None:
             _print(f'  * Node.js: left to source profile "{source_work.source}"')
-        else:
-            _print('  * Node.js: install if needed')
+        elif plan.node_upgrade is not None:
+            node_head, *node_details = plan.node_upgrade.summary_lines()
+            _print(f'  * {node_head}')
+            for detail in node_details:
+                _print(f'    {detail.strip()}')
 
     # Settings
     settings_items: list[str] = []
@@ -11351,21 +11385,128 @@ def _compare_node_versions(current: str, required: str) -> bool:
     return current_tuple >= required_tuple
 
 
-def _get_node_version() -> str | None:
-    """Get installed Node.js version."""
-    node_path = shutil.which('node')
-    if not node_path:
+def _format_node_version(parts: tuple[int, int, int]) -> str:
+    """Render a parsed Node.js version as ``X.Y.Z``."""
+    return '.'.join(str(part) for part in parts)
+
+
+def _get_node_version(node_path: str | None = None) -> str | None:
+    """Get the version a Node.js executable reports.
+
+    Args:
+        node_path: The executable to run; None runs the node PATH resolves.
+
+    Returns:
+        The output of ``node --version`` (``vX.Y.Z``), or None when no node
+        resolves or it fails.
+    """
+    executable = node_path or shutil.which('node')
+    if not executable:
         return None
 
-    result = run_command([node_path, '--version'])
+    result = run_command([executable, '--version'])
     if result.returncode == 0:
         return result.stdout.strip()
     return None
 
 
+def _node_version_parts(node_path: str | None) -> tuple[int, int, int] | None:
+    """Return the parsed version a Node.js executable reports, or None when it reports none."""
+    return _parse_node_version(_get_node_version(node_path) or '')
+
+
+def _windows_nodejs_dir() -> Path:
+    """Return the directory the official Node.js installer uses on Windows: ``%ProgramFiles%\\nodejs``."""
+    return Path(os.environ.get('PROGRAMFILES', r'C:\Program Files')) / 'nodejs'
+
+
+def _windows_nodejs_dir_off_path() -> str | None:
+    """Return the official installer's directory when it exists and PATH lacks it (Windows only).
+
+    Step 5 puts that directory first on PATH, so its node runs ahead of every
+    other node PATH holds.
+
+    Returns:
+        The directory, or None off Windows, when it does not exist, or when
+        PATH already names it.
+    """
+    if platform.system() != 'Windows':
+        return None
+    nodejs_dir = str(_windows_nodejs_dir())
+    if not Path(nodejs_dir).exists() or nodejs_dir in os.environ.get('PATH', ''):
+        return None
+    return nodejs_dir
+
+
+def _prepend_windows_nodejs_dir(message: str) -> None:
+    """Put the official installer's directory first on PATH when it exists and PATH lacks it (Windows only).
+
+    Args:
+        message: The info line printed when PATH changes, with ``{path}``
+            standing for the directory.
+    """
+    nodejs_dir = _windows_nodejs_dir_off_path()
+    if nodejs_dir is None:
+        return
+    os.environ['PATH'] = f'{nodejs_dir};{os.environ.get("PATH", "")}'
+    info(message.format(path=nodejs_dir))
+
+
 def _check_winget_available() -> bool:
     """Check if winget is available on Windows."""
     return shutil.which('winget') is not None
+
+
+def _is_debian_family() -> bool:
+    """Whether this Linux machine is Debian or a distribution built on it, such as Ubuntu."""
+    return Path('/etc/debian_version').exists()
+
+
+def _run_nodejs_command(command: list[str], *, sudo: bool = False) -> subprocess.CompletedProcess[str] | None:
+    """Run one command that installs, upgrades or links Node.js.
+
+    Every command that changes the Node.js installation of the machine runs
+    here: winget, msiexec, the macOS installer, brew and apt-get. A sudo
+    command goes through the three-tier sudo fallback (see
+    _run_with_sudo_fallback()).
+
+    Args:
+        command: The command, without ``sudo``.
+        sudo: Whether the command runs with sudo.
+
+    Returns:
+        The completed process, or None when the command needs sudo and no
+        sudo mechanism is available.
+    """
+    if sudo:
+        return _run_with_sudo_fallback(command, timeout=600, tty_timeout=600)
+    return run_command(command)
+
+
+def _winget_nodejs_command(verb: str, *options: str) -> list[str]:
+    """Build the winget command that installs or upgrades the official Node.js LTS installer.
+
+    Args:
+        verb: ``install`` or ``upgrade``.
+        *options: Options that follow the package id, such as ``--version X.Y.Z``.
+
+    Returns:
+        The command, silent and without prompts.
+    """
+    return [
+        'winget',
+        verb,
+        '--id',
+        NODE_LTS_WINGET_ID,
+        '-e',
+        *options,
+        '--source',
+        'winget',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--silent',
+        '--disable-interactivity',
+    ]
 
 
 def _install_nodejs_winget(scope: str = 'user') -> bool:
@@ -11374,21 +11515,8 @@ def _install_nodejs_winget(scope: str = 'user') -> bool:
         return False
 
     info(f'Installing Node.js LTS via winget, scope: {scope}')
-    result = run_command([
-        'winget',
-        'install',
-        '--id',
-        'OpenJS.NodeJS.LTS',
-        '-e',
-        '--source',
-        'winget',
-        '--accept-package-agreements',
-        '--accept-source-agreements',
-        '--silent',
-        '--disable-interactivity',
-        '--scope',
-        scope,
-    ])
+    result = _run_nodejs_command([*_winget_nodejs_command('install'), '--scope', scope])
+    assert result is not None
 
     if result.returncode == 0:
         success('Node.js LTS installed via winget')
@@ -11397,150 +11525,194 @@ def _install_nodejs_winget(scope: str = 'user') -> bool:
     return False
 
 
+def _fetch_node_release_json(url: str) -> object:
+    """Read one JSON document the Node.js project publishes.
+
+    A certificate verification failure is retried once without
+    verification, as the installer download is. A response that is not
+    JSON raises ValueError, a malformed one http.client.HTTPException.
+
+    Args:
+        url: The document's URL.
+
+    Returns:
+        The parsed document.
+
+    Raises:
+        urllib.error.URLError: The document cannot be fetched.
+    """
+    try:
+        with urlopen(url, timeout=NODE_RELEASE_FETCH_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read())
+    except urllib.error.URLError as e:
+        if 'SSL' not in str(e) and 'certificate' not in str(e).lower():
+            raise
+        warning('SSL certificate verification failed, trying with unverified context')
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urlopen(url, context=ctx, timeout=NODE_RELEASE_FETCH_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read())
+
+
+def _nodejs_installer_url(version: str) -> str:
+    """Return the URL of the official Node.js installer of a release for this machine.
+
+    Windows takes the MSI of the machine's architecture, macOS the universal
+    installer package.
+
+    Args:
+        version: The release (``X.Y.Z``).
+
+    Returns:
+        The installer's URL on nodejs.org.
+
+    Raises:
+        ValueError: On a system the official installers do not cover.
+    """
+    system = platform.system()
+    if system == 'Windows':
+        machine = platform.machine().lower()
+        arch = 'x64' if machine in ['amd64', 'x86_64'] else 'x86'
+        return f'https://nodejs.org/dist/v{version}/node-v{version}-{arch}.msi'
+    if system == 'Darwin':
+        return f'https://nodejs.org/dist/v{version}/node-v{version}.pkg'
+    raise ValueError(f'the official Node.js installers cover Windows and macOS, not {system}')
+
+
+def _download_nodejs_installer(url: str) -> str:
+    """Download an official Node.js installer into a temporary file.
+
+    Args:
+        url: The installer's URL (_nodejs_installer_url()).
+
+    Returns:
+        The temporary file's path; the caller deletes the file.
+
+    Raises:
+        urllib.error.URLError: The download failed; the temporary file is deleted.
+    """
+    suffix = Path(urllib.parse.urlparse(url).path).suffix
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        temp_path = tmp.name
+
+    info(f'Downloading {url}')
+    try:
+        try:
+            urlretrieve(url, temp_path)
+        except urllib.error.URLError as e:
+            if 'SSL' not in str(e) and 'certificate' not in str(e).lower():
+                raise
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
+            urllib.request.install_opener(opener)
+            try:
+                urlretrieve(url, temp_path)
+            finally:
+                urllib.request.install_opener(saved_opener)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_path)
+        raise
+    return temp_path
+
+
+def _run_windows_msi(installer_path: str) -> bool:
+    """Run an official Node.js MSI silently, with a verbose log.
+
+    Args:
+        installer_path: The downloaded MSI.
+
+    Returns:
+        True when msiexec succeeded; otherwise the end of its log and the
+        troubleshooting steps are printed and the result is False.
+    """
+    log_dir = Path(tempfile.gettempdir()) / 'claude-installer-logs'
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / f'nodejs-install-{int(time.time())}.log'
+
+    info('Installing Node.js silently...')
+    result = _run_nodejs_command(['msiexec', '/i', installer_path, '/qn', '/norestart', '/l*v', str(log_file)])
+    assert result is not None
+    if result.returncode == 0:
+        return True
+
+    error(f'Node.js installer exited with code {result.returncode}')
+    if log_file.exists():
+        warning(f'Installation log available at: {log_file}')
+        try:
+            log_content = log_file.read_text(encoding='utf-16-le', errors='ignore')
+            lines = log_content.splitlines()
+            if lines:
+                error_context = '\n'.join(lines[-50:])
+                info('Last 50 lines of installation log:')
+                print(error_context)
+        except Exception as e:
+            warning(f'Could not read log file: {e}')
+
+    info('Troubleshooting steps:')
+    info('1. Check if Node.js is already partially installed')
+    info('2. Remove Node.js from Control Panel if present')
+    info('3. Clear Node.js entries from registry (regedit)')
+    info('4. Remove Node.js from PATH environment variable')
+    info('5. Rerun installer as Administrator')
+    return False
+
+
+def _macos_pkg_command_text(version: str) -> str:
+    """Spell the commands that install a release's official macOS installer package by hand."""
+    package = f'node-v{version}.pkg'
+    return f'curl -fLo {package} https://nodejs.org/dist/v{version}/{package} && sudo installer -pkg {package} -target /'
+
+
+def _newest_lts_release(index: object) -> str | None:
+    """Return the newest release the release index marks as LTS (``X.Y.Z``), or None when it marks none."""
+    if not isinstance(index, list):
+        return None
+    for entry in cast(list[object], index):
+        if not isinstance(entry, dict):
+            continue
+        release = cast(dict[str, Any], entry)
+        version = release.get('version')
+        if release.get('lts') and isinstance(version, str):
+            return version.lstrip('v')
+    return None
+
+
 def _install_nodejs_direct() -> bool:
-    """Install Node.js by direct download."""
+    """Install the newest Node.js LTS release with its official installer (Windows and macOS)."""
     try:
         info('Downloading Node.js LTS installer...')
-
-        # Get LTS version info (with SSL fallback)
-        try:
-            with urlopen(NODE_LTS_API) as response:
-                versions = json.loads(response.read())
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                with urlopen(NODE_LTS_API, context=ctx) as response:
-                    versions = json.loads(response.read())
-            else:
-                raise
-
-        lts_version = None
-        for v in versions:
-            if v.get('lts'):
-                lts_version = v['version']
-                break
-
+        lts_version = _newest_lts_release(_fetch_node_release_json(NODE_RELEASE_INDEX_URL))
         if not lts_version:
             raise Exception('Could not determine LTS version')
 
-        # Determine installer URL based on OS
-        system = platform.system()
-        machine = platform.machine().lower()
-
-        if system == 'Windows':
-            ext = 'msi'
-            arch = 'x64' if machine in ['amd64', 'x86_64'] else 'x86'
-            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-{arch}.{ext}'
-        elif system == 'Darwin':  # macOS
-            arch = 'arm64' if machine == 'arm64' else 'x64'
-            ext = 'pkg'
-            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-darwin-{arch}.{ext}'
-        else:  # Linux
-            arch = 'x64' if machine in ['amd64', 'x86_64'] else 'armv7l'
-            ext = 'tar.xz'
-            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-linux-{arch}.{ext}'
-
-        # Download installer
-        with tempfile.NamedTemporaryFile(suffix=f'.{ext}', delete=False) as tmp:
-            temp_path = tmp.name
-
-        info(f'Downloading {installer_url}')
+        installer_path = _download_nodejs_installer(_nodejs_installer_url(lts_version))
         try:
-            urlretrieve(installer_url, temp_path)
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
-                urllib.request.install_opener(opener)
-                try:
-                    urlretrieve(installer_url, temp_path)
-                finally:
-                    urllib.request.install_opener(saved_opener)
+            if platform.system() == 'Windows':
+                if not _run_windows_msi(installer_path):
+                    return False
+                _prepend_windows_nodejs_dir('Added {path} to PATH for current session')
             else:
-                raise
+                info('Installing Node.js (may require password)...')
+                result = _run_nodejs_command(['installer', '-pkg', installer_path, '-target', '/'], sudo=True)
+                if result is None:
+                    error('Cannot use sudo (non-interactive mode, no terminal available)')
+                    info(f'Run manually: {_macos_pkg_command_text(lts_version)}')
+                    return False
+                if result.returncode != 0:
+                    error(f'Node.js installer exited with code {result.returncode}')
+                    return False
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(installer_path)
 
-        # Install based on OS
-        if system == 'Windows':
-            # Create log directory for MSI installation
-            log_dir = Path(tempfile.gettempdir()) / 'claude-installer-logs'
-            log_dir.mkdir(exist_ok=True)
-            log_file = log_dir / f'nodejs-install-{int(time.time())}.log'
-
-            info('Installing Node.js silently...')
-
-            result = run_command([
-                'msiexec',
-                '/i',
-                temp_path,
-                '/qn',
-                '/norestart',
-                '/l*v',
-                str(log_file),
-            ])
-
-            # After MSI installation, add Node.js to PATH for current process
-            if result.returncode == 0:
-                nodejs_path = r'C:\Program Files\nodejs'
-                if Path(nodejs_path).exists():
-                    current_path = os.environ.get('PATH', '')
-                    if nodejs_path not in current_path:
-                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
-                        info(f'Added {nodejs_path} to PATH for current session')
-            else:
-                error(f'Node.js installer exited with code {result.returncode}')
-
-                if log_file.exists():
-                    warning(f'Installation log available at: {log_file}')
-                    try:
-                        log_content = log_file.read_text(encoding='utf-16-le', errors='ignore')
-                        lines = log_content.splitlines()
-                        if lines:
-                            error_context = '\n'.join(lines[-50:])
-                            info('Last 50 lines of installation log:')
-                            print(error_context)
-                    except Exception as e:
-                        warning(f'Could not read log file: {e}')
-
-                info('Troubleshooting steps:')
-                info('1. Check if Node.js is already partially installed')
-                info('2. Remove Node.js from Control Panel if present')
-                info('3. Clear Node.js entries from registry (regedit)')
-                info('4. Remove Node.js from PATH environment variable')
-                info('5. Rerun installer as Administrator')
-
-                return False
-        elif system == 'Darwin':
-            info('Installing Node.js (may require password)...')
-            sudo_result = _run_with_sudo_fallback(
-                ['installer', '-pkg', temp_path, '-target', '/'],
-                timeout=600,
-                tty_timeout=600,
-            )
-            if sudo_result is None:
-                error('Cannot use sudo (non-interactive mode, no terminal available)')
-                info(f'Run manually: sudo installer -pkg {temp_path} -target /')
-                return False
-            result = sudo_result
-        else:
-            error('Direct Linux installation not yet implemented - use package manager')
-            return False
-
-        # Clean up
-        with contextlib.suppress(Exception):
-            os.unlink(temp_path)
-
-        if result.returncode == 0:
-            success('Node.js installed via direct download')
-            return True
-        error(f'Node.js installer exited with code {result.returncode}')
-        return False
+        success('Node.js installed via direct download')
+        return True
 
     except Exception as e:
         error(f'Failed to install Node.js by download: {e}')
@@ -11551,23 +11723,26 @@ def _install_nodejs_homebrew() -> bool:
     """Install Node.js LTS using Homebrew on macOS."""
     if not shutil.which('brew'):
         info('Installing Homebrew first...')
-        result = run_command([
+        result = _run_nodejs_command([
             '/bin/bash',
             '-c',
             '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)',
         ])
+        assert result is not None
         if result.returncode != 0:
             return False
 
     info('Installing Node.js LTS (v22) using Homebrew...')
-    run_command(['brew', 'update'])
-    result = run_command(['brew', 'install', 'node@22'])
+    _run_nodejs_command(['brew', 'update'])
+    result = _run_nodejs_command(['brew', 'install', 'node@22'])
+    assert result is not None
 
     if result.returncode != 0:
         return False
 
     # node@22 is keg-only; create symlinks so node is available in PATH
-    link_result = run_command(['brew', 'link', '--force', '--overwrite', 'node@22'])
+    link_result = _run_nodejs_command(['brew', 'link', '--force', '--overwrite', 'node@22'])
+    assert link_result is not None
     if link_result.returncode != 0:
         warning('brew link failed for node@22; node may not be in PATH')
 
@@ -11580,18 +11755,13 @@ def _install_nodejs_apt() -> bool:
     info('Installing Node.js LTS for Debian/Ubuntu...')
 
     # Update and install prerequisites
-    _run_with_sudo_fallback(['apt-get', 'update'], timeout=600, tty_timeout=600)
-    _run_with_sudo_fallback(
-        ['apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'],
-        timeout=600,
-        tty_timeout=600,
-    )
+    _run_nodejs_command(['apt-get', 'update'], sudo=True)
+    _run_nodejs_command(['apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'], sudo=True)
 
     # Add NodeSource repository (the setup script must run as root)
-    result = _run_with_sudo_fallback(
+    result = _run_nodejs_command(
         ['-E', 'bash', '-c', 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -'],
-        timeout=600,
-        tty_timeout=600,
+        sudo=True,
     )
 
     if result is None:
@@ -11601,7 +11771,7 @@ def _install_nodejs_apt() -> bool:
         return False
 
     # Install Node.js
-    result = _run_with_sudo_fallback(['apt-get', 'install', '-y', 'nodejs'], timeout=600, tty_timeout=600)
+    result = _run_nodejs_command(['apt-get', 'install', '-y', 'nodejs'], sudo=True)
 
     if result is not None and result.returncode == 0:
         success('Node.js installed via NodeSource')
@@ -11634,13 +11804,7 @@ def _ensure_nodejs() -> bool:
     info('Checking Node.js installation...')
 
     # On Windows, check standard installation location even if not in PATH
-    if platform.system() == 'Windows':
-        nodejs_path = r'C:\Program Files\nodejs'
-        if Path(nodejs_path).exists():
-            current_path = os.environ.get('PATH', '')
-            if nodejs_path not in current_path:
-                os.environ['PATH'] = f'{nodejs_path};{current_path}'
-                info(f'Found Node.js at {nodejs_path}, adding to PATH')
+    _prepend_windows_nodejs_dir('Found Node.js at {path}, adding to PATH')
 
     current_version = _get_node_version()
     if current_version:
@@ -11661,42 +11825,20 @@ def _ensure_nodejs() -> bool:
         if _check_winget_available():
             if _install_nodejs_winget('user'):
                 time.sleep(2)
-                # Update PATH after winget installation
-                nodejs_path = r'C:\Program Files\nodejs'
-                if Path(nodejs_path).exists():
-                    current_path = os.environ.get('PATH', '')
-                    if nodejs_path not in current_path:
-                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
-                        info(f'Added {nodejs_path} to PATH after winget installation')
-
+                _prepend_windows_nodejs_dir('Added {path} to PATH after winget installation')
                 if _verify_nodejs_version():
                     return True
 
             if is_admin() and _install_nodejs_winget('machine'):
                 time.sleep(2)
-                # Update PATH after winget installation (machine scope)
-                nodejs_path = r'C:\Program Files\nodejs'
-                if Path(nodejs_path).exists():
-                    current_path = os.environ.get('PATH', '')
-                    if nodejs_path not in current_path:
-                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
-                        info(f'Added {nodejs_path} to PATH after winget installation')
-
+                _prepend_windows_nodejs_dir('Added {path} to PATH after winget installation')
                 if _verify_nodejs_version():
                     return True
 
         # Fallback to direct download
         if _install_nodejs_direct():
             time.sleep(2)
-            # After installation, check standard location on Windows
-            if platform.system() == 'Windows':
-                nodejs_path = r'C:\Program Files\nodejs'
-                if Path(nodejs_path).exists():
-                    current_path = os.environ.get('PATH', '')
-                    if nodejs_path not in current_path:
-                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
-                        info(f'Added {nodejs_path} to PATH after installation')
-
+            _prepend_windows_nodejs_dir('Added {path} to PATH after installation')
             if _verify_nodejs_version():
                 return True
 
@@ -11713,11 +11855,7 @@ def _ensure_nodejs() -> bool:
 
     else:  # Linux
         # Detect distro and use package manager
-        if (
-            Path('/etc/debian_version').exists()
-            and _install_nodejs_apt()
-            and _verify_nodejs_version()
-        ):
+        if _is_debian_family() and _install_nodejs_apt() and _verify_nodejs_version():
             return True
         warning('Unsupported Linux distribution - please install Node.js manually')
         return False
@@ -11726,39 +11864,739 @@ def _ensure_nodejs() -> bool:
     return False
 
 
-def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
-    """Install Node.js LTS if requested in configuration.
+# --- Node.js upgrade within the installed LTS line ---
 
-    Checks the 'install-nodejs' config parameter and installs Node.js
-    if set to True. Uses the standalone _ensure_nodejs() function which:
-    - Checks if Node.js is already installed (prevents duplicate installation)
-    - Tries multiple installation methods with fallbacks
-    - Updates PATH after installation
 
-    Args:
-        config: Environment configuration dictionary
+class NodeInstallation(NamedTuple):
+    """The node executable Step 5 checks.
+
+    Attributes:
+        path: The executable as PATH resolves it, with the official Windows
+            installer's directory first (see _windows_nodejs_dir_off_path()).
+        real_path: The file the path resolves to through symbolic links and
+            junctions, which tells who owns the installation.
+    """
+
+    path: str
+    real_path: str
+
+
+def _locate_node() -> NodeInstallation | None:
+    """Find the node executable Step 5 checks, without changing PATH.
 
     Returns:
-        True if Node.js is installed or not requested, False if installation fails.
+        The executable, or None when no node resolves.
     """
-    install_nodejs_flag = config.get('install-nodejs', False)
+    nodejs_dir = _windows_nodejs_dir_off_path()
+    path = (shutil.which('node', path=nodejs_dir) if nodejs_dir else None) or shutil.which('node')
+    if path is None:
+        return None
+    return NodeInstallation(path, os.path.realpath(path))
 
-    if not install_nodejs_flag:
-        info('Node.js installation not requested (install-nodejs: false or not set)')
-        return True
 
-    info('Node.js installation requested (install-nodejs: true)')
+def _node_release_today() -> date:
+    """Return the day against which the release schedule is read: today, in local time."""
+    return datetime.now(UTC).astimezone().date()
 
-    if not _ensure_nodejs():
-        error('Node.js installation failed')
+
+def _newest_node_releases(index: object) -> dict[int, tuple[int, int, int]]:
+    """Map each release line of the release index to its newest release.
+
+    Args:
+        index: The release index document (a list of ``{"version": "vX.Y.Z", ...}``).
+
+    Returns:
+        The newest release by major version; an entry without a parseable
+        version is left out.
+    """
+    newest: dict[int, tuple[int, int, int]] = {}
+    if not isinstance(index, list):
+        return newest
+    for entry in cast(list[object], index):
+        version = cast(dict[str, Any], entry).get('version') if isinstance(entry, dict) else None
+        parts = _parse_node_version(version) if isinstance(version, str) else None
+        if parts is not None and parts > newest.get(parts[0], (0, 0, 0)):
+            newest[parts[0]] = parts
+    return newest
+
+
+def _schedule_date(value: object) -> date | None:
+    """Parse one ISO date of the release schedule, or None when it is absent or malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+class NodeReleaseLine(NamedTuple):
+    """The dates of one release line in the Node.js release schedule.
+
+    Attributes:
+        major: The line's major version.
+        lts: The day the line becomes LTS, or None for a line that never
+            does (every odd-numbered line).
+        end: The day the line reaches end of life, or None when unknown.
+    """
+
+    major: int
+    lts: date | None
+    end: date | None
+
+    def supported(self, today: date) -> bool:
+        """Whether the line is an LTS line, and not past its end of life, on the day."""
+        return self.lts is not None and self.lts <= today and (self.end is None or today < self.end)
+
+
+def _node_release_lines(schedule: object) -> dict[int, NodeReleaseLine]:
+    """Read every release line of the release schedule.
+
+    Args:
+        schedule: The schedule document
+            (``{"v24": {"lts": "2025-10-28", "end": "2028-04-30", ...}, ...}``).
+
+    Returns:
+        The lines by major version; a key other than ``v<major>`` is left out.
+    """
+    lines: dict[int, NodeReleaseLine] = {}
+    if not isinstance(schedule, dict):
+        return lines
+    for key, value in cast(dict[object, object], schedule).items():
+        match = re.fullmatch(r'v(\d+)', str(key))
+        if match is None or not isinstance(value, dict):
+            continue
+        entry = cast(dict[str, Any], value)
+        major = int(match.group(1))
+        lines[major] = NodeReleaseLine(major, _schedule_date(entry.get('lts')), _schedule_date(entry.get('end')))
+    return lines
+
+
+def _node_line_unsupported_reason(
+    lines: dict[int, NodeReleaseLine], major: int, today: date, active: int | None,
+) -> str | None:
+    """Say why a release line is not a supported LTS line on the day.
+
+    Args:
+        lines: The release lines of the schedule.
+        major: The installed release line.
+        today: The day.
+        active: The newest supported LTS line, or None when none is.
+
+    Returns:
+        The reason, naming the active LTS line, or None for a supported LTS line.
+    """
+    line = lines.get(major)
+    if line is not None and line.supported(today):
+        return None
+    active_text = f'the active LTS line is {active}' if active is not None else 'no LTS line is active'
+    if line is None:
+        return f'the Node.js release schedule lists no release line {major}; {active_text}'
+    if line.lts is None and major % 2 == 1:
+        return f'{major} is an odd-numbered release line, which never becomes LTS; {active_text}'
+    if line.end is not None and today >= line.end:
+        return f'release line {major} reached end of life on {line.end.isoformat()}; {active_text}'
+    if line.lts is None:
+        return f'release line {major} has no LTS date; {active_text}'
+    return f'release line {major} becomes LTS on {line.lts.isoformat()}; {active_text}'
+
+
+class NodeVersionManager(NamedTuple):
+    """A Node.js version manager, whose installations Step 5 leaves to it.
+
+    Attributes:
+        name: The manager's name.
+        markers: Path components (compared casefolded) of the directories it
+            keeps its Node.js releases and shims in.
+        root_variable: The environment variable that moves those directories.
+        command: Its command that installs a release, with ``{version}``.
+        windows: True for a Windows-only tool, False for a tool that does
+            not run on Windows, None for one that runs everywhere.
+    """
+
+    name: str
+    markers: frozenset[str]
+    root_variable: str
+    command: str
+    windows: bool | None
+
+
+NODE_VERSION_MANAGERS: tuple[NodeVersionManager, ...] = (
+    NodeVersionManager('nvm', frozenset({'.nvm'}), 'NVM_DIR', 'nvm install {version}', windows=False),
+    NodeVersionManager(
+        'nvm-windows', frozenset({'nvm'}), 'NVM_HOME', 'nvm install {version}, then nvm use {version}', windows=True,
+    ),
+    NodeVersionManager(
+        'fnm', frozenset({'fnm', '.fnm'}), 'FNM_DIR', 'fnm install {version}, then fnm default {version}', windows=None,
+    ),
+    NodeVersionManager('volta', frozenset({'volta', '.volta'}), 'VOLTA_HOME', 'volta install node@{version}', windows=None),
+    NodeVersionManager('asdf', frozenset({'.asdf'}), 'ASDF_DATA_DIR', 'asdf install nodejs {version}', windows=None),
+    NodeVersionManager('mise', frozenset({'mise'}), 'MISE_DATA_DIR', 'mise use -g node@{version}', windows=None),
+)
+
+
+def _same_directory(first: str, second: str) -> bool:
+    """Whether two paths name one directory, compared as the filesystem resolves them."""
+    return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
+
+
+def _path_within(path: str, directory: str) -> bool:
+    """Whether a path lies inside a directory, compared as the filesystem resolves both."""
+    resolved_dir = os.path.normcase(os.path.realpath(directory))
+    resolved = os.path.normcase(os.path.realpath(path))
+    try:
+        return os.path.commonpath([resolved, resolved_dir]) == resolved_dir
+    except ValueError:
         return False
 
-    # Refresh PATH from registry on Windows to pick up new installation
-    if platform.system() == 'Windows':
-        refresh_path_from_registry()
 
-    success('Node.js is available')
-    return True
+def _node_version_manager(installation: NodeInstallation) -> NodeVersionManager | None:
+    """Return the version manager that owns the installation, or None.
+
+    A manager owns it when the executable, or the file it resolves to, lies
+    in one of the manager's directories: a path component the manager uses,
+    or the directory its root variable names.
+
+    Args:
+        installation: The node executable.
+
+    Returns:
+        The manager, or None for an installation no manager owns.
+    """
+    on_windows = platform.system() == 'Windows'
+    components = {
+        part.casefold() for path in (installation.path, installation.real_path) for part in Path(path).parts
+    }
+    for manager in NODE_VERSION_MANAGERS:
+        if manager.windows is not None and manager.windows != on_windows:
+            continue
+        root = os.environ.get(manager.root_variable)
+        if components & manager.markers or (root and _path_within(installation.real_path, root)):
+            return manager
+    return None
+
+
+def _debian_nodejs_package_version() -> str | None:
+    """Return the version of the installed nodejs Debian package, or None when none is installed."""
+    try:
+        result = run_command(['dpkg-query', '-W', '-f=${Version}', 'nodejs'], timeout=NODE_PROBE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _windows_nodejs_upgrade_text(version: str) -> str:
+    """Spell the command that upgrades the official Windows installation to a release by hand."""
+    if _check_winget_available():
+        return ' '.join(_winget_nodejs_command('upgrade', '--version', version))
+    url = _nodejs_installer_url(version)
+    return f'download {url} and run: msiexec /i {url.rsplit("/", 1)[-1]} /qn /norestart'
+
+
+NodeUpgradeChannel = Literal['windows-msi', 'homebrew', 'macos-pkg', 'nodesource']
+
+
+class NodeInstallationOwner(NamedTuple):
+    """Who provides an installed Node.js, and whether Step 5 can upgrade it.
+
+    Attributes:
+        channel: The channel an upgrade goes through, or None for an
+            installation Step 5 leaves alone.
+        description: Who provides the installation, for the messages.
+        remedy: The command that upgrades it by hand, when one is known.
+    """
+
+    channel: NodeUpgradeChannel | None
+    description: str
+    remedy: str | None
+
+
+def _node_installation_owner(installation: NodeInstallation, major: int, newest: str) -> NodeInstallationOwner:
+    """Tell who owns an installed Node.js from where its executable resolves.
+
+    A version manager owns its releases; on Windows the official installer
+    (the MSI winget's OpenJS.NodeJS.LTS installs too) owns
+    ``%ProgramFiles%\\nodejs``; Homebrew owns a release in its Cellar, which
+    Step 5 upgrades only for the formula of the installed line
+    (``node@<major>``); on macOS the official installer package owns
+    ``/usr/local/bin/node``; on Debian and Ubuntu the nodejs package owns
+    ``/usr/bin/node``, which Step 5 upgrades only when it comes from
+    NodeSource. Anything else is not recognized.
+
+    Args:
+        installation: The node executable.
+        major: Its release line.
+        newest: The newest release of that line, which the remedies name.
+
+    Returns:
+        The owner.
+    """
+    manager = _node_version_manager(installation)
+    if manager is not None:
+        return NodeInstallationOwner(
+            None, f'{manager.name} manages it ({installation.real_path})', manager.command.format(version=newest),
+        )
+    unrecognized = NodeInstallationOwner(
+        None, f'setup does not recognize the installation at {installation.real_path}', None,
+    )
+    real = Path(installation.real_path)
+    system = platform.system()
+    if system == 'Windows':
+        if _same_directory(str(real.parent), str(_windows_nodejs_dir())):
+            return NodeInstallationOwner(
+                'windows-msi', f'the official Node.js installer in {_windows_nodejs_dir()}',
+                _windows_nodejs_upgrade_text(newest),
+            )
+        return unrecognized
+    parts = real.parts
+    if 'Cellar' in parts[:-1]:
+        formula = parts[parts.index('Cellar') + 1]
+        if formula == f'node@{major}':
+            return NodeInstallationOwner('homebrew', f"Homebrew's node@{major}", f'brew upgrade node@{major}')
+        if formula == 'node':
+            return NodeInstallationOwner(
+                None,
+                f"Homebrew's node formula provides it ({real}), which follows the newest Node.js release "
+                'rather than an LTS line',
+                None,
+            )
+        return NodeInstallationOwner(None, f"Homebrew's {formula} formula provides it ({real})", None)
+    if system == 'Darwin' and real.as_posix() == '/usr/local/bin/node':
+        return NodeInstallationOwner('macos-pkg', 'the official Node.js installer package', _macos_pkg_command_text(newest))
+    if system == 'Linux' and real.parent.as_posix() == '/usr/bin' and _is_debian_family():
+        package = _debian_nodejs_package_version()
+        if package is not None and 'nodesource' in package:
+            return NodeInstallationOwner(
+                'nodesource', f'the NodeSource nodejs package {package}',
+                'sudo apt-get update && sudo apt-get install --only-upgrade -y nodejs',
+            )
+        if package is not None:
+            return NodeInstallationOwner(None, f"the distribution's nodejs package {package} provides it", None)
+    return unrecognized
+
+
+# The channels that install the exact release they are given; Homebrew and
+# the NodeSource repository install whatever release they hold
+_EXACT_RELEASE_NODE_CHANNELS: frozenset[str] = frozenset({'windows-msi', 'macos-pkg'})
+
+
+@dataclass(frozen=True)
+class NodeUpgradePlan:
+    """What Step 5 does with the Node.js on this machine when install-nodejs is set.
+
+    plan_node_upgrade() decides it once, before the elevation gate and the
+    installation summary: ``install`` when no Node.js 18 or newer runs (Step
+    5 installs the newest LTS release with _ensure_nodejs()); ``upgrade``
+    when the installed release line is a supported LTS line, a newer release
+    of that line exists, and the channel that owns the installation can
+    install it; ``current`` when the installed release is the newest of its
+    line; ``unchanged`` when Step 5 leaves an outdated Node.js alone, with the
+    reason.
+
+    Attributes:
+        action: The decision.
+        installed: The installed release (``X.Y.Z``), or None when none runs.
+        newest: The newest release of the installed line, when known.
+        executable: The node Step 5 checks (NodeInstallation.path).
+        location: The directory of the installation an upgrade writes.
+        channel: The channel an upgrade goes through.
+        reason: Why Step 5 installs, or leaves Node.js unchanged.
+        remedy: The command that performs the upgrade by hand: the one a
+            skipped or failed upgrade names, or a version manager's own.
+        notice: The info line naming a newer active LTS line.
+        elevation_unavailable: Whether the run cannot elevate for an upgrade
+            that needs it (--no-admin in a process without administrator
+            rights).
+    """
+
+    action: Literal['install', 'upgrade', 'current', 'unchanged']
+    installed: str | None = None
+    newest: str | None = None
+    executable: str | None = None
+    location: str | None = None
+    channel: NodeUpgradeChannel | None = None
+    reason: str | None = None
+    remedy: str | None = None
+    notice: str | None = None
+    elevation_unavailable: bool = False
+
+    @property
+    def needs_elevation(self) -> bool:
+        """Whether the upgrade writes the machine-wide Windows installation, which needs an elevated run."""
+        return self.action == 'upgrade' and self.channel == 'windows-msi'
+
+    def channel_text(self) -> str:
+        """Name how the upgrade runs."""
+        major = (self.newest or '').split('.')[0]
+        return {
+            'windows-msi': f'winget {NODE_LTS_WINGET_ID} or the official installer',
+            'homebrew': f'brew upgrade node@{major}',
+            'macos-pkg': 'the official installer package',
+            'nodesource': 'apt-get from the NodeSource repository',
+        }.get(self.channel or '', '')
+
+    def channel_source(self) -> str:
+        """Name where a channel that installs whatever release it holds takes the release from."""
+        major = (self.newest or '').split('.')[0]
+        return f"Homebrew's node@{major}" if self.channel == 'homebrew' else 'the NodeSource repository'
+
+    def summary_lines(self) -> list[str]:
+        """Render the installation summary rows: the decision, then the remedy and the notice."""
+        if self.action == 'install':
+            lines = [f'Node.js: {self.reason}; Step 5 installs the newest LTS release']
+        elif self.action == 'upgrade':
+            lines = [f'Node.js: {self.installed} -> {self.newest} through {self.channel_text()}']
+            if self.needs_elevation:
+                lines.append(f'  machine-wide installation in {self.location}, which needs an elevated run')
+            if self.elevation_unavailable:
+                lines.append(
+                    f'  skipped: --no-admin keeps this run without administrator rights; run from an elevated '
+                    f'terminal: {self.remedy}',
+                )
+        elif self.action == 'current':
+            lines = [f'Node.js: {self.installed} (the newest release of its LTS line)']
+        else:
+            lines = [f'Node.js: {self.installed} unchanged ({self.reason})']
+            if self.remedy:
+                lines.append(f'  upgrade it with: {self.remedy}')
+        if self.notice:
+            lines.append(f'  {self.notice}')
+        return lines
+
+    def elevation_reason(self) -> str | None:
+        """Describe the upgrade for the elevation banner, when it needs administrator rights."""
+        if not self.needs_elevation:
+            return None
+        return f'Upgrading Node.js {self.installed} -> {self.newest} (machine-wide installation in {self.location})'
+
+    def machine_wide_row(self) -> str | None:
+        """Describe the installation or upgrade among the machine-wide writes of an isolated run."""
+        if self.action == 'install':
+            return 'Node.js: install the newest LTS release (used by every profile)'
+        if self.action == 'upgrade':
+            return f'Node.js: upgrade {self.installed} -> {self.newest} through {self.channel_text()} (used by every profile)'
+        return None
+
+
+def plan_node_upgrade(*, today: date | None = None) -> NodeUpgradePlan:
+    """Decide what Step 5 does with the Node.js on this machine.
+
+    The node Step 5 checks (_locate_node()) runs ``node --version``. Without
+    Node.js 18 or newer the plan installs, as _ensure_nodejs() does. Otherwise
+    the release index and the release schedule of the Node.js project decide:
+    a release line that is not a supported LTS line on the day (an
+    odd-numbered line, a line past its end of life, a line not yet LTS)
+    stays as it is, as does a release that is already the newest of its
+    line. An older release is upgraded to the newest of its line when the
+    channel that owns the installation can do it (see
+    _node_installation_owner()); a version manager's or an unrecognized
+    installation stays as it is. A newer active LTS line is named in a
+    notice and never installed. An index or schedule that cannot be read
+    leaves Node.js as it is.
+
+    Args:
+        today: The day the schedule is read against; None reads
+            _node_release_today().
+
+    Returns:
+        The plan.
+    """
+    installation = _locate_node()
+    if installation is None:
+        return NodeUpgradePlan('install', reason='not found')
+    parts = _node_version_parts(installation.path)
+    if parts is None:
+        return NodeUpgradePlan('install', executable=installation.path, reason=f'{installation.path} reports no version')
+    installed = _format_node_version(parts)
+    if not _compare_node_versions(installed, MIN_NODE_VERSION):
+        return NodeUpgradePlan(
+            'install', installed=installed, executable=installation.path,
+            reason=f'{installed} is older than {MIN_NODE_VERSION}',
+        )
+
+    documents: list[object] = []
+    for url, name in ((NODE_RELEASE_INDEX_URL, 'index'), (NODE_RELEASE_SCHEDULE_URL, 'schedule')):
+        try:
+            documents.append(_fetch_node_release_json(url))
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            return NodeUpgradePlan(
+                'unchanged', installed=installed, executable=installation.path,
+                reason=f'the Node.js release {name} at {url} could not be read: {e}',
+            )
+    index, schedule = documents
+    lines = _node_release_lines(schedule)
+    day = today or _node_release_today()
+    active = max((line.major for line in lines.values() if line.supported(day)), default=None)
+    major = parts[0]
+    unsupported = _node_line_unsupported_reason(lines, major, day, active)
+    if unsupported is not None:
+        return NodeUpgradePlan('unchanged', installed=installed, executable=installation.path, reason=unsupported)
+    newest_parts = _newest_node_releases(index).get(major)
+    if newest_parts is None:
+        return NodeUpgradePlan(
+            'unchanged', installed=installed, executable=installation.path,
+            reason=f'the Node.js release index lists no release of line {major}',
+        )
+    newest = _format_node_version(newest_parts)
+    end = lines[major].end
+    notice = None
+    if active is not None and active > major:
+        support = f'supported until {end.isoformat()}' if end is not None else 'still supported'
+        notice = f'Node.js {active} is the active LTS line; {major} is {support}'
+    if parts >= newest_parts:
+        return NodeUpgradePlan(
+            'current', installed=installed, newest=newest, executable=installation.path, notice=notice,
+        )
+    owner = _node_installation_owner(installation, major, newest)
+    if owner.channel is None:
+        return NodeUpgradePlan(
+            'unchanged', installed=installed, newest=newest, executable=installation.path,
+            reason=f'{owner.description}; the newest release of line {major} is {newest}',
+            remedy=owner.remedy, notice=notice,
+        )
+    return NodeUpgradePlan(
+        'upgrade', installed=installed, newest=newest, executable=installation.path,
+        location=str(Path(installation.real_path).parent), channel=owner.channel, remedy=owner.remedy, notice=notice,
+    )
+
+
+class _NodeChannelOutcome(NamedTuple):
+    """How one upgrade channel ended.
+
+    Attributes:
+        ok: Whether the channel's commands succeeded.
+        detail: Why it failed.
+        sudo_unavailable: Whether it needed sudo and no sudo mechanism was
+            available, so nothing ran.
+    """
+
+    ok: bool
+    detail: str = ''
+    sudo_unavailable: bool = False
+
+
+def _node_release_reached(plan: NodeUpgradePlan) -> bool:
+    """Whether the node Step 5 checks reports the plan's target release or a newer one."""
+    parts = _node_version_parts(plan.executable)
+    target = _parse_node_version(plan.newest or '')
+    return parts is not None and target is not None and parts >= target
+
+
+def _upgrade_nodejs_windows(plan: NodeUpgradePlan) -> _NodeChannelOutcome:
+    """Upgrade the official Windows installation: winget pinned to the release, else the release's MSI."""
+    assert plan.newest is not None
+    if _check_winget_available():
+        result = _run_nodejs_command(_winget_nodejs_command('upgrade', '--version', plan.newest))
+        assert result is not None
+        if result.returncode == 0 and _node_release_reached(plan):
+            return _NodeChannelOutcome(True)
+        if result.returncode == 0:
+            warning(f'winget finished, but Node.js does not report {plan.newest}; trying the official installer')
+        else:
+            warning(f'winget exited with code {result.returncode}; trying the official installer')
+    url = _nodejs_installer_url(plan.newest)
+    try:
+        installer_path = _download_nodejs_installer(url)
+    except (OSError, http.client.HTTPException) as e:
+        return _NodeChannelOutcome(False, f'the official installer could not be downloaded from {url}: {e}')
+    try:
+        if _run_windows_msi(installer_path):
+            return _NodeChannelOutcome(True)
+        return _NodeChannelOutcome(False, 'the official installer failed (its log is shown above)')
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(installer_path)
+
+
+def _upgrade_nodejs_macos_pkg(plan: NodeUpgradePlan) -> _NodeChannelOutcome:
+    """Upgrade the official macOS installation with the release's installer package."""
+    assert plan.newest is not None
+    url = _nodejs_installer_url(plan.newest)
+    try:
+        installer_path = _download_nodejs_installer(url)
+    except (OSError, http.client.HTTPException) as e:
+        return _NodeChannelOutcome(False, f'the official installer could not be downloaded from {url}: {e}')
+    try:
+        result = _run_nodejs_command(['installer', '-pkg', installer_path, '-target', '/'], sudo=True)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(installer_path)
+    if result is None:
+        return _NodeChannelOutcome(False, sudo_unavailable=True)
+    if result.returncode != 0:
+        return _NodeChannelOutcome(False, f'the installer exited with code {result.returncode}')
+    return _NodeChannelOutcome(True)
+
+
+def _upgrade_nodejs_homebrew(plan: NodeUpgradePlan) -> _NodeChannelOutcome:
+    """Upgrade Homebrew's formula of the installed release line."""
+    major = (plan.newest or '').split('.')[0]
+    result = _run_nodejs_command(['brew', 'upgrade', f'node@{major}'])
+    assert result is not None
+    if result.returncode != 0:
+        return _NodeChannelOutcome(False, f'brew exited with code {result.returncode}')
+    return _NodeChannelOutcome(True)
+
+
+def _upgrade_nodejs_nodesource(_plan: NodeUpgradePlan) -> _NodeChannelOutcome:
+    """Upgrade the NodeSource nodejs package within the release line its repository serves."""
+    for command in (['apt-get', 'update'], ['apt-get', 'install', '--only-upgrade', '-y', 'nodejs']):
+        result = _run_nodejs_command(command, sudo=True)
+        if result is None:
+            return _NodeChannelOutcome(False, sudo_unavailable=True)
+        if result.returncode != 0:
+            return _NodeChannelOutcome(False, f'{" ".join(command)} exited with code {result.returncode}')
+    return _NodeChannelOutcome(True)
+
+
+_NODE_UPGRADE_CHANNELS: dict[str, Callable[[NodeUpgradePlan], _NodeChannelOutcome]] = {
+    'windows-msi': _upgrade_nodejs_windows,
+    'macos-pkg': _upgrade_nodejs_macos_pkg,
+    'homebrew': _upgrade_nodejs_homebrew,
+    'nodesource': _upgrade_nodejs_nodesource,
+}
+
+
+class NodeStepResult(NamedTuple):
+    """What Step 5 did with Node.js.
+
+    Attributes:
+        available: Whether Node.js runs after the step; False stops the
+            setup like a failed installation.
+        line: The completion summary row, or None when the step reports none.
+        failure: The errors-block entry of a failed upgrade, after which the
+            previous Node.js still runs.
+        retry: The command that retries the failed upgrade.
+    """
+
+    available: bool
+    line: str | None = None
+    failure: str | None = None
+    retry: str | None = None
+
+
+def _upgrade_nodejs(plan: NodeUpgradePlan) -> NodeStepResult:
+    """Run the planned upgrade through its channel and check the release node reports afterwards.
+
+    An upgrade of the machine-wide Windows installation in a process without
+    administrator rights, and one that needs sudo where no sudo mechanism is
+    available, is skipped with the command to run by hand. A channel that
+    fails, or an exact-release channel after which node reports another
+    release, is a failed upgrade; Homebrew and the NodeSource repository may
+    not hold the newest release yet, which is reported and is no failure.
+
+    Args:
+        plan: The ``upgrade`` plan.
+
+    Returns:
+        The step's result.
+    """
+    assert plan.channel is not None
+    assert plan.newest is not None
+    assert plan.installed is not None
+    target = _parse_node_version(plan.newest)
+    assert target is not None
+    before = _node_version_parts(plan.executable)
+    if before is not None and before >= target:
+        current = _format_node_version(before)
+        success(f'Node.js {current} is the newest release of its LTS line')
+        return NodeStepResult(True, f'Node.js: {current} (the newest release of its LTS line)')
+    installed = _format_node_version(before) if before is not None else plan.installed
+    transition = f'{installed} -> {plan.newest}'
+    if plan.needs_elevation and not is_admin():
+        warning(
+            f'Node.js upgrade {transition} skipped: the installation in {plan.location} is machine-wide '
+            'and this run has no administrator rights',
+        )
+        info(f'Run it from an elevated terminal: {plan.remedy}')
+        return NodeStepResult(
+            True, f'Node.js: {installed} unchanged (the upgrade to {plan.newest} needs an elevated run: {plan.remedy})',
+        )
+
+    info(f'Upgrading Node.js {transition} through {plan.channel_text()}...')
+    outcome = _NODE_UPGRADE_CHANNELS[plan.channel](plan)
+    if outcome.sudo_unavailable:
+        warning(f'Node.js upgrade {transition} skipped: sudo cannot prompt for a password in this run')
+        info(f'Run it yourself: {plan.remedy}')
+        return NodeStepResult(
+            True, f'Node.js: {installed} unchanged (the upgrade to {plan.newest} needs sudo: {plan.remedy})',
+        )
+    after = _node_version_parts(plan.executable)
+    if after is None:
+        error(f'Node.js does not run after the upgrade attempt ({plan.executable})')
+        return NodeStepResult(False)
+    reported = _format_node_version(after)
+    if not outcome.ok or (after < target and plan.channel in _EXACT_RELEASE_NODE_CHANNELS):
+        detail = outcome.detail if not outcome.ok else f'the upgrade finished, but Node.js reports {reported}'
+        error(f'Node.js upgrade {transition} failed: {detail}')
+        retry = f'from an elevated terminal: {plan.remedy}' if plan.needs_elevation else plan.remedy
+        return NodeStepResult(
+            True,
+            failure=f'Node.js {transition} through {plan.channel_text()}: {detail}; Node.js {reported} still runs',
+            retry=retry,
+        )
+    if after >= target:
+        success(f'Node.js upgraded: {installed} -> {reported}')
+        return NodeStepResult(True, f'Node.js: {installed} -> {reported}')
+    source = plan.channel_source()
+    if before is None or after > before:
+        warning(f'Node.js upgraded to {reported}: {source} has no {plan.newest} yet')
+        return NodeStepResult(True, f'Node.js: {installed} -> {reported} ({source} has no {plan.newest} yet)')
+    warning(f'Node.js {installed} left unchanged: {source} has no {plan.newest} yet')
+    return NodeStepResult(True, f'Node.js: {installed} unchanged ({source} has no {plan.newest} yet)')
+
+
+def install_nodejs_if_requested(config: dict[str, Any], plan: NodeUpgradePlan | None) -> NodeStepResult:
+    """Install Node.js, or keep the installed one on the newest release of its LTS line, when requested.
+
+    Does nothing without ``install-nodejs: true``. Otherwise follows the plan
+    main() decided before the summary: ``install`` runs the standalone
+    _ensure_nodejs() (which finds a Node.js 18 or newer, or installs the
+    newest LTS release with fallbacks, and updates PATH); ``current`` and
+    ``unchanged`` change nothing and say why; ``upgrade`` runs
+    _upgrade_nodejs(). A newer active LTS line is named and never installed.
+
+    Args:
+        config: Environment configuration dictionary.
+        plan: The plan_node_upgrade() decision, which main() makes whenever
+            install-nodejs is set.
+
+    Returns:
+        The step's result.
+    """
+    if not config.get('install-nodejs', False):
+        info('Node.js installation not requested (install-nodejs: false or not set)')
+        return NodeStepResult(True)
+
+    info('Node.js installation requested (install-nodejs: true)')
+    assert plan is not None, 'main() decides the Node.js plan whenever install-nodejs is set'
+
+    if plan.action == 'install':
+        if not _ensure_nodejs():
+            error('Node.js installation failed')
+            return NodeStepResult(False)
+        # Refresh PATH from registry on Windows to pick up new installation
+        if platform.system() == 'Windows':
+            refresh_path_from_registry()
+        success('Node.js is available')
+        parts = _node_version_parts(None)
+        return NodeStepResult(True, f'Node.js: {_format_node_version(parts)}' if parts is not None else None)
+
+    # Step 6 runs npm through the same node the plan checked
+    _prepend_windows_nodejs_dir('Found Node.js at {path}, adding to PATH')
+    if plan.notice:
+        info(plan.notice)
+    if plan.action == 'current':
+        success(f'Node.js {plan.installed} is the newest release of its LTS line')
+        return NodeStepResult(True, f'Node.js: {plan.installed} (the newest release of its LTS line)')
+    if plan.action == 'unchanged':
+        warning(f'Node.js {plan.installed} left unchanged: {plan.reason}')
+        if plan.remedy:
+            info(f'Upgrade it with: {plan.remedy}')
+        return NodeStepResult(True, f'Node.js: {plan.installed} unchanged ({plan.reason})')
+    return _upgrade_nodejs(plan)
 
 
 def needs_sudo_for_npm() -> bool:
@@ -22051,17 +22889,22 @@ class SourceRefresh(NamedTuple):
             *([RUN_ALL_COMMANDS_FLAG] if self.run_all_commands else []),
         ]
 
-    def elevation_reasons(self, home_dir: Path, profile_names: Iterable[str]) -> list[str]:
+    def elevation_reasons(
+        self, home_dir: Path, profile_names: Iterable[str], *, node_upgrade: 'NodeUpgradePlan | None' = None,
+    ) -> list[str]:
         """List what the source's run needs administrator rights for.
 
         The source's run starts with ``--no-admin``, because the dependent's
         run decides elevation for both: its Claude Code install unless
-        ``--skip-install``, and every command of the refreshed snapshot.
+        ``--skip-install``, the Node.js upgrade of its Step 5, and every
+        command of the refreshed snapshot.
 
         Args:
             home_dir: The user's home directory.
             profile_names: The directory names whose paths a rewrite keeps as
                 written (the source's name and the installed profiles).
+            node_upgrade: What the source's Step 5 does with Node.js, when
+                the snapshot sets install-nodejs.
 
         Returns:
             The reasons, in installation order; empty off Windows.
@@ -22070,7 +22913,9 @@ class SourceRefresh(NamedTuple):
             self.snapshot, source=self.source, directory=self.directory, home_dir=home_dir,
             profile_names=profile_names,
         )
-        return admin_elevation_reasons(config, argparse.Namespace(skip_install=self.skip_install))
+        return admin_elevation_reasons(
+            config, argparse.Namespace(skip_install=self.skip_install), node_upgrade=node_upgrade,
+        )
 
     def rows(self) -> list[str]:
         """Render the rows of the installation summary's Source refresh block."""
@@ -22373,7 +23218,11 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     when its run would register, re-register or remove it: the plan is
     decided here from the snapshot, the manifest and the job record, the
     way the child's own run decides it, so an unchanged job prompts for
-    nothing.
+    nothing. The machine has one Node.js, so it is checked once, for the
+    first profile whose run has the Node.js step (install-nodejs set, and
+    no content link that leaves the step to its source unless
+    --run-all-commands), and its upgrade counts when it writes the
+    machine-wide installation.
 
     Args:
         profiles: The installed profiles the run refreshes.
@@ -22390,6 +23239,7 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
         return admin_elevation_reasons({}, args)
     reasons: list[str] = []
     scheduler_platform = default_scheduler_platform()
+    node_upgrade: NodeUpgradePlan | None = None
     for profile in profiles:
         snapshot = read_resolved_config_snapshot(profile.directory)
         if snapshot is None or validate_auto_update(snapshot):
@@ -22406,8 +23256,15 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
             manifest=profile.manifest,
             scheduled_run=False,
         )
+        runs_nodejs_step = bool(snapshot.get('install-nodejs')) and (
+            args.run_all_commands or content_link_source(profile.manifest) is None
+        )
+        if runs_nodejs_step and node_upgrade is None:
+            node_upgrade = plan_node_upgrade()
         reasons.extend(
-            reason for reason in admin_elevation_reasons(snapshot, args, scheduled_update=scheduled_update)
+            reason for reason in admin_elevation_reasons(
+                snapshot, args, scheduled_update=scheduled_update, node_upgrade=node_upgrade if runs_nodejs_step else None,
+            )
             if reason not in reasons
         )
     return reasons
@@ -23154,13 +24011,28 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             scheduled_run=args.scheduled_run,
         )
 
+        # What Step 5 does with the one Node.js of the machine, decided once
+        # before the elevation gate (an upgrade of the machine-wide Windows
+        # installation needs an elevated run) and the summary, which names
+        # it. A run that leaves Node.js to its source decides it only for the
+        # refresh of a stale source, whose run has the step
+        runs_nodejs_step = bool(config.get('install-nodejs')) and not leaves_work_to_source
+        source_runs_nodejs_step = source_refresh is not None and bool(source_refresh.snapshot.get('install-nodejs'))
+        node_upgrade_plan = plan_node_upgrade() if runs_nodejs_step or source_runs_nodejs_step else None
+        if node_upgrade_plan is not None and node_upgrade_plan.needs_elevation and args.no_admin and not is_admin():
+            node_upgrade_plan = replace(node_upgrade_plan, elevation_unavailable=True)
+
         # Relaunch elevated on Windows when this configuration needs admin
         # rights. The refresh of a stale source starts with --no-admin, so
         # this run decides elevation for the source's run too
         request_admin_elevation_if_needed(
             config, args, skip_install=skip_claude_install, scheduled_update=scheduled_update_plan,
+            node_upgrade=node_upgrade_plan if runs_nodejs_step else None,
             source_refresh_reasons=(
-                source_refresh.elevation_reasons(home_dir, source_profile_names) if source_refresh is not None else ()
+                source_refresh.elevation_reasons(
+                    home_dir, source_profile_names,
+                    node_upgrade=node_upgrade_plan if source_runs_nodejs_step else None,
+                ) if source_refresh is not None else ()
             ),
         )
 
@@ -23460,6 +24332,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             plan.scheduled_update_warnings.extend(unattended_credential_warnings(scheduler_platform))
         plan.source_work = source_work
         plan.run_all_commands = args.run_all_commands
+        plan.node_upgrade = node_upgrade_plan if runs_nodejs_step else None
 
         # A pin holds or moves the one binary the other installed profiles
         # use, so the summary names them; the installed version is probed
@@ -23499,6 +24372,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 has_dependency_commands=bool(plan.dependency_commands),
                 pin_effect=plan.pin_effect,
                 scheduled_update=scheduled_update_plan,
+                node_upgrade=plan.node_upgrade,
             )
         plan.destination_warnings = shared_destination_warnings(
             plan.files_to_download, config_source, base_url,
@@ -23739,16 +24613,21 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         else:
             info('No custom files to download')
 
-        # Step 5: Install Node.js if requested (before dependencies; a run that
-        # leaves the work to its source installs nothing here), then warn, before
-        # the Step 6 dependency commands run npm, when an older npm in the global
-        # prefix runs instead of the npm Node.js bundles
+        # Step 5: Install Node.js if requested, or keep the installed one on
+        # the newest release of its LTS line, as planned before the summary
+        # (before dependencies; a run that leaves the work to its source does
+        # nothing here), then warn, before the Step 6 dependency commands run
+        # npm, when an older npm in the global prefix runs instead of the npm
+        # Node.js bundles
         print()
         print(f'{Colors.CYAN}Step 5: Checking Node.js installation...{Colors.NC}')
         if source_work is not None and source_work.install_nodejs:
             info(f'Node.js installation requested (install-nodejs: true); left to source profile "{source_work.source}"')
-        elif not install_nodejs_if_requested(config):
-            raise Exception('Node.js installation failed')
+            node_step = NodeStepResult(True)
+        else:
+            node_step = install_nodejs_if_requested(config, plan.node_upgrade)
+            if not node_step.available:
+                raise Exception('Node.js installation failed')
         shadowing_npm = report_shadowing_global_npm()
 
         # Step 6: Install dependencies (after Claude Code which provides
@@ -24257,11 +25136,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
-        # Check for download, dependency, hook environment, dependent and scheduled-job failures and report accordingly
+        # Check for download, Node.js upgrade, dependency, hook environment, dependent and scheduled-job
+        # failures and report accordingly
         dependent_failures = [result for result in dependent_results if result.code != 0]
         if (
-            download_failures or dependency_failures or hook_environments.failed or dependent_failures
-            or source_refresh_code or scheduled_update_failure
+            download_failures or node_step.failure or dependency_failures or hook_environments.failed
+            or dependent_failures or source_refresh_code or scheduled_update_failure
         ):
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
@@ -24279,6 +25159,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     assert dependent_of is not None
                     for line in snapshot_origin_lines(dependent_of):
                         error(line)
+                print()
+            if node_step.failure:
+                error('The Node.js upgrade failed:')
+                error(f'  - {node_step.failure}')
+                if node_step.retry:
+                    error(f'    retry: {node_step.retry}')
                 print()
             if dependency_failures:
                 error('The following dependencies failed to install:')
@@ -24366,6 +25252,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             )
             for row in source_work_rows(source_work):
                 print(f'       - {row}')
+        if node_step.line:
+            print(f'   * {node_step.line}')
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
         print(f'   * Rules: {len(rules)} installed')

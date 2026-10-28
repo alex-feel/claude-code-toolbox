@@ -26,6 +26,12 @@ tests/e2e/hook_sync_recorder.py), the child records the uv commands that
 prepare its hook environments into that file instead of running uv, so the
 parent test sees what every child would have run.
 
+When the environment names a Node.js command record file (see
+tests/e2e/node_upgrade_support.py), the child reads the Node.js release
+documents from the fixtures, checks only a node inside the test's
+temporary directory, and records the Node.js commands and installer
+downloads of its Step 5 into that file instead of running them.
+
 Setting SIMULATE_NON_ADMIN_VARIABLE to ``1`` makes the child behave as a
 process without an administrator token whatever token it actually holds:
 is_admin() reports False, and the elevation request the main() gate makes
@@ -52,6 +58,9 @@ from tests.e2e.fake_scheduler import FakeScheduler
 from tests.e2e.fake_scheduler import fake_platform
 from tests.e2e.hook_sync_recorder import RECORDER_VARIABLE
 from tests.e2e.hook_sync_recorder import HookSyncRecorder
+from tests.e2e.node_upgrade_support import RECORD_VARIABLE as NODE_RECORD_VARIABLE
+from tests.e2e.node_upgrade_support import NodeCommandRecorder
+from tests.e2e.node_upgrade_support import replacements as node_upgrade_replacements
 
 SIMULATE_NON_ADMIN_VARIABLE = 'CCT_E2E_SIMULATE_NON_ADMIN'
 ELEVATION_MARKER = '[setup_child] elevation requested by the administrator gate'
@@ -102,6 +111,13 @@ def main() -> None:
             stack.enter_context(patch.object(
                 setup_environment, '_run_hook_environment_uv', HookSyncRecorder(Path(record)),
             ))
+        # The Node.js step the parent test confined: release documents from the
+        # fixtures, only a node of the test checked, every command recorded
+        node_record = os.environ.get(NODE_RECORD_VARIABLE)
+        if node_record:
+            replacements = node_upgrade_replacements(setup_environment, NodeCommandRecorder(Path(node_record)))
+            for name, value in replacements.items():
+                stack.enter_context(patch.object(setup_environment, name, value))
         if os.environ.get(SIMULATE_NON_ADMIN_VARIABLE) == '1':
             stack.enter_context(patch.object(setup_environment, 'is_admin', lambda: False))
             stack.enter_context(patch.object(setup_environment, 'request_admin_elevation', _refuse_elevation))
