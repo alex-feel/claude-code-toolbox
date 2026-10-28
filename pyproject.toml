@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pyyaml>=6.0.2",
+    "pyyaml>=6.0.3",
     "questionary>=2.0.0",
 ]
 
@@ -57,16 +57,16 @@ package = false
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.0.1",
-    "pydantic>=2.10.3",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.25.0",
-    "pytest-cov>=6.0.0",
-    "pytest-mock>=3.14.0",
+    "pre-commit>=4.7.0",
+    "pydantic>=2.14.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.17.0",
     "pytest-timeout>=2.3.1",
     "questionary>=2.0.0",
-    "types-PyYAML>=6.0.12",
-    "ty>=0.0.28",
+    "types-PyYAML>=6.0.12.20260906",
+    "ty>=0.0.93",
 ]
 
 [tool.ruff]
