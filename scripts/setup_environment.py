@@ -12260,6 +12260,11 @@ class NodeUpgradePlan:
         """Whether the upgrade writes the machine-wide Windows installation, which needs an elevated run."""
         return self.action == 'upgrade' and self.channel == 'windows-msi'
 
+    @property
+    def performs_upgrade(self) -> bool:
+        """Whether Step 5 runs the upgrade: every ``upgrade`` except one --no-admin keeps from its elevated run."""
+        return self.action == 'upgrade' and not self.elevation_unavailable
+
     def channel_text(self) -> str:
         """Name how the upgrade runs."""
         major = (self.newest or '').split('.')[0]
@@ -12292,7 +12297,7 @@ class NodeUpgradePlan:
             lines = [f'Node.js: {self.installed} -> {self.newest} through {self.channel_text()}']
             if self.needs_elevation:
                 lines.append(f'  machine-wide installation in {self.location}, which needs an elevated run')
-            if self.elevation_unavailable:
+            if not self.performs_upgrade:
                 lines.append(
                     f'  skipped: --no-admin keeps this run without administrator rights; run from an elevated '
                     f'terminal: {self.remedy}',
@@ -12314,10 +12319,17 @@ class NodeUpgradePlan:
         return f'Upgrading Node.js {self.installed} -> {self.newest} (machine-wide installation in {self.location})'
 
     def machine_wide_row(self) -> str | None:
-        """Describe the installation or upgrade among the machine-wide writes of an isolated run."""
+        """Describe the installation or upgrade among the machine-wide writes of an isolated run.
+
+        An upgrade Step 5 skips writes nothing, so it has no row; the
+        summary's Node.js row names the skip and its remedy.
+
+        Returns:
+            The row, or None when Step 5 writes no Node.js installation.
+        """
         if self.action == 'install' and self.installs:
             return f'Node.js: install {self.install_text()} (used by every profile)'
-        if self.action == 'upgrade':
+        if self.performs_upgrade:
             return f'Node.js: upgrade {self.installed} -> {self.newest} through {self.channel_text()} (used by every profile)'
         return None
 

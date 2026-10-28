@@ -739,8 +739,33 @@ class TestSummaries:
         assert writes(_upgrade_plan('homebrew')) == [
             'Node.js: upgrade 24.19.0 -> 24.22.1 through brew upgrade node@24 (used by every profile)',
         ]
+        machine_wide = _upgrade_plan('windows-msi', location=r'C:\Program Files\nodejs')
+        assert writes(machine_wide) == [(
+            'Node.js: upgrade 24.19.0 -> 24.22.1 through winget OpenJS.NodeJS.LTS or the official installer '
+            '(used by every profile)'
+        )]
+        assert writes(setup_environment.replace(machine_wide, elevation_unavailable=True)) == [], (
+            'an upgrade --no-admin skips writes nothing'
+        )
         assert writes(NodeUpgradePlan('current', installed='24.22.1', newest='24.22.1')) == []
         assert writes(None) == []
+
+    @pytest.mark.parametrize(('plan', 'performs'), [
+        (_upgrade_plan('homebrew'), True),
+        (_upgrade_plan('windows-msi'), True),
+        (_upgrade_plan('windows-msi', elevation_unavailable=True), False),
+        (NodeUpgradePlan('current', installed='24.22.1', newest='24.22.1'), False),
+        (NodeUpgradePlan('unchanged', installed='24.19.0', reason='fnm manages it (/x)'), False),
+        (NodeUpgradePlan('install', reason='not found', installs=('the NodeSource LTS repository',)), False),
+    ])
+    def test_performs_upgrade_agrees_with_the_summary_and_the_machine_wide_row(
+        self, plan: NodeUpgradePlan, performs: bool,
+    ) -> None:
+        assert plan.performs_upgrade is performs
+        upgrade_row = plan.machine_wide_row() or ''
+        assert upgrade_row.startswith('Node.js: upgrade ') is performs
+        skipped = any(line.strip().startswith('skipped:') for line in plan.summary_lines())
+        assert skipped is (plan.action == 'upgrade' and not performs)
 
 
 class TestInstallerPieces:

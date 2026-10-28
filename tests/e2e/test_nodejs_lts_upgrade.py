@@ -310,6 +310,29 @@ class TestWindowsElevation:
         assert f'Run it from an elevated terminal: {command}' in output, 'Step 5'
         assert f'   * Node.js: 24.19.0 unchanged (the upgrade to 24.22.1 needs an elevated run: {command})' in output
 
+    @pytest.mark.parametrize('flags', [
+        pytest.param(['--dry-run', '--skip-install', '--no-admin'], id='dry-run'),
+        pytest.param(RUN_FLAGS, id='run'),
+    ])
+    def test_no_admin_isolated_run_lists_no_skipped_upgrade_among_the_machine_wide_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        node_command_recorder: NodeCommandRecorder, flags: list[str],
+    ) -> None:
+        layout = _installed_node(tmp_path, monkeypatch, '24.19.0')
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
+
+        code, output = _run(tmp_path, capsys, flags, **{'command-names': ['node-check']})
+
+        assert code == 0, output
+        assert node_command_recorder.records() == []
+        assert _reported_version(layout) == 'v24.19.0'
+        assert 'Machine-wide writes' in output, 'the isolated run lists its machine-wide writes'
+        assert '[machine-wide] Node.js' not in output, 'the skipped upgrade writes nothing'
+        assert (
+            '    skipped: --no-admin keeps this run without administrator rights; run from an elevated terminal: '
+            f'{" ".join(WINGET_UPGRADE)}'
+        ) in output, 'the Node.js row names the skip'
+
     def test_dry_run_lists_the_upgrade_among_the_elevation_reasons(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
         node_command_recorder: NodeCommandRecorder,
