@@ -21,6 +21,11 @@ from tests.e2e.hook_sync_recorder import FAILING_VARIABLE
 from tests.e2e.hook_sync_recorder import INTERPRETER_MISSING_VARIABLE
 from tests.e2e.hook_sync_recorder import RECORDER_VARIABLE
 from tests.e2e.hook_sync_recorder import HookSyncRecorder
+from tests.e2e.node_upgrade_support import ALL_VARIABLES as NODE_UPGRADE_VARIABLES
+from tests.e2e.node_upgrade_support import CONFINEMENT_VARIABLE as NODE_CONFINEMENT_VARIABLE
+from tests.e2e.node_upgrade_support import RECORD_VARIABLE as NODE_RECORD_VARIABLE
+from tests.e2e.node_upgrade_support import NodeCommandRecorder
+from tests.e2e.node_upgrade_support import replacements as node_upgrade_replacements
 
 
 def _setup_modules() -> list[ModuleType]:
@@ -110,6 +115,38 @@ def hook_sync_recorder(
     for module in _setup_modules():
         monkeypatch.setattr(module, '_run_hook_environment_uv', recorder)
     monkeypatch.setenv(RECORDER_VARIABLE, str(recorder.path))
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def node_command_recorder(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch,
+) -> NodeCommandRecorder:
+    """Keep the machine's Node.js, the network and the package managers out of the Node.js step.
+
+    Step 5 of a configuration with install-nodejs checks the installed
+    Node.js against the release index and schedule of the Node.js project
+    and may upgrade it through winget, an official installer, brew or
+    apt-get. In every setup module the fixture serves the release documents
+    from fixtures, read against a fixed day, makes a node outside the pytest
+    base temporary directory count as absent (so only a stub a test builds
+    is checked), and records every command and installer download instead
+    of running it; the record file and the confinement reach child runs
+    through the environment (see tests/e2e/node_upgrade_support.py). A
+    failure or an upgraded version a test asks for never leaks into the
+    next test.
+
+    Returns:
+        The recorder.
+    """
+    for variable in NODE_UPGRADE_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
+    recorder = NodeCommandRecorder(tmp_path / 'node-commands.jsonl')
+    for module in _setup_modules():
+        for name, value in node_upgrade_replacements(module, recorder).items():
+            monkeypatch.setattr(module, name, value)
+    monkeypatch.setenv(NODE_RECORD_VARIABLE, str(recorder.path))
+    monkeypatch.setenv(NODE_CONFINEMENT_VARIABLE, str(tmp_path_factory.getbasetemp()))
     return recorder
 
 

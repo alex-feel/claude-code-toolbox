@@ -51,6 +51,7 @@ from unittest.mock import patch
 import pytest
 
 from scripts import setup_environment
+from tests.e2e.node_upgrade_support import NodeCommandRecorder
 from tests.e2e.profile_support import REPO_ROOT
 from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
@@ -554,17 +555,25 @@ class TestDependentLeavesWorkToSource:
 
     def test_dependent_leaves_the_nodejs_installation_to_the_source(
         self, configs: Path, install_log: Path, capsys: pytest.CaptureFixture[str],
+        node_command_recorder: NodeCommandRecorder,
     ) -> None:
-        """install-nodejs: true is honored by the source's run; the dependent's Step 5 installs nothing."""
+        """install-nodejs: true is honored by the source's run; the dependent's Step 5 checks and installs nothing."""
         cfg = _install_source(configs, install_log, _config(**{'install-nodejs': True}))
         assert _installs(install_log) == ['install_claude', 'ensure_nodejs']
         capsys.readouterr()
 
-        code = _run([str(cfg), '--command-names', DEPENDENT, '--link-dirs', 'all', '--link-from', SOURCE], install_log)
+        with patch.object(
+            setup_environment, 'plan_node_upgrade', wraps=setup_environment.plan_node_upgrade,
+        ) as planner:
+            code = _run(
+                [str(cfg), '--command-names', DEPENDENT, '--link-dirs', 'all', '--link-from', SOURCE], install_log,
+            )
 
         output = _output(capsys)
         assert code == 0, output
         assert _installs(install_log) == ['install_claude', 'ensure_nodejs']
+        planner.assert_not_called()
+        assert node_command_recorder.records() == []
         assert _from_source_rows(output, SOURCE) == [
             'Claude Code install or upgrade', 'Node.js installation', PLATFORM_COMMAND, SHARED,
         ]
