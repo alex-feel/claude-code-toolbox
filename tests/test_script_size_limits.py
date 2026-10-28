@@ -5,30 +5,19 @@ script is passed as a single execve() argument -- for example when piped via std
 as `python -c "<entire script>"`. The bootstrap scripts avoid this by downloading
 install_claude.py to a file and running `uv run <file>`, which is safe at any size.
 
-Two guards live here:
-- The real invariant: every Linux/macOS bootstrap script materializes install_claude.py to
-  a file (curl -o ...) and never pipes it inline into an interpreter. This holds at any
-  script size, so it is the authoritative protection -- not a byte ceiling.
-- A size warning: install_claude.py size is monitored and warns past a comfortable
-  threshold, since smaller scripts download faster and keep headroom under the kernel limit.
+The guard here is that invariant: every Linux/macOS bootstrap script materializes
+install_claude.py to a file (curl -o ...) and never pipes it inline into an interpreter.
+It holds at any script size, so it protects the installer where a byte ceiling would not.
 
 See: https://github.com/astral-sh/uv/issues/11220
 """
 
 import re
-import warnings
 from pathlib import Path
 
 import pytest
 
 SCRIPTS_DIR = Path(__file__).parent.parent / 'scripts'
-INSTALL_CLAUDE = SCRIPTS_DIR / 'install_claude.py'
-
-# Linux kernel MAX_ARG_STRLEN = 131,072 bytes (128 KiB). It binds only when a script is
-# passed inline as an execve() argument; the download-to-file bootstrap avoids it entirely.
-MAX_ARG_STRLEN = 128 * 1024         # 131,072
-# Warn threshold: 100 KiB (smaller scripts download faster and keep headroom).
-WARN_THRESHOLD_BYTES = 100 * 1024   # 102,400
 
 # Bootstrap shell scripts that fetch and use install_claude.py. On Linux/macOS each must
 # download it to a FILE and run that file, never pipe the script content into an interpreter
@@ -79,19 +68,3 @@ class TestInstallClaudeNotPipedInline:
             f'{script_path} must not pipe a downloaded script into uv/python; that risks E2BIG. '
             'Download to a file and run `uv run <file>` instead.'
         )
-
-
-class TestScriptSizeLimits:
-    """Monitor install_claude.py size (informational; the download-to-file guard is authoritative)."""
-
-    def test_install_claude_below_warn_threshold(self) -> None:
-        """install_claude.py SHOULD stay below 100 KiB for comfortable headroom."""
-        size = INSTALL_CLAUDE.stat().st_size
-        if size >= WARN_THRESHOLD_BYTES:
-            warnings.warn(
-                f'install_claude.py is {size:,} bytes ({size / 1024:.1f} KiB), '
-                f'approaching the Linux MAX_ARG_STRLEN limit of {MAX_ARG_STRLEN:,} bytes (128 KiB). '
-                f'Warning threshold: {WARN_THRESHOLD_BYTES:,} bytes ({WARN_THRESHOLD_BYTES / 1024:.0f} KiB). '
-                f'Consider reducing script size.',
-                stacklevel=1,
-            )
