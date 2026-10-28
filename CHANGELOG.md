@@ -1,5 +1,17 @@
 # Changelog
 
+## [8.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.4.0...v8.5.0) (2026-10-28)
+
+
+### Features
+
+* upgrade an installed Node.js to the newest release of its LTS line ([#492](https://github.com/alex-feel/claude-code-toolbox/issues/492)) ([de978f4](https://github.com/alex-feel/claude-code-toolbox/commit/de978f4f171a4ab0d73bbdf53cd072d4db900f4a))
+
+
+### Bug Fixes
+
+* write setup output in the order it is printed when redirected ([#491](https://github.com/alex-feel/claude-code-toolbox/issues/491)) ([a7b43fa](https://github.com/alex-feel/claude-code-toolbox/commit/a7b43fa2dffbf296fdf6e1b3f784a2d08021edfa))
+
 ## [8.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.3.2...v8.4.0) (2026-10-27)
 
 
