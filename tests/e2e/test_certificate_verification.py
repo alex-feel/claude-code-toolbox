@@ -135,7 +135,12 @@ class TestUntrustedCertificateAuthenticates:
 
 
 def _run(command: list[str]) -> None:
-    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+    # Well inside the test's own timeout, so a command waiting for an
+    # authorization prompt fails here with its name instead of stalling
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f'{" ".join(command)} did not finish within 30 seconds')
     if result.returncode != 0:
         pytest.fail(f'{" ".join(command)} exited with {result.returncode}:\n{result.stdout}\n{result.stderr}')
 
@@ -160,11 +165,17 @@ def _trust(authority: CertificateAuthority) -> None:
 
 
 def _distrust(authority: CertificateAuthority) -> None:
-    """Remove the authority from the operating system's trust store again."""
+    """Remove the authority from the operating system's trust store again.
+
+    On macOS the certificate leaves the System keychain. Its admin trust
+    setting stays: removing that setting waits for an authorization prompt
+    even under sudo, and a trust setting whose certificate no keychain holds
+    trusts nothing, because the server sends only its own certificate and
+    every run makes a new authority.
+    """
     if sys.platform == 'win32':
         _run(['certutil', '-delstore', 'Root', authority.fingerprint])
     elif sys.platform == 'darwin':
-        _run(['sudo', 'security', 'remove-trusted-cert', '-d', str(authority.authority.certificate)])
         _run(['sudo', 'security', 'delete-certificate', '-Z', authority.fingerprint, '/Library/Keychains/System.keychain'])
     else:
         _run(['sudo', 'rm', '-f', str(_linux_anchor(authority))])
