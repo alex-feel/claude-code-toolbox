@@ -3,15 +3,18 @@
 Every HTTPS request the setup sends verifies the server certificate first.
 When verification fails, CertificateFallbackOpener sends that request again
 over an unverified connection, and every later request of the same fetch
-goes there directly. The fallback is independent of authentication: a fetch
-that falls back escalates on 401/403/404 to the credentials exactly as a
-verified fetch does.
+goes there directly. Every certificate failure falls back, whatever its
+cause, which tests against real TLS servers show. The fallback is
+independent of authentication: a fetch that falls back escalates on
+401/403/404 to the credentials exactly as a verified fetch does.
 """
 
+import datetime as dt
 import io
 import ssl
 import sys
 import urllib.error
+import urllib.request
 from collections.abc import Callable
 from email.message import Message
 from pathlib import Path
@@ -29,6 +32,11 @@ import setup_environment
 from setup_environment import AuthHeaderCache
 from setup_environment import CertificateFallbackOpener
 from setup_environment import FileValidator
+from tests.e2e.tls_support import CertificateAuthority
+from tests.e2e.tls_support import CertificateFiles
+from tests.e2e.tls_support import GitLabLikeServer
+from tests.e2e.tls_support import make_certificate_authority
+from tests.e2e.tls_support import self_signed_server_certificate
 
 # The ssl module's own class, read before any test points ssl.SSLContext at
 # the operating system's trust store
@@ -36,6 +44,15 @@ STDLIB_SSL_CONTEXT = ssl.SSLContext
 
 GITLAB_CONFIG_URL = 'https://gitlab.example.com/api/v4/projects/team%2Fconfigs/repository/files/env.yaml/raw?ref=main'
 FALLBACK_WARNING = 'SSL certificate verification failed, trying with unverified context'
+SERVER_TOKEN = 'glpat-test'
+SERVED = b'name: Private Env\n'
+
+# OpenSSL's verify codes (X509_V_ERR_*) for the causes of a failed verification
+X509_V_ERR_CERT_NOT_YET_VALID = 9
+X509_V_ERR_CERT_HAS_EXPIRED = 10
+X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT = 18
+X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY = 20
+X509_V_ERR_IP_ADDRESS_MISMATCH = 64
 
 
 def _certificate_failure(message: str = 'certificate verify failed: self-signed certificate') -> urllib.error.URLError:
@@ -200,6 +217,118 @@ class TestCertificateFallbackOpener:
         with patch.object(setup_environment, 'urlopen', server):
             CertificateFallbackOpener().open('https://example.com/file')
         assert 'timeout' not in server.calls[0].kwargs
+
+
+def _expired(trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    now = dt.datetime.now(dt.UTC)
+    return trusted.issue(
+        directory, 'expired', not_valid_before=now - dt.timedelta(days=2), not_valid_after=now - dt.timedelta(days=1),
+    )
+
+
+def _not_yet_valid(trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    now = dt.datetime.now(dt.UTC)
+    return trusted.issue(
+        directory, 'not-yet-valid', not_valid_before=now + dt.timedelta(days=1), not_valid_after=now + dt.timedelta(days=2),
+    )
+
+
+def _for_another_host(trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    return trusted.issue(directory, 'another-host', host='gitlab.example.test')
+
+
+def _self_signed(_trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    return self_signed_server_certificate(directory)
+
+
+def _from_an_untrusted_authority(_trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    return make_certificate_authority(directory, 'Untrusted test CA').server
+
+
+def _without_the_intermediate(trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    return make_certificate_authority(directory, 'Intermediate test CA', issuer=trusted).server
+
+
+def _with_the_intermediate(trusted: CertificateAuthority, directory: Path) -> CertificateFiles:
+    return make_certificate_authority(directory, 'Intermediate test CA', issuer=trusted).server_with_chain(directory)
+
+
+def _from_the_trusted_authority(trusted: CertificateAuthority, _directory: Path) -> CertificateFiles:
+    return trusted.server
+
+
+def _with_token(url: str) -> Request:
+    return Request(url, headers={'PRIVATE-TOKEN': SERVER_TOKEN})
+
+
+def _verification_failure(url: str) -> ssl.SSLCertVerificationError:
+    """The error a request that verifies the certificate with the interpreter's default settings raises."""
+    with pytest.raises(urllib.error.URLError) as raised:
+        urllib.request.urlopen(_with_token(url), context=ssl.create_default_context()).close()
+    assert setup_environment._is_certificate_failure(raised.value)
+    reason = raised.value.reason
+    assert isinstance(reason, ssl.SSLCertVerificationError)
+    return reason
+
+
+class TestRealCertificateFailures:
+    """Every way a server certificate fails verification falls back, and a certificate that verifies does not.
+
+    Each test trusts a certificate authority made for it through SSL_CERT_FILE,
+    which the interpreter's default certificate settings read, and serves a
+    certificate from GitLabLikeServer; the verify code OpenSSL reports names
+    the cause of each failure.
+    """
+
+    @pytest.fixture
+    def trusted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CertificateAuthority:
+        authority = make_certificate_authority(tmp_path / 'trusted', 'Trusted test CA', path_length=1)
+        monkeypatch.setenv('SSL_CERT_FILE', str(authority.authority.certificate))
+        return authority
+
+    @pytest.mark.parametrize(
+        ('build', 'verify_code'),
+        [
+            pytest.param(_self_signed, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, id='self-signed'),
+            pytest.param(_from_an_untrusted_authority, X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY, id='untrusted-authority'),
+            pytest.param(_expired, X509_V_ERR_CERT_HAS_EXPIRED, id='expired'),
+            pytest.param(_not_yet_valid, X509_V_ERR_CERT_NOT_YET_VALID, id='not-yet-valid'),
+            pytest.param(_for_another_host, X509_V_ERR_IP_ADDRESS_MISMATCH, id='another-host'),
+            pytest.param(_without_the_intermediate, X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY, id='intermediate-missing'),
+        ],
+    )
+    def test_failure_falls_back_with_the_warning(
+        self, trusted: CertificateAuthority, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        build: Callable[[CertificateAuthority, Path], CertificateFiles], verify_code: int,
+    ) -> None:
+        with GitLabLikeServer(build(trusted, tmp_path / 'server'), {'env.yaml': SERVED}, SERVER_TOKEN) as server:
+            failure = _verification_failure(server.url('env.yaml'))
+            opener = CertificateFallbackOpener()
+            with opener.open(_with_token(server.url('env.yaml'))) as response:
+                body = response.read()
+        assert failure.verify_code == verify_code, failure.verify_message
+        assert body == SERVED
+        assert opener.verifies is False
+        assert _output(capsys).count(FALLBACK_WARNING) == 1
+
+    @pytest.mark.parametrize(
+        'build',
+        [
+            pytest.param(_from_the_trusted_authority, id='trusted-authority'),
+            pytest.param(_with_the_intermediate, id='through-an-intermediate'),
+        ],
+    )
+    def test_verified_certificate_does_not_fall_back(
+        self, trusted: CertificateAuthority, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        build: Callable[[CertificateAuthority, Path], CertificateFiles],
+    ) -> None:
+        with GitLabLikeServer(build(trusted, tmp_path / 'server'), {'env.yaml': SERVED}, SERVER_TOKEN) as server:
+            opener = CertificateFallbackOpener()
+            with opener.open(_with_token(server.url('env.yaml'))) as response:
+                body = response.read()
+        assert body == SERVED
+        assert opener.verifies is True
+        assert FALLBACK_WARNING not in _output(capsys)
 
 
 class TestFetchEscalatesAfterFallback:

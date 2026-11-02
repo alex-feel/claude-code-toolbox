@@ -1,8 +1,9 @@
 """HTTPS fixtures for the E2E tests of certificate verification.
 
 Builds certificates with the cryptography package -- a self-signed one for
-127.0.0.1, or a test certificate authority and a 127.0.0.1 certificate it
-issues -- and serves files the way a GitLab instance serves a private
+127.0.0.1, or a test certificate authority, root or intermediate, and the
+server certificates it issues, valid or not, for 127.0.0.1 or another host
+-- and serves files the way a GitLab instance serves a private
 project through its REST API: a request without the project's token gets
 404, as GitLab answers for a project the caller cannot see, and a request
 with the token gets the file. Every request is recorded.
@@ -68,23 +69,49 @@ def _write(directory: Path, stem: str, certificate: x509.Certificate, key: rsa.R
     return files
 
 
+def _load(files: CertificateFiles) -> tuple[x509.Certificate, rsa.RSAPrivateKey]:
+    certificate = x509.load_pem_x509_certificate(files.certificate.read_bytes())
+    key = serialization.load_pem_private_key(files.key.read_bytes(), password=None)
+    assert isinstance(key, rsa.RSAPrivateKey)
+    return certificate, key
+
+
+def _key_identifier(certificate: x509.Certificate) -> x509.SubjectKeyIdentifier:
+    return certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+
+
+def _host_name(host: str) -> x509.GeneralName:
+    try:
+        return x509.IPAddress(ipaddress.ip_address(host))
+    except ValueError:
+        return x509.DNSName(host)
+
+
 def _server_certificate(
     subject_key: rsa.RSAPrivateKey,
     issuer: x509.Name,
     issuer_key: rsa.RSAPrivateKey,
     issuer_identifier: x509.SubjectKeyIdentifier,
+    *,
+    host: str = LOCALHOST,
+    not_valid_before: dt.datetime | None = None,
+    not_valid_after: dt.datetime | None = None,
 ) -> x509.Certificate:
-    """A certificate for 127.0.0.1 that macOS, Windows and OpenSSL accept for a TLS server."""
+    """A certificate for ``host`` that macOS, Windows and OpenSSL accept for a TLS server while it is valid.
+
+    Returns:
+        The certificate, valid from five minutes ago for a day unless the bounds say otherwise.
+    """
     now = dt.datetime.now(dt.UTC)
     return (
         x509.CertificateBuilder()
-        .subject_name(_name(LOCALHOST))
+        .subject_name(_name(host))
         .issuer_name(issuer)
         .public_key(subject_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(now - dt.timedelta(minutes=5))
-        .not_valid_after(now + dt.timedelta(days=1))
-        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(LOCALHOST))]), critical=False)
+        .not_valid_before(not_valid_before or now - dt.timedelta(minutes=5))
+        .not_valid_after(not_valid_after or now + dt.timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([_host_name(host)]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(
             digital_signature=True, content_commitment=False, key_encipherment=True, data_encipherment=False,
@@ -124,9 +151,56 @@ class CertificateAuthority:
         certificate = x509.load_pem_x509_certificate(self.authority.certificate.read_bytes())
         return certificate.fingerprint(hashes.SHA1()).hex().upper()
 
+    def issue(
+        self,
+        directory: Path,
+        stem: str,
+        *,
+        host: str = LOCALHOST,
+        not_valid_before: dt.datetime | None = None,
+        not_valid_after: dt.datetime | None = None,
+    ) -> CertificateFiles:
+        """Write a server certificate for ``host`` that this authority issues.
 
-def make_certificate_authority(directory: Path, name: str) -> CertificateAuthority:
+        Returns:
+            The certificate and key files; the certificate is valid from five
+            minutes ago for a day unless the bounds say otherwise.
+        """
+        authority, authority_key = _load(self.authority)
+        key = _key()
+        certificate = _server_certificate(
+            key, authority.subject, authority_key, _key_identifier(authority),
+            host=host, not_valid_before=not_valid_before, not_valid_after=not_valid_after,
+        )
+        return _write(directory, stem, certificate, key)
+
+    def server_with_chain(self, directory: Path) -> CertificateFiles:
+        """Write the server certificate followed by this authority's own certificate.
+
+        A server whose certificate an intermediate authority issued sends this
+        chain, so a client that trusts only the root can build the path.
+
+        Returns:
+            The chain file and the server's key file.
+        """
+        directory.mkdir(parents=True, exist_ok=True)
+        chain = directory / 'server-chain.pem'
+        chain.write_bytes(self.server.certificate.read_bytes() + self.authority.certificate.read_bytes())
+        return CertificateFiles(chain, self.server.key)
+
+
+def make_certificate_authority(
+    directory: Path,
+    name: str,
+    *,
+    path_length: int = 0,
+    issuer: CertificateAuthority | None = None,
+) -> CertificateAuthority:
     """Write a certificate authority named ``name`` and a 127.0.0.1 certificate it issued.
+
+    The authority is a root unless ``issuer`` signs it, which makes it an
+    intermediate authority below ``issuer``. ``path_length`` is the number of
+    intermediate authorities allowed below it.
 
     Returns:
         The authority and server files.
@@ -134,22 +208,32 @@ def make_certificate_authority(directory: Path, name: str) -> CertificateAuthori
     now = dt.datetime.now(dt.UTC)
     authority_key = _key()
     authority_identifier = x509.SubjectKeyIdentifier.from_public_key(authority_key.public_key())
-    authority = (
+    builder = (
         x509.CertificateBuilder()
         .subject_name(_name(name))
-        .issuer_name(_name(name))
         .public_key(authority_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(minutes=5))
         .not_valid_after(now + dt.timedelta(days=1))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=path_length), critical=True)
         .add_extension(x509.KeyUsage(
             digital_signature=True, content_commitment=False, key_encipherment=False, data_encipherment=False,
             key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False,
         ), critical=True)
         .add_extension(authority_identifier, critical=False)
-        .sign(authority_key, hashes.SHA256())
     )
+    if issuer is None:
+        authority = builder.issuer_name(_name(name)).sign(authority_key, hashes.SHA256())
+    else:
+        issuer_certificate, issuer_key = _load(issuer.authority)
+        authority = (
+            builder.issuer_name(issuer_certificate.subject)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(_key_identifier(issuer_certificate)),
+                critical=False,
+            )
+            .sign(issuer_key, hashes.SHA256())
+        )
     server_key = _key()
     server = _server_certificate(server_key, authority.subject, authority_key, authority_identifier)
     return CertificateAuthority(
