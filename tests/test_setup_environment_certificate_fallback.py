@@ -4,11 +4,14 @@ Every HTTPS request the setup sends verifies the server certificate first.
 When verification fails, CertificateFallbackOpener sends that request again
 over an unverified connection, and every later request of the same fetch
 goes there directly. Every certificate failure falls back, whatever its
-cause, which tests against real TLS servers show. The fallback is
-independent of authentication: a fetch that falls back escalates on
+cause, which tests against real TLS servers show; a missing intermediate
+certificate is such a failure for OpenSSL, while the Windows verifier
+downloads it from the address the server certificate names. The fallback
+is independent of authentication: a fetch that falls back escalates on
 401/403/404 to the credentials exactly as a verified fetch does.
 """
 
+import contextlib
 import datetime as dt
 import io
 import ssl
@@ -16,6 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from collections.abc import Generator
 from email.message import Message
 from pathlib import Path
 from typing import IO
@@ -35,6 +39,7 @@ from setup_environment import FileValidator
 from tests.e2e.tls_support import CertificateAuthority
 from tests.e2e.tls_support import CertificateFiles
 from tests.e2e.tls_support import GitLabLikeServer
+from tests.e2e.tls_support import IssuerCertificateServer
 from tests.e2e.tls_support import make_certificate_authority
 from tests.e2e.tls_support import self_signed_server_certificate
 
@@ -271,20 +276,23 @@ def _verification_failure(url: str) -> ssl.SSLCertVerificationError:
     return reason
 
 
+@pytest.fixture
+def trusted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CertificateAuthority:
+    """A root certificate authority the interpreter's default certificate settings trust through SSL_CERT_FILE."""
+    authority = make_certificate_authority(tmp_path / 'trusted', 'Trusted test CA', path_length=1)
+    monkeypatch.setenv('SSL_CERT_FILE', str(authority.authority.certificate))
+    return authority
+
+
 class TestRealCertificateFailures:
     """Every way a server certificate fails verification falls back, and a certificate that verifies does not.
 
     Each test trusts a certificate authority made for it through SSL_CERT_FILE,
     which the interpreter's default certificate settings read, and serves a
-    certificate from GitLabLikeServer; the verify code OpenSSL reports names
-    the cause of each failure.
+    certificate from GitLabLikeServer. The OS trust store is not in use, so
+    OpenSSL verifies, the verifier the setup uses on Linux, and the verify
+    code it reports names the cause of each failure.
     """
-
-    @pytest.fixture
-    def trusted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CertificateAuthority:
-        authority = make_certificate_authority(tmp_path / 'trusted', 'Trusted test CA', path_length=1)
-        monkeypatch.setenv('SSL_CERT_FILE', str(authority.authority.certificate))
-        return authority
 
     @pytest.mark.parametrize(
         ('build', 'verify_code'),
@@ -329,6 +337,59 @@ class TestRealCertificateFailures:
         assert body == SERVED
         assert opener.verifies is True
         assert FALLBACK_WARNING not in _output(capsys)
+
+
+@contextlib.contextmanager
+def _server_naming_its_issuer(
+    trusted: CertificateAuthority, directory: Path,
+) -> Generator[tuple[GitLabLikeServer, IssuerCertificateServer]]:
+    """Serve a certificate whose intermediate the server leaves out and whose AIA extension names where to get it."""
+    intermediate = make_certificate_authority(directory / 'intermediate', 'Intermediate test CA', issuer=trusted)
+    with IssuerCertificateServer(intermediate) as issuer:
+        certificate = intermediate.issue(directory / 'server', 'names-its-issuer', ca_issuers=issuer.url)
+        with GitLabLikeServer(certificate, {'env.yaml': SERVED}, SERVER_TOKEN) as server:
+            yield server, issuer
+
+
+class TestMissingIntermediateWithIssuerAddress:
+    """A server leaves out its intermediate certificate and names, in its own certificate, where to download it.
+
+    OpenSSL never downloads it, so the request falls back with the warning.
+    The Windows certificate chain engine, which verifies once
+    use_os_trust_store() is in effect, downloads it as a browser does and
+    verifies the certificate.
+    """
+
+    def test_openssl_falls_back_without_downloading_the_intermediate(
+        self, trusted: CertificateAuthority, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with _server_naming_its_issuer(trusted, tmp_path) as (server, issuer):
+            failure = _verification_failure(server.url('env.yaml'))
+            opener = CertificateFallbackOpener()
+            with opener.open(_with_token(server.url('env.yaml'))) as response:
+                body = response.read()
+            downloads = issuer.recorded()
+        assert failure.verify_code == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY, failure.verify_message
+        assert body == SERVED
+        assert opener.verifies is False
+        assert _output(capsys).count(FALLBACK_WARNING) == 1
+        assert downloads == []
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='exercises the Windows certificate chain engine')
+    def test_windows_verifier_downloads_the_intermediate(
+        self, trusted: CertificateAuthority, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with _server_naming_its_issuer(trusted, tmp_path) as (server, issuer):
+            setup_environment.use_os_trust_store()
+            opener = CertificateFallbackOpener()
+            with opener.open(_with_token(server.url('env.yaml'))) as response:
+                body = response.read()
+            downloads = issuer.recorded()
+        assert body == SERVED
+        assert opener.verifies is True
+        assert FALLBACK_WARNING not in _output(capsys)
+        assert downloads
+        assert set(downloads) == {('GET', issuer.path)}
 
 
 class TestFetchEscalatesAfterFallback:

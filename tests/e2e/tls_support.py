@@ -2,17 +2,20 @@
 
 Builds certificates with the cryptography package -- a self-signed one for
 127.0.0.1, or a test certificate authority, root or intermediate, and the
-server certificates it issues, valid or not, for 127.0.0.1 or another host
--- and serves files the way a GitLab instance serves a private
-project through its REST API: a request without the project's token gets
-404, as GitLab answers for a project the caller cannot see, and a request
-with the token gets the file. Every request is recorded.
+server certificates it issues, valid or not, for 127.0.0.1 or another host,
+optionally naming where their issuer's certificate can be downloaded --
+and serves files the way a GitLab instance serves a private project through
+its REST API: a request without the project's token gets 404, as GitLab
+answers for a project the caller cannot see, and a request with the token
+gets the file. A second, plain HTTP server publishes an issuer's certificate
+at the address a server certificate names. Every request is recorded.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import ipaddress
+import secrets
 import socket
 import ssl
 import threading
@@ -32,6 +35,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import AuthorityInformationAccessOID
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from cryptography.x509.oid import NameOID
 
@@ -96,14 +100,19 @@ def _server_certificate(
     host: str = LOCALHOST,
     not_valid_before: dt.datetime | None = None,
     not_valid_after: dt.datetime | None = None,
+    ca_issuers: str | None = None,
 ) -> x509.Certificate:
     """A certificate for ``host`` that macOS, Windows and OpenSSL accept for a TLS server while it is valid.
+
+    ``ca_issuers`` is the URL its Authority Information Access extension
+    names as the place to download the issuer's certificate from; without
+    it the certificate carries no such extension.
 
     Returns:
         The certificate, valid from five minutes ago for a day unless the bounds say otherwise.
     """
     now = dt.datetime.now(dt.UTC)
-    return (
+    builder = (
         x509.CertificateBuilder()
         .subject_name(_name(host))
         .issuer_name(issuer)
@@ -122,8 +131,15 @@ def _server_certificate(
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(issuer_identifier), critical=False,
         )
-        .sign(issuer_key, hashes.SHA256())
     )
+    if ca_issuers is not None:
+        builder = builder.add_extension(
+            x509.AuthorityInformationAccess([
+                x509.AccessDescription(AuthorityInformationAccessOID.CA_ISSUERS, x509.UniformResourceIdentifier(ca_issuers)),
+            ]),
+            critical=False,
+        )
+    return builder.sign(issuer_key, hashes.SHA256())
 
 
 def self_signed_server_certificate(directory: Path) -> CertificateFiles:
@@ -151,6 +167,12 @@ class CertificateAuthority:
         certificate = x509.load_pem_x509_certificate(self.authority.certificate.read_bytes())
         return certificate.fingerprint(hashes.SHA1()).hex().upper()
 
+    @property
+    def certificate_der(self) -> bytes:
+        """The authority's certificate in DER form, as an Authority Information Access address serves it."""
+        certificate = x509.load_pem_x509_certificate(self.authority.certificate.read_bytes())
+        return certificate.public_bytes(serialization.Encoding.DER)
+
     def issue(
         self,
         directory: Path,
@@ -159,8 +181,12 @@ class CertificateAuthority:
         host: str = LOCALHOST,
         not_valid_before: dt.datetime | None = None,
         not_valid_after: dt.datetime | None = None,
+        ca_issuers: str | None = None,
     ) -> CertificateFiles:
         """Write a server certificate for ``host`` that this authority issues.
+
+        ``ca_issuers`` is the URL the certificate names for downloading this
+        authority's certificate (its Authority Information Access extension).
 
         Returns:
             The certificate and key files; the certificate is valid from five
@@ -170,7 +196,7 @@ class CertificateAuthority:
         key = _key()
         certificate = _server_certificate(
             key, authority.subject, authority_key, _key_identifier(authority),
-            host=host, not_valid_before=not_valid_before, not_valid_after=not_valid_after,
+            host=host, not_valid_before=not_valid_before, not_valid_after=not_valid_after, ca_issuers=ca_issuers,
         )
         return _write(directory, stem, certificate, key)
 
@@ -254,16 +280,23 @@ class RecordedRequest:
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+    """A WSGI server that answers each connection in its own thread and prints no traceback for a dropped one."""
+
+    daemon_threads = True
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        del request, client_address
+
+
+class _ThreadingTLSWSGIServer(_ThreadingWSGIServer):
     """A WSGI server over TLS that runs each handshake in the connection's own thread.
 
     A real server handshakes with every client concurrently; a handshake in
     the accepting thread would stall every other connection behind a client
     that has connected and not yet sent its hello. A client that rejects the
     certificate closes the connection during or right after the handshake,
-    which is expected here and prints no traceback.
+    which is expected here.
     """
-
-    daemon_threads = True
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -274,9 +307,6 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         assert isinstance(request, socket.socket)
         with self.tls.wrap_socket(request, server_side=True) as connection:
             super().finish_request(connection, client_address)
-
-    def handle_error(self, request: object, client_address: object) -> None:
-        del request, client_address
 
 
 class _QuietHandler(WSGIRequestHandler):
@@ -305,7 +335,7 @@ class GitLabLikeServer:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(certificate.certificate), str(certificate.key))
         self._server = make_server(
-            LOCALHOST, 0, self._app, server_class=_ThreadingWSGIServer, handler_class=_QuietHandler,
+            LOCALHOST, 0, self._app, server_class=_ThreadingTLSWSGIServer, handler_class=_QuietHandler,
         )
         self._server.tls = context
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -351,3 +381,52 @@ class GitLabLikeServer:
             self.requests.append(RecordedRequest(method, file_path, token, int(status.split()[0])))
         start_response(status, [('Content-Type', 'application/octet-stream'), ('Content-Length', str(len(body)))])
         return [b''] if method == 'HEAD' else [body]
+
+
+class IssuerCertificateServer:
+    """A plain HTTP server on 127.0.0.1 publishing one authority's certificate.
+
+    A server certificate names ``url`` in its Authority Information Access
+    extension (caIssuers), the address a verifier that completes a chain on
+    its own downloads the missing issuer certificate from, as a browser does.
+    The path carries a random part, so no address the operating system
+    cached for an earlier server matches it. Every request is recorded as
+    its method and path; any path other than the published one gets 404.
+    """
+
+    def __init__(self, authority: CertificateAuthority) -> None:
+        self.path = f'/{secrets.token_hex(8)}/issuer.cer'
+        self._requests: list[tuple[str, str]] = []
+        self._certificate = authority.certificate_der
+        self._lock = threading.Lock()
+        self._server = make_server(LOCALHOST, 0, self._app, server_class=_ThreadingWSGIServer, handler_class=_QuietHandler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f'http://{LOCALHOST}:{self._server.server_address[1]}{self.path}'
+
+    def recorded(self) -> list[tuple[str, str]]:
+        """The recorded requests, in order."""
+        with self._lock:
+            return list(self._requests)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=10)
+
+    def _app(self, environ: dict[str, Any], start_response: _WSGIResponse) -> Iterable[bytes]:
+        method = str(environ.get('REQUEST_METHOD'))
+        path = str(environ.get('PATH_INFO', ''))
+        with self._lock:
+            self._requests.append((method, path))
+        if path != self.path:
+            start_response('404 Not Found', [('Content-Length', '0')])
+            return [b'']
+        start_response('200 OK', [('Content-Type', 'application/pkix-cert'), ('Content-Length', str(len(self._certificate)))])
+        return [b''] if method == 'HEAD' else [self._certificate]
