@@ -30,6 +30,10 @@ from setup_environment import AuthHeaderCache
 from setup_environment import CertificateFallbackOpener
 from setup_environment import FileValidator
 
+# The ssl module's own class, read before any test points ssl.SSLContext at
+# the operating system's trust store
+STDLIB_SSL_CONTEXT = ssl.SSLContext
+
 GITLAB_CONFIG_URL = 'https://gitlab.example.com/api/v4/projects/team%2Fconfigs/repository/files/env.yaml/raw?ref=main'
 FALLBACK_WARNING = 'SSL certificate verification failed, trying with unverified context'
 
@@ -145,6 +149,7 @@ class TestCertificateFallbackOpener:
         with patch.object(setup_environment, 'urlopen', server):
             CertificateFallbackOpener().open('https://example.com/file')
         context = server.calls[1].kwargs['context']
+        assert type(context) is STDLIB_SSL_CONTEXT
         assert context.verify_mode == ssl.CERT_NONE
         assert context.check_hostname is False
 
@@ -430,3 +435,42 @@ class TestWindowsBootstrapDownloadFallsBack:
         assert [call.verified for call in server.calls] == [True, False]
         assert FALLBACK_WARNING in _output(capsys)
         assert Path(run.call_args[0][0][-1]).suffix == '.ps1'
+
+
+class TestOsTrustStore:
+    """main() verifies HTTPS against the operating system's trust store."""
+
+    def test_injection_replaces_the_ssl_context_class(self) -> None:
+        import truststore
+
+        setup_environment.use_os_trust_store()
+        assert ssl.SSLContext is truststore.SSLContext
+        assert isinstance(ssl.create_default_context(), truststore.SSLContext)
+
+    def test_repeated_injection_keeps_one_context_class(self) -> None:
+        import truststore
+
+        setup_environment.use_os_trust_store()
+        setup_environment.use_os_trust_store()
+        assert ssl.SSLContext is truststore.SSLContext
+
+    def test_missing_truststore_keeps_the_interpreter_bundle(self) -> None:
+        with patch.dict(sys.modules, {'truststore': None}):
+            setup_environment.use_os_trust_store()
+        assert ssl.SSLContext is STDLIB_SSL_CONTEXT
+
+    def test_unverified_context_stays_a_standard_library_context(self) -> None:
+        """Under the OS trust store, the fallback still skips every check, on macOS too."""
+        setup_environment.use_os_trust_store()
+        context = setup_environment._unverified_ssl_context()
+        assert type(context) is STDLIB_SSL_CONTEXT
+        assert context.verify_mode == ssl.CERT_NONE
+        assert context.check_hostname is False
+
+    def test_main_injects_before_parsing_arguments(self) -> None:
+        with (
+            patch.object(setup_environment, 'use_os_trust_store', side_effect=RuntimeError('trust store first')),
+            patch('sys.argv', ['setup_environment.py', '--help']),
+            pytest.raises(RuntimeError, match='trust store first'),
+        ):
+            setup_environment.main()

@@ -7,6 +7,7 @@ Downloads and configures development tools for Claude Code based on YAML configu
 # dependencies = [
 #   "pyyaml",
 #   "questionary",
+#   "truststore>=0.10.5",
 # ]
 # ///
 
@@ -7179,21 +7180,54 @@ def refresh_path_from_registry() -> bool:
         return True
 
 
+# The ssl module's own context class, read before use_os_trust_store() points
+# ssl.SSLContext at the operating system's trust store. The unverified
+# fallback is built from it: on macOS a CERT_NONE context of the trust store
+# still rejects some chains, while this class skips every check.
+_STDLIB_SSL_CONTEXT = ssl.SSLContext
+
+# The verify_mode descriptor of the C class the ssl module's context class
+# extends. That class's own verify_mode setter looks the class up in the ssl
+# module again, where use_os_trust_store() put truststore's class, and
+# recurses without end, so the fallback sets verify_mode through this one
+_STDLIB_VERIFY_MODE = vars(_STDLIB_SSL_CONTEXT.__mro__[1])['verify_mode']
+
 CERTIFICATE_FALLBACK_WARNING = 'SSL certificate verification failed, trying with unverified context'
+
+
+def use_os_trust_store() -> None:
+    """Verify HTTPS certificates of this process against the operating system's trust store.
+
+    truststore replaces ssl.SSLContext, so urllib's default HTTPS context and
+    every ssl.create_default_context() verify against the macOS keychain, the
+    Windows certificate store, or OpenSSL's default certificate locations on
+    Linux, which hold the certificate authorities an administrator installed.
+    urlopen() keeps the TLS context of its first call for the process, so
+    main() makes this call before any request. Repeating the call changes
+    nothing. Without the truststore package (a run of this file by an
+    interpreter that has only PyYAML), certificates are verified against the
+    interpreter's own certificate bundle.
+    """
+    try:
+        import truststore
+    except ImportError:
+        return
+    truststore.inject_into_ssl()
 
 
 def _unverified_ssl_context() -> ssl.SSLContext:
     """Return a TLS client context that checks neither the certificate chain nor the host name."""
-    context = ssl.create_default_context()
+    context = _STDLIB_SSL_CONTEXT(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+    _STDLIB_VERIFY_MODE.__set__(context, ssl.CERT_NONE)
     return context
 
 
 def _is_certificate_failure(exc: urllib.error.URLError) -> bool:
     """Report whether a failed request failed on the verification of the server certificate.
 
-    The exception type decides, never its text.
+    The exception type decides, never its text: the operating system's trust
+    store words its failures in the system language.
 
     Args:
         exc: The failure urlopen raised.
@@ -23572,6 +23606,7 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
 def main() -> None:
     """Main setup flow."""
     _line_buffer_output_streams()
+    use_os_trust_store()
     # Track if we were elevated via UAC (new window opened) for better UX
     was_elevated_via_uac = False
 

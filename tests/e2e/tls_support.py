@@ -1,7 +1,8 @@
 """HTTPS fixtures for the E2E tests of certificate verification.
 
-Builds a self-signed certificate for 127.0.0.1 with the cryptography
-package and serves files the way a GitLab instance serves a private
+Builds certificates with the cryptography package -- a self-signed one for
+127.0.0.1, or a test certificate authority and a 127.0.0.1 certificate it
+issues -- and serves files the way a GitLab instance serves a private
 project through its REST API: a request without the project's token gets
 404, as GitLab answers for a project the caller cannot see, and a request
 with the token gets the file. Every request is recorded.
@@ -110,6 +111,55 @@ def self_signed_server_certificate(directory: Path) -> CertificateFiles:
 
 
 @dataclass(frozen=True)
+class CertificateAuthority:
+    """A certificate authority made for one test run, and the 127.0.0.1 certificate it issued."""
+
+    name: str
+    authority: CertificateFiles
+    server: CertificateFiles
+
+    @property
+    def fingerprint(self) -> str:
+        """The SHA-1 fingerprint of the authority's certificate in upper-case hex, as the OS tools name it."""
+        certificate = x509.load_pem_x509_certificate(self.authority.certificate.read_bytes())
+        return certificate.fingerprint(hashes.SHA1()).hex().upper()
+
+
+def make_certificate_authority(directory: Path, name: str) -> CertificateAuthority:
+    """Write a certificate authority named ``name`` and a 127.0.0.1 certificate it issued.
+
+    Returns:
+        The authority and server files.
+    """
+    now = dt.datetime.now(dt.UTC)
+    authority_key = _key()
+    authority_identifier = x509.SubjectKeyIdentifier.from_public_key(authority_key.public_key())
+    authority = (
+        x509.CertificateBuilder()
+        .subject_name(_name(name))
+        .issuer_name(_name(name))
+        .public_key(authority_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(minutes=5))
+        .not_valid_after(now + dt.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.KeyUsage(
+            digital_signature=True, content_commitment=False, key_encipherment=False, data_encipherment=False,
+            key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False,
+        ), critical=True)
+        .add_extension(authority_identifier, critical=False)
+        .sign(authority_key, hashes.SHA256())
+    )
+    server_key = _key()
+    server = _server_certificate(server_key, authority.subject, authority_key, authority_identifier)
+    return CertificateAuthority(
+        name,
+        _write(directory, 'authority', authority, authority_key),
+        _write(directory, 'server', server, server_key),
+    )
+
+
+@dataclass(frozen=True)
 class RecordedRequest:
     """One request the server answered."""
 
@@ -156,7 +206,11 @@ class GitLabLikeServer:
     Files live under PROJECT at REF. A request carrying the token in
     PRIVATE-TOKEN gets the file (HEAD and GET alike, a Range header ignored);
     any other request gets 404, the answer GitLab gives for a private project.
-    The server listens on 127.0.0.1.
+    The server listens on 127.0.0.1. The TLS context is built when the
+    server is created, so a test creates the server before main() points
+    ssl.SSLContext at the operating system's trust store; a server context of
+    the trust store's class would verify the clients, which send no
+    certificate.
     """
 
     def __init__(self, certificate: CertificateFiles, files: dict[str, bytes], token: str) -> None:

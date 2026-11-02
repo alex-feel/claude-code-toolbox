@@ -1966,7 +1966,9 @@ The first four sources work without a terminal, which is what a [scheduled updat
 
 #### Certificate Verification
 
-When the certificate of an HTTPS server fails verification, for example a self-signed one, the setup prints `SSL certificate verification failed, trying with unverified context` and sends that download again without verifying the certificate. Authentication works the same way over that connection: the 404 a GitLab instance answers without a token for a private project leads to the credentials above, and the download continues with them. An unverified connection does not prove that the server is the one the URL names, and your token travels over it.
+The setup verifies the certificate of every HTTPS server it downloads from against the operating system's trust store: the keychain on macOS, the certificate store on Windows, and the certificate authorities of the distribution's certificate store on Linux. A self-hosted GitLab or GitHub Enterprise whose certificate authority your administrator installed on the machine therefore works with no further setup, also when Python's own certificate bundle does not know that authority.
+
+When a certificate still fails verification, for example a self-signed one, the setup prints `SSL certificate verification failed, trying with unverified context` and sends that download again without verifying the certificate. Authentication works the same way over that connection: the 404 a GitLab instance answers without a token for a private project leads to the credentials above, and the download continues with them. An unverified connection does not prove that the server is the one the URL names, and your token travels over it, so for a verified connection add the certificate authority that signed the server's certificate to the operating system's trust store (see [SSL certificate verification failed](#ssl-certificate-verification-failed)).
 
 ### Automatic Auto-Update Management
 
@@ -2679,6 +2681,10 @@ A profile keeps the configuration it was installed from. Giving it another confi
 ### CLAUDE_CODE_TOOLBOX_COMMAND_NAMES changes the command names of profile "NAME"
 
 A variable left over from an earlier install would rename the profile. The setup stops under `--yes`, `--dry-run` or without a terminal, and asks when a terminal is available. Pass `--command-names` with the new list to change the names deliberately, or clear the variable to keep the recorded ones.
+
+### SSL certificate verification failed
+
+The line `SSL certificate verification failed, trying with unverified context` means that the server's certificate is signed by a certificate authority the operating system's trust store does not hold, or is self-signed; the setup then downloads without verification, and authentication with `GITLAB_TOKEN`, `GITHUB_TOKEN` or the other [credential sources](#auth-precedence) works as usual. To verify the server, install the certificate authority that signed its certificate into the trust store: add it to the System keychain and trust it for SSL on macOS (Keychain Access, or `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem`), import it into Trusted Root Certification Authorities on Windows (`certutil -addstore Root ca.pem` from an elevated terminal), or copy it to `/usr/local/share/ca-certificates/` with a `.crt` extension and run `sudo update-ca-certificates` on Debian and Ubuntu. The next run verifies the certificate and prints no warning. When the download fails after the warning with `HTTP Error 404: Not Found`, the server did not accept the request as authenticated: check that the token is set for this run and has access to the project.
 
 ### Configuration not found in repository
 

@@ -3,7 +3,7 @@ Tests for the PyPI packaging configuration in pyproject.toml.
 
 The wheel maps scripts/ into the cc_toolbox package in place, so these
 assertions pin the exact file set, the path rewrite, the console entry point,
-and the pyyaml + questionary runtime dependency closure.
+and the pyyaml + questionary + truststore runtime dependency closure.
 """
 
 import tomllib
@@ -59,7 +59,7 @@ class TestProjectMetadata:
         dependencies = pyproject['project']['dependencies']
         assert not any('pydantic' in dep for dep in dependencies), (
             'pydantic is a dev-only dependency (scripts/models and its tests); '
-            'the published wheel needs only pyyaml and questionary'
+            'the published wheel needs only pyyaml, questionary and truststore'
         )
 
     def test_runtime_dependency_closure(self, pyproject: dict) -> None:
@@ -67,10 +67,11 @@ class TestProjectMetadata:
             dep.split('>=')[0].split('==')[0].strip()
             for dep in pyproject['project']['dependencies']
         )
-        assert names == ['pyyaml', 'questionary'], (
-            'The runtime closure is exactly pyyaml (config parsing) plus '
+        assert names == ['pyyaml', 'questionary', 'truststore'], (
+            'The runtime closure is exactly pyyaml (config parsing), '
             'questionary (interactive component picker; the numbered fallback '
-            'covers environments where it cannot run)'
+            'covers environments where it cannot run) and truststore (HTTPS '
+            "verification against the operating system's trust store)"
         )
 
     def test_requires_python_has_no_upper_bound(self, pyproject: dict) -> None:

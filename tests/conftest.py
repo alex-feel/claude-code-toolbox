@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import shutil
+import ssl
 import sys
 import tempfile
 from collections.abc import Generator
@@ -91,6 +92,23 @@ def _restore_session_path(monkeypatch: pytest.MonkeyPatch) -> None:
     makes its undo put that value back.
     """
     monkeypatch.setenv('PATH', os.environ['PATH'])
+
+
+@pytest.fixture(autouse=True)
+def _restore_https_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore ssl.SSLContext and urllib's default opener after every test.
+
+    main() calls use_os_trust_store(), which points ssl.SSLContext at the
+    truststore class for the rest of the process, so every later test would
+    verify HTTPS against the operating system's trust store and build its
+    contexts, a local test server's among them, from that class. urlopen()
+    also keeps the opener it builds on its first call, and with it the TLS
+    context of that moment, so a test that reaches urlopen() would decide
+    the verification of every later one; each test therefore starts without
+    that opener. Both go through monkeypatch, whose undo puts them back.
+    """
+    monkeypatch.setattr(ssl, 'SSLContext', ssl.SSLContext)
+    monkeypatch.setattr('urllib.request._opener', None)
 
 
 @pytest.fixture
