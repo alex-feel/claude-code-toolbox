@@ -57,6 +57,7 @@ package = false
 
 [dependency-groups]
 dev = [
+    "cryptography>=50.0.2",
     "pre-commit>=4.7.0",
     "pydantic>=2.14.1",
     "pytest>=9.2.0",

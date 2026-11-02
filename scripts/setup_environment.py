@@ -35,7 +35,6 @@ import time
 import traceback
 import urllib.error
 import urllib.parse
-import urllib.request
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -60,7 +59,6 @@ from typing import TypeVar
 from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
-from urllib.request import urlretrieve
 from xml.etree import ElementTree as ET
 
 import yaml
@@ -7181,6 +7179,95 @@ def refresh_path_from_registry() -> bool:
         return True
 
 
+CERTIFICATE_FALLBACK_WARNING = 'SSL certificate verification failed, trying with unverified context'
+
+
+def _unverified_ssl_context() -> ssl.SSLContext:
+    """Return a TLS client context that checks neither the certificate chain nor the host name."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def _is_certificate_failure(exc: urllib.error.URLError) -> bool:
+    """Report whether a failed request failed on the verification of the server certificate.
+
+    The exception type decides, never its text.
+
+    Args:
+        exc: The failure urlopen raised.
+
+    Returns:
+        True for a certificate the server presented that failed verification.
+    """
+    return isinstance(exc.reason, ssl.SSLCertVerificationError)
+
+
+class CertificateFallbackOpener:
+    """Open HTTP(S) requests with certificate verification, falling back to unverified connections.
+
+    The first request verifies the server certificate. When that verification
+    fails, the opener warns (unless told not to) and sends the request again
+    without verification, and sends every later request directly that way, so
+    all requests of one fetch -- the unauthenticated probe, the authenticated
+    retry, a retry after a rate limit -- share one outcome. The HTTP answer is
+    handed to the caller unchanged under either connection.
+
+    Attributes:
+        verifies: Whether the next request verifies the server certificate.
+    """
+
+    def __init__(self, *, warn_on_fallback: bool = True) -> None:
+        """Initialize the opener.
+
+        Args:
+            warn_on_fallback: Print a warning when the opener falls back.
+        """
+        self.verifies = True
+        self._warn_on_fallback = warn_on_fallback
+
+    def open(self, request: str | Request, timeout: float | None = None) -> http.client.HTTPResponse:
+        """Send a request and return the response.
+
+        Args:
+            request: The URL or the request to send.
+            timeout: Seconds to wait for the server; None keeps urllib's default.
+
+        Returns:
+            The response.
+
+        Raises:
+            urllib.error.URLError: The request failed for another reason than the
+                certificate verification, or failed again without verification;
+                an urllib.error.HTTPError when the server answered with an HTTP
+                error status.
+        """
+        if self.verifies:
+            try:
+                return _urlopen(request, timeout=timeout, context=None)
+            except urllib.error.URLError as exc:
+                if not _is_certificate_failure(exc):
+                    raise
+            self.verifies = False
+            if self._warn_on_fallback:
+                warning(CERTIFICATE_FALLBACK_WARNING)
+        return _urlopen(request, timeout=timeout, context=_unverified_ssl_context())
+
+
+def _urlopen(
+    request: str | Request, *, timeout: float | None, context: ssl.SSLContext | None,
+) -> http.client.HTTPResponse:
+    """Call urlopen with only the timeout and the TLS context the caller sets, so urllib's defaults hold otherwise."""
+    if context is None:
+        response = urlopen(request) if timeout is None else urlopen(request, timeout=timeout)
+    elif timeout is None:
+        response = urlopen(request, context=context)
+    else:
+        response = urlopen(request, timeout=timeout, context=context)
+    return cast(http.client.HTTPResponse, response)
+
+
 class FileValidator:
     """Validates file availability for both remote URLs and local paths.
 
@@ -7394,16 +7481,21 @@ class FileValidator:
     def _check_with_head(self, url: str, auth_headers: dict[str, str] | None) -> tuple[bool, int | None]:
         """Check URL availability using HEAD request.
 
+        A certificate that fails verification sends the request again without
+        verification, silently: the download of the file warns about it.
+
         Args:
             url: URL to check
             auth_headers: Optional authentication headers
 
         Returns:
             Tuple of (is_valid, http_code).
-            is_valid=True with http_code=200 on success (including after SSL fallback).
+            is_valid=True with http_code=200 on success, over a verified or an
+            unverified connection.
             is_valid=False with http_code=<code> on HTTP errors (401/403/404/416/5xx).
-            is_valid=False with http_code=None on non-HTTP errors (SSL without fallback,
-            DNS, URL errors, or other exceptions).
+            is_valid=False with http_code=None on non-HTTP errors (a TLS failure
+            other than the certificate verification, DNS, URL errors, or other
+            exceptions).
 
             The http_code is used by callers to decide whether to escalate to
             authentication (401/403/404) versus treating the failure as non-auth
@@ -7414,28 +7506,10 @@ class FileValidator:
             if auth_headers:
                 for header, value in auth_headers.items():
                     request.add_header(header, value)
-
-            try:
-                response = urlopen(request)
-                status = response.status
-                return (bool(status == 200), status)
-            except urllib.error.HTTPError as http_err:
-                return (False, http_err.code)
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    # Try with unverified SSL context
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    try:
-                        response = urlopen(request, context=ctx)
-                        status = response.status
-                        return (bool(status == 200), status)
-                    except urllib.error.HTTPError as http_err:
-                        return (False, http_err.code)
-                    except Exception:
-                        return (False, None)
-                return (False, None)
+            status = CertificateFallbackOpener(warn_on_fallback=False).open(request).status
+            return (bool(status == 200), status)
+        except urllib.error.HTTPError as http_err:
+            return (False, http_err.code)
         except Exception:
             return (False, None)
 
@@ -7449,7 +7523,8 @@ class FileValidator:
         Returns:
             Tuple of (is_valid, http_code).
             is_valid=True with http_code=200 (full content) or 206 (partial content)
-            on success (including after SSL fallback).
+            on success, over a verified or an unverified connection (see
+            _check_with_head()).
             is_valid=False with http_code=<code> on HTTP errors (including 416
             Range Not Satisfiable, which is a non-auth-related failure).
             is_valid=False with http_code=None on non-HTTP errors.
@@ -7464,30 +7539,10 @@ class FileValidator:
             if auth_headers:
                 for header, value in auth_headers.items():
                     request.add_header(header, value)
-
-            try:
-                response = urlopen(request)
-                status = response.status
-                is_valid = status in (200, 206)
-                return (is_valid, status)
-            except urllib.error.HTTPError as http_err:
-                return (False, http_err.code)
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    # Try with unverified SSL context
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    try:
-                        response = urlopen(request, context=ctx)
-                        status = response.status
-                        is_valid = status in (200, 206)
-                        return (is_valid, status)
-                    except urllib.error.HTTPError as http_err:
-                        return (False, http_err.code)
-                    except Exception:
-                        return (False, None)
-                return (False, None)
+            status = CertificateFallbackOpener(warn_on_fallback=False).open(request).status
+            return (status in (200, 206), status)
+        except urllib.error.HTTPError as http_err:
+            return (False, http_err.code)
         except Exception:
             return (False, None)
 
@@ -7694,39 +7749,6 @@ def validate_all_config_files(
             all_valid = False
 
     return all_valid, results
-
-
-def download_file(url: str, destination: Path, force: bool = True) -> bool:
-    """Download a file from URL to destination."""
-    filename = destination.name
-
-    # Always overwrite by default unless force is explicitly False
-    if destination.exists() and not force:
-        info(f'File already exists: {filename} (skipping)')
-        return True
-
-    try:
-        try:
-            response = urlopen(url)
-            content = response.read()
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(url, context=ctx)
-                content = response.read()
-            else:
-                raise
-
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(content)
-        success(f'Downloaded: {filename}')
-        return True
-    except Exception as e:
-        error(f'Failed to download {filename}: {e}')
-        return False
 
 
 # Frozen set of binary file extensions (immutable for safety)
@@ -11558,31 +11580,20 @@ def _fetch_node_release_json(url: str) -> object:
     The documents are the release index and the release schedule of the
     Node.js project and Homebrew's formula of a release line.
 
-    A certificate verification failure is retried once without
-    verification, as the installer download is. A response that is not
-    JSON raises ValueError, a malformed one http.client.HTTPException.
+    A certificate that fails verification is fetched again without
+    verification (CertificateFallbackOpener), as the installer download is.
+    A document that cannot be fetched raises urllib.error.URLError, a
+    response that is not JSON ValueError, a malformed one
+    http.client.HTTPException.
 
     Args:
         url: The document's URL.
 
     Returns:
         The parsed document.
-
-    Raises:
-        urllib.error.URLError: The document cannot be fetched.
     """
-    try:
-        with urlopen(url, timeout=NODE_RELEASE_FETCH_TIMEOUT_SECONDS) as response:
-            return json.loads(response.read())
-    except urllib.error.URLError as e:
-        if 'SSL' not in str(e) and 'certificate' not in str(e).lower():
-            raise
-        warning('SSL certificate verification failed, trying with unverified context')
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with urlopen(url, context=ctx, timeout=NODE_RELEASE_FETCH_TIMEOUT_SECONDS) as response:
-            return json.loads(response.read())
+    with CertificateFallbackOpener().open(url, timeout=NODE_RELEASE_FETCH_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read())
 
 
 def _nodejs_installer_url(version: str) -> str:
@@ -11613,6 +11624,9 @@ def _nodejs_installer_url(version: str) -> str:
 def _download_nodejs_installer(url: str) -> str:
     """Download an official Node.js installer into a temporary file.
 
+    A certificate that fails verification is downloaded again without
+    verification (CertificateFallbackOpener).
+
     Args:
         url: The installer's URL (_nodejs_installer_url()).
 
@@ -11620,7 +11634,9 @@ def _download_nodejs_installer(url: str) -> str:
         The temporary file's path; the caller deletes the file.
 
     Raises:
-        urllib.error.URLError: The download failed; the temporary file is deleted.
+        urllib.error.ContentTooShortError: The server sent fewer bytes than its
+            Content-Length header announced. This error and every other failed
+            download (an urllib.error.URLError) delete the temporary file.
     """
     suffix = Path(urllib.parse.urlparse(url).path).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -11628,22 +11644,15 @@ def _download_nodejs_installer(url: str) -> str:
 
     info(f'Downloading {url}')
     try:
-        try:
-            urlretrieve(url, temp_path)
-        except urllib.error.URLError as e:
-            if 'SSL' not in str(e) and 'certificate' not in str(e).lower():
-                raise
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-            saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
-            urllib.request.install_opener(opener)
-            try:
-                urlretrieve(url, temp_path)
-            finally:
-                urllib.request.install_opener(saved_opener)
+        with CertificateFallbackOpener().open(url) as response, open(temp_path, 'wb') as target:
+            shutil.copyfileobj(response, target)
+            received = target.tell()
+            announced = response.headers.get('Content-Length')
+        if announced is not None and announced.isdigit() and received < int(announced):
+            raise urllib.error.ContentTooShortError(
+                f'retrieval incomplete: got only {received} out of {announced} bytes',
+                (temp_path, response.headers),
+            )
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(temp_path)
@@ -13367,7 +13376,8 @@ def _fetch_url_core(
     """Fetch URL content with auth resolution, caching, and retry logic.
 
     Handles URL conversion (GitLab/GitHub API), authentication with
-    origin-level caching, SSL fallback, and rate-limit retry.
+    origin-level caching, the unverified fallback after a certificate that
+    fails verification (CertificateFallbackOpener), and rate-limit retry.
 
     Args:
         url: URL to fetch.
@@ -13423,34 +13433,31 @@ def _fetch_url_core(
     # Use mutable container to allow inner function to modify auth_headers
     auth_state: dict[str, dict[str, str] | None] = {'headers': effective_headers}
 
-    def _build_request(auth_headers: dict[str, str] | None = None) -> Request:
-        """Build a Request with GitHub API headers and optional auth."""
+    # One opener for every request of this fetch: after a certificate that
+    # fails verification, the authenticated retry and every rate-limit retry
+    # go over the unverified connection too, and the HTTP status handling
+    # below is the same under either connection
+    opener = CertificateFallbackOpener()
+
+    def _fetch(auth_headers: dict[str, str] | None = None) -> str | bytes:
+        """Send one request with GitHub API headers and optional auth."""
         request = Request(url)
         for header, value in github_api_headers.items():
             request.add_header(header, value)
         if auth_headers:
             for header, value in auth_headers.items():
                 request.add_header(header, value)
-        return request
+        return _read_response(opener.open(request))
 
     def _do_fetch() -> str | bytes:
         """Internal fetch logic wrapped for retry."""
         # Skip unauthenticated attempt when auth headers are already known
         if auth_state['headers']:
-            try:
-                return _read_response(urlopen(_build_request(auth_state['headers'])))
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    warning('SSL certificate verification failed, trying with unverified context')
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    return _read_response(urlopen(_build_request(auth_state['headers']), context=ctx))
-                raise
+            return _fetch(auth_state['headers'])
 
         # Try without auth first (for public repos)
         try:
-            return _read_response(urlopen(_build_request()))
+            return _fetch()
         except urllib.error.HTTPError as e:
             if e.code in (401, 403, 404):
                 # Authentication might be needed
@@ -13466,7 +13473,7 @@ def _fetch_url_core(
                     # Retry with authentication
                     info('Retrying with authentication...')
                     try:
-                        return _read_response(urlopen(_build_request(auth_state['headers'])))
+                        return _fetch(auth_state['headers'])
                     except urllib.error.HTTPError as auth_e:
                         if auth_e.code == 401:
                             error('Authentication failed. Check your token.')
@@ -13484,17 +13491,6 @@ def _fetch_url_core(
                     raise
             else:
                 raise
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                return _read_response(urlopen(
-                    _build_request(auth_state['headers'] or None),
-                    context=ctx,
-                ))
-            raise
 
     # Wrap with retry logic for rate limiting
     return fetch_with_retry(_do_fetch, url, rate_limiter=rate_limiter)
@@ -14160,19 +14156,7 @@ def install_claude(version: str | None = None, *, keep_installed: bool = False) 
         if system == 'Windows':
             installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1'
             with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
-                try:
-                    response = urlopen(installer_url)
-                    content = response.read().decode('utf-8')
-                except urllib.error.URLError as e:
-                    if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                        warning('SSL certificate verification failed, trying with unverified context')
-                        ctx = ssl.create_default_context()
-                        ctx.check_hostname = False
-                        ctx.verify_mode = ssl.CERT_NONE
-                        response = urlopen(installer_url, context=ctx)
-                        content = response.read().decode('utf-8')
-                    else:
-                        raise
+                content = CertificateFallbackOpener().open(installer_url).read().decode('utf-8')
                 tmp.write(content)
                 temp_installer = tmp.name
 

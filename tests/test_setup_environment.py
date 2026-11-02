@@ -1019,49 +1019,6 @@ class TestNormalizeTildePathNormpath:
         assert result == expected
 
 
-class TestDownloadFile:
-    """Test file download functionality."""
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_success(self, mock_urlopen):
-        """Test successful file download."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'file content'
-        mock_urlopen.return_value = mock_response
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('http://example.com/file', dest)
-            assert result is True
-            assert dest.exists()
-            assert dest.read_text() == 'file content'
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_ssl_error_fallback(self, mock_urlopen):
-        """Test download with SSL error fallback."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'content'
-        mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
-            mock_response,
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://example.com/file', dest)
-            assert result is True
-            assert dest.read_bytes() == b'content'
-
-    def test_download_file_skip_existing(self):
-        """Test skipping existing file when force=False."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'existing.txt'
-            dest.write_text('existing content')
-            result = setup_environment.download_file('http://example.com', dest, force=False)
-            assert result is True
-            assert dest.read_text() == 'existing content'
-
-
 class TestRepoTypeDetection:
     """Test repository type detection."""
 
@@ -2576,22 +2533,22 @@ class TestInstallNodejsDirectDarwinSudoRouting:
     @patch('platform.system', return_value='Darwin')
     @patch('platform.machine', return_value='arm64')
     @patch('setup_environment.urlopen')
-    @patch('setup_environment.urlretrieve')
+    @patch('setup_environment._download_nodejs_installer', return_value='node-v22.11.0.pkg')
     @patch('setup_environment._run_with_sudo_fallback')
     def test_darwin_pkg_install_routes_through_sudo_helper(
-        self, mock_sudo: MagicMock, mock_urlretrieve: MagicMock, mock_urlopen: MagicMock,
+        self, mock_sudo: MagicMock, mock_download: MagicMock, mock_urlopen: MagicMock,
         mock_machine: MagicMock, mock_system: MagicMock,
     ) -> None:
         """The pkg installer runs through the sudo fallback helper."""
         assert mock_system.return_value == 'Darwin'
         assert mock_machine.return_value == 'arm64'
         mock_urlopen.return_value = self._mock_lts_response()
-        mock_urlretrieve.return_value = None
         mock_sudo.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment._install_nodejs_direct()
 
         assert result is True
+        mock_download.assert_called_once_with('https://nodejs.org/dist/v22.11.0/node-v22.11.0.pkg')
         mock_sudo.assert_called_once()
         sudo_cmd = mock_sudo.call_args[0][0]
         assert sudo_cmd[0] == 'installer'
@@ -2601,10 +2558,10 @@ class TestInstallNodejsDirectDarwinSudoRouting:
     @patch('platform.system', return_value='Darwin')
     @patch('platform.machine', return_value='arm64')
     @patch('setup_environment.urlopen')
-    @patch('setup_environment.urlretrieve')
+    @patch('setup_environment._download_nodejs_installer', return_value='node-v22.11.0.pkg')
     @patch('setup_environment._run_with_sudo_fallback', return_value=None)
     def test_darwin_pkg_install_fails_gracefully_without_sudo(
-        self, mock_sudo: MagicMock, mock_urlretrieve: MagicMock, mock_urlopen: MagicMock,
+        self, mock_sudo: MagicMock, mock_download: MagicMock, mock_urlopen: MagicMock,
         mock_machine: MagicMock, mock_system: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -2612,7 +2569,7 @@ class TestInstallNodejsDirectDarwinSudoRouting:
         assert mock_system.return_value == 'Darwin'
         assert mock_machine.return_value == 'arm64'
         mock_urlopen.return_value = self._mock_lts_response()
-        mock_urlretrieve.return_value = None
+        assert mock_download.return_value == 'node-v22.11.0.pkg'
         assert mock_sudo.return_value is None
 
         result = setup_environment._install_nodejs_direct()

@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import platform
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -26,59 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 import setup_environment
 from tests.conftest import empty_mcp_stats
-
-
-class TestSSLErrorHandling:
-    """Test SSL error handling and fallback scenarios."""
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_ssl_error_then_success(self, mock_urlopen):
-        """Test SSL error fallback succeeds on retry."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'ssl fallback content'
-
-        # First call raises SSL error, second succeeds with unverified context
-        mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
-            mock_response,
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://secure.example.com/file', dest)
-
-            assert result is True
-            assert dest.exists()
-            assert dest.read_bytes() == b'ssl fallback content'
-
-            # Verify SSL context was created for second call
-            assert mock_urlopen.call_count == 2
-            second_call = mock_urlopen.call_args_list[1]
-            assert 'context' in second_call[1]
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_non_ssl_error_propagates(self, mock_urlopen):
-        """Test non-SSL errors are propagated."""
-        mock_urlopen.side_effect = urllib.error.URLError('Network unreachable')
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://example.com/file', dest)
-
-            assert result is False
-            assert not dest.exists()
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_generic_exception(self, mock_urlopen):
-        """Test generic exception handling in download_file."""
-        mock_urlopen.side_effect = Exception('Unexpected error')
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://example.com/file', dest)
-
-            assert result is False
-            assert not dest.exists()
 
 
 class TestGitLabURLConversionEdgeCases:
@@ -718,7 +666,7 @@ class TestFetchURLWithAuthEdgeCases:
         mock_response = MagicMock()
         mock_response.read.return_value = b'ssl content'
         mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed')),
             mock_response,
         ]
 
@@ -811,7 +759,7 @@ class TestInstallClaudeEdgeCases:
     def test_install_claude_windows_ssl_error(self, mock_run, mock_urlopen, _mock_system, _mock_is_file):
         """Test Claude installation on Windows via bootstrap download with SSL error."""
         mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed')),
             MagicMock(read=lambda: b'# PowerShell script'),
         ]
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -1385,14 +1333,12 @@ class TestCreateSettingsComplex:
             assert env_output['THRESHOLD'] == 0.5
             assert env_output['NORMAL_VAR'] == 'string_value'
 
-    @patch('setup_environment.download_file')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which', return_value='py')
-    def test_create_profile_config_hooks_windows_python(self, mock_which, _mock_system, mock_download):
+    def test_create_profile_config_hooks_windows_python(self, mock_which, _mock_system):
         """Test hook configuration with Python scripts on Windows."""
         del mock_which  # Unused but required for patch
         del _mock_system  # Unused but required for patch
-        mock_download.return_value = True
 
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)

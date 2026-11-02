@@ -1964,6 +1964,10 @@ The first four sources work without a terminal, which is what a [scheduled updat
 - GitHub Pages URLs (`*.github.io`) are never treated as repository URLs -- no auth prompt is issued for them even on 404 responses
 - For GitHub 404 responses, the setup script probes `api.github.com/repos/{owner}/{repo}` unauthenticated to distinguish missing files in public repositories (no auth prompt) from private or nonexistent repositories (auth prompt)
 
+#### Certificate Verification
+
+When the certificate of an HTTPS server fails verification, for example a self-signed one, the setup prints `SSL certificate verification failed, trying with unverified context` and sends that download again without verifying the certificate. Authentication works the same way over that connection: the 404 a GitLab instance answers without a token for a private project leads to the credentials above, and the download continues with them. An unverified connection does not prove that the server is the one the URL names, and your token travels over it.
+
 ### Automatic Auto-Update Management
 
 When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects update controls into three targets that block Claude Code's own update paths -- the background auto-updater, `claude update`, and `claude install` -- so none of them moves Claude Code off the pinned version. When the version is `"latest"` or absent, the setup removes these controls, re-enabling those update paths, and keeps only the controls its YAML declares (see [Removal Behavior](#removal-behavior)).
