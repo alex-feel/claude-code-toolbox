@@ -368,6 +368,7 @@ claude-code-toolbox/
    - Pre-commit validation (Ubuntu)
    - PSScriptAnalyzer (Windows)
    - Security scanning (Trivy)
+   - Tests, E2E tests and the package smoke test (Linux and Windows, plus macOS when the PR changes `scripts/` outside the Windows and Linux bootstrap scripts, `tests/` or packaging)
 7. Request review from maintainers
 8. Address review feedback
 9. Squash commits if requested
@@ -400,6 +401,7 @@ claude-code-toolbox/
    - PSScriptAnalyzer for PowerShell
    - Trivy security scanning
    - Commitizen validation
+   - Tests, E2E tests and the package smoke test (see Test & Coverage below)
 2. Code review by maintainers
 3. Testing in relevant environments
 4. Documentation review
@@ -416,7 +418,14 @@ claude-code-toolbox/
    - Performs security scanning with Trivy
    - Skips Release Please PRs
 
-2. **Release Please** (`release-please.yml`):
+2. **Test & Coverage** (`test.yml`):
+   - Triggers on pull requests and on manual runs (`workflow_dispatch`)
+   - Runs the unit tests, the install-script import check, the E2E tests and the package smoke test on Linux and Windows
+   - Adds macOS when the PR changes `scripts/` outside `scripts/windows/` and `scripts/linux/`, `tests/`, `pyproject.toml`, `uv.lock`, `.python-version` or `test.yml` itself
+   - Runs only the package smoke test on Release Please PRs, on all three platforms; a manual run tests every platform
+   - Ends with a Test Summary that lists each job's result and platforms and fails when a job failed or was cancelled
+
+3. **Release Please** (`release-please.yml`):
    - Triggers on pushes to main
    - Automatically creates release PRs
    - Generates CHANGELOG.md from commits
