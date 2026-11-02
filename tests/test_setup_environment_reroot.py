@@ -430,7 +430,7 @@ class TestWindowsTildeExpansionFollowsRerooting:
     """The Windows tilde expansion of the settings keys runs on the rewritten value."""
 
     def test_expanded_api_key_helper_points_into_the_profile(self, isolated_home: Path) -> None:
-        """After re-rooting, the expanded helper path lies inside the profile directory."""
+        """After re-rooting, the expanded and quoted helper path lies inside the profile directory."""
         settings = {'apiKeyHelper': 'uv run ~/.claude/scripts/username.py'}
         _reroot(isolated_home).apply({'user-settings': settings})
 
@@ -438,7 +438,7 @@ class TestWindowsTildeExpansionFollowsRerooting:
             expanded = setup_environment._expand_tilde_keys_in_settings(settings)
 
         expected = os.path.normpath(str(isolated_home / '.claude' / PROFILE / 'scripts' / 'username.py'))
-        assert expanded['apiKeyHelper'] == f'uv run {expected}'
+        assert expanded['apiKeyHelper'] == f'uv run "{expected}"'
 
 
 def _linked_config() -> dict[str, Any]:

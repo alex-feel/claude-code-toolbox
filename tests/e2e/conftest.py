@@ -227,41 +227,12 @@ def mock_claude_cli(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(setup_environment, 'find_command', mock_find)
 
 
-@pytest.fixture
-def e2e_isolated_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def _isolated_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home_name: str,
 ) -> Generator[dict[str, Path], None, None]:
-    """Create an isolated home directory with complete filesystem and environment isolation.
-
-    This fixture provides:
-    - Isolated home directory structure mimicking real user environment
-    - Complete monkeypatching of Path.home() and all relevant environment variables
-    - Pre-created directory structure required by setup_environment.py
-    - Post-test cleanup verification to detect artifact leakage
-
-    The fixture uses function scope to ensure complete isolation between tests.
-
-    Args:
-        tmp_path: pytest's built-in temporary directory fixture (auto-cleanup)
-        monkeypatch: pytest's monkeypatch fixture for environment modification
-
-    Yields:
-        Dictionary containing all relevant paths:
-        - home: The isolated home directory
-        - claude_dir: ~/.claude directory
-        - local_bin: ~/.local/bin directory
-        - config_claude: ~/.config/claude directory (Linux/macOS)
-        - localappdata_claude: AppData/Local/Claude directory (Windows)
-        - appdata_roaming: AppData/Roaming directory (Windows)
-
-    Example:
-        def test_example(e2e_isolated_home):
-            home = e2e_isolated_home["home"]
-            claude_dir = e2e_isolated_home["claude_dir"]
-            # Test code that uses isolated directories...
-    """
+    """Build the isolated home the E2E home fixtures yield, its folder named ``home_name``."""
     # Create isolated home directory
-    home = tmp_path / 'home'
+    home = tmp_path / home_name
     home.mkdir()
 
     # Create Claude user directory (~/.claude)
@@ -333,9 +304,64 @@ def e2e_isolated_home(
     # Verify home directory exists (test didn't accidentally delete it)
     if not home.exists():
         pytest.fail(
-            'e2e_isolated_home: home directory was deleted during test - '
+            'E2E isolated home: the home directory was deleted during the test - '
             'this may indicate a test bug',
         )
+
+
+@pytest.fixture
+def e2e_isolated_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Generator[dict[str, Path], None, None]:
+    """Create an isolated home directory with complete filesystem and environment isolation.
+
+    This fixture provides:
+    - Isolated home directory structure mimicking real user environment
+    - Complete monkeypatching of Path.home() and all relevant environment variables
+    - Pre-created directory structure required by setup_environment.py
+    - Post-test cleanup verification to detect artifact leakage
+
+    The fixture uses function scope to ensure complete isolation between tests.
+
+    Args:
+        tmp_path: pytest's built-in temporary directory fixture (auto-cleanup)
+        monkeypatch: pytest's monkeypatch fixture for environment modification
+
+    Yields:
+        Dictionary containing all relevant paths:
+        - home: The isolated home directory
+        - claude_dir: ~/.claude directory
+        - local_bin: ~/.local/bin directory
+        - config_claude: ~/.config/claude directory (Linux/macOS)
+        - localappdata_claude: AppData/Local/Claude directory (Windows)
+        - appdata_roaming: AppData/Roaming directory (Windows)
+
+    Example:
+        def test_example(e2e_isolated_home):
+            home = e2e_isolated_home["home"]
+            claude_dir = e2e_isolated_home["claude_dir"]
+            # Test code that uses isolated directories...
+    """
+    yield from _isolated_home(tmp_path, monkeypatch, 'home')
+
+
+@pytest.fixture
+def e2e_spaced_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Generator[dict[str, Path], None, None]:
+    """Create the isolated home of e2e_isolated_home in a folder whose name contains a space.
+
+    A Windows account folder such as ``C:\\Users\\First Last`` holds a space,
+    which an unquoted path in a command splits into two arguments.
+
+    Args:
+        tmp_path: pytest's built-in temporary directory fixture (auto-cleanup)
+        monkeypatch: pytest's monkeypatch fixture for environment modification
+
+    Yields:
+        The same paths dictionary e2e_isolated_home yields.
+    """
+    yield from _isolated_home(tmp_path, monkeypatch, 'Test User')
 
 
 @pytest.fixture

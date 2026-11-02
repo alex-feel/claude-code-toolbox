@@ -222,10 +222,16 @@ def _rerooted_line(line: str, profile: str = PROFILE) -> str:
 
 
 def _helper_path(home: Path, *parts: str) -> str:
-    """Spell the apiKeyHelper script path the way the written settings carry it on this platform."""
+    """Spell the apiKeyHelper script path as the written settings carry it: quoted on Windows, as authored elsewhere."""
     if sys.platform == 'win32':
-        return os.path.normpath(str(home.joinpath(*parts)))
+        return f'"{os.path.normpath(str(home.joinpath(*parts)))}"'
     return '~/' + '/'.join(parts)
+
+
+def _outside_helper_path(profile_dir: Path, *parts: str) -> str:
+    """Spell a script path below an absolute profile directory as the written settings carry it: quoted on Windows."""
+    path = '/'.join((profile_dir.as_posix(), *parts))
+    return f'"{path}"' if sys.platform == 'win32' else path
 
 
 def _output(capsys: pytest.CaptureFixture[str]) -> str:
@@ -772,17 +778,15 @@ class TestProfileOutsideTheHome:
         assert _base_snapshot(home) == before, 'an isolated run changed the base config home'
         assert not (claude_dir / PROFILE).exists(), 'setup wrote into the default profile directory'
         settings = json.loads((outside / 'config.json').read_text(encoding='utf-8'))
-        assert settings['apiKeyHelper'] == f'{HELPER_COMMAND} {posix_dir}/scripts/username.py'
+        helper = f'{HELPER_COMMAND} {_outside_helper_path(outside, "scripts", "username.py")}'
+        assert settings['apiKeyHelper'] == helper
         rows = _rerooted_rows(dry_run)
         assert f'files-to-download: ~/.claude/CLAUDE.md -> {posix_dir}/CLAUDE.md' in rows
         assert f'files-to-download: ~/.claude/scripts/username.py -> {posix_dir}/scripts/username.py' in rows
         assert f'dependencies [linux]: {posix_statsig} -> rm -rf "{posix_dir}/statsig"' in rows
         rewritten_windows = windows_statsig.replace('$env:USERPROFILE\\.claude\\statsig', f'{windows_dir}\\statsig')
         assert f'dependencies [windows]: {windows_statsig} -> {rewritten_windows}' in rows
-        assert (
-            f'user-settings apiKeyHelper: {HELPER_COMMAND} ~/.claude/scripts/username.py -> '
-            f'{HELPER_COMMAND} {posix_dir}/scripts/username.py'
-        ) in rows
+        assert f'user-settings apiKeyHelper: {HELPER_COMMAND} ~/.claude/scripts/username.py -> {helper}' in rows
         assert not any('files-to-download outside the profile' in row for row in _machine_wide_rows(dry_run))
 
 
