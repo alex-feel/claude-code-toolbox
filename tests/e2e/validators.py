@@ -101,6 +101,32 @@ def validate_merged_value(actual: object, expected: object, label: str) -> list[
     return errors
 
 
+# An absolute Windows path: a drive letter not glued to a preceding letter
+# (so the "s:/" of "https://" is no path), a colon and a separator
+_WINDOWS_ABSOLUTE_PATH = re.compile(r'(?<![A-Za-z])[A-Za-z]:[\\/]')
+
+
+def validate_cmd_quoted_paths(value: str, context: str) -> list[str]:
+    """Verify every absolute Windows path of a command cmd.exe runs stands inside double quotes.
+
+    Claude Code runs apiKeyHelper and awsCredentialExport through cmd.exe on
+    Windows; an unquoted path under a home folder whose name contains a space
+    reaches the program as two arguments.
+
+    Args:
+        value: The settings value.
+        context: Where the value was read, for the error message.
+
+    Returns:
+        One error per unquoted path.
+    """
+    return [
+        f'{context}: path at position {match.start()} is not double-quoted for cmd.exe: {value}'
+        for match in _WINDOWS_ABSOLUTE_PATH.finditer(value)
+        if value.count('"', 0, match.start()) % 2 == 0
+    ]
+
+
 def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate settings.json against expected values from config.
 
@@ -150,13 +176,15 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
         actual_value = data.get(key)
         if key in tilde_keys:
             if sys.platform == 'win32':
-                # Windows: verify tildes are expanded
+                # Windows: verify tildes are expanded and every path is quoted for cmd.exe
                 if actual_value is None:
                     errors.append(f"settings.json key '{key}': missing (expected expanded form)")
                 elif isinstance(actual_value, str) and '~' in actual_value:
                     errors.append(
                         f"settings.json key '{key}' contains unexpanded tilde: {actual_value}",
                     )
+                elif isinstance(actual_value, str):
+                    errors.extend(validate_cmd_quoted_paths(actual_value, f"settings.json key '{key}'"))
             else:
                 # Unix/WSL: verify tildes are PRESERVED (value unchanged)
                 if actual_value is None:
@@ -427,13 +455,16 @@ def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
         actual_value = data.get(key)
         if key in tilde_keys:
             if sys.platform == 'win32':
-                # Windows: the tilde must have been expanded to an absolute path
+                # Windows: the tilde must have been expanded to an absolute
+                # path, and every path quoted for cmd.exe
                 if actual_value is None:
                     errors.append(f"config.json key '{key}': missing (expected expanded form)")
-                elif isinstance(actual_value, str) and actual_value.startswith('~'):
+                elif isinstance(actual_value, str) and '~' in actual_value:
                     errors.append(
                         f"config.json key '{key}' contains unexpanded tilde: {actual_value}",
                     )
+                elif isinstance(actual_value, str):
+                    errors.extend(validate_cmd_quoted_paths(actual_value, f"config.json key '{key}'"))
             elif actual_value is None:
                 errors.append(f"config.json key '{key}': missing (expected preserved form)")
             elif actual_value != expected_value:
