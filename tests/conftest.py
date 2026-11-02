@@ -359,7 +359,7 @@ def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.
         return
 
     # Skip for E2E tests (they have e2e_isolated_home fixture)
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
 
     real_home = Path.home()
@@ -580,7 +580,7 @@ def _mock_manifest_write(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
     try:
         import setup_environment
@@ -764,7 +764,7 @@ def _mock_env_loader_generation(request: pytest.FixtureRequest, monkeypatch: pyt
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
 
     _excluded_classes = {
@@ -799,7 +799,7 @@ def _guard_windows_registry_writes(request: pytest.FixtureRequest, monkeypatch: 
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
     if sys.platform != 'win32':
         return
