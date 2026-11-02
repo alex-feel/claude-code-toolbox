@@ -1958,7 +1958,9 @@ The first four sources work without a terminal, which is what a [scheduled updat
 
 #### URL Handling
 
-- GitLab web URLs (`/-/raw/`) are automatically converted to API format
+- The setup recognizes a GitHub URL by its host: `github.com`, a subdomain of it such as `api.github.com`, or `raw.githubusercontent.com`. It recognizes a GitLab URL by a host name that contains `gitlab`, or by the GitLab API form (`/api/v4/projects/`) on any host. The token variables, the CLI logins, the prompt and a plain-token `CLAUDE_CODE_TOOLBOX_ENV_AUTH` apply to recognized URLs only
+- For any other host, such as a GitHub Enterprise Server instance, set `CLAUDE_CODE_TOOLBOX_ENV_AUTH` in `Header-Name:value` form, and the setup sends that header. For a GitLab instance whose host name does not contain `gitlab`, give the API form of the URL, and the GitLab credentials above apply
+- GitLab web URLs (`/-/raw/`) of a recognized GitLab host are automatically converted to API format
 - GitHub raw URLs are automatically converted to API URLs
 - Public access is attempted first; authentication is applied only on 401/403/404 responses
 - GitHub Pages URLs (`*.github.io`) are never treated as repository URLs -- no auth prompt is issued for them even on 404 responses
@@ -1966,7 +1968,7 @@ The first four sources work without a terminal, which is what a [scheduled updat
 
 #### Certificate Verification
 
-The setup verifies the certificate of every HTTPS server it requests itself (the configuration, the files it references, and the Node.js release documents and installers) against the operating system's trust store: the keychain on macOS, the certificate store on Windows, and the certificate authorities of the distribution's certificate store on Linux. A self-hosted GitLab or GitHub Enterprise whose certificate authority your administrator installed on the machine therefore works with no further setup, also when Python's own certificate bundle does not know that authority.
+The setup verifies the certificate of every HTTPS server it requests itself (the configuration, the files it references, and the Node.js release documents and installers) against the operating system's trust store: the keychain on macOS, the certificate store on Windows, and the certificate authorities of the distribution's certificate store on Linux. The certificate of a server whose certificate authority your administrator installed on the machine, such as a self-hosted GitLab, therefore verifies with no further setup, also when Python's own certificate bundle does not know that authority.
 
 When a certificate still fails verification, for example a self-signed one, the setup prints `SSL certificate verification failed, trying with unverified context` and sends that download again without verifying the certificate. Authentication works the same way over that connection: the 404 a GitLab instance answers without a token for a private project leads to the credentials above, and the download continues with them. An unverified connection does not prove that the server is the one the URL names, and your token travels over it, so remove the cause of the failure to get a verified connection: [SSL certificate verification failed](#ssl-certificate-verification-failed) lists the causes and what removes each.
 
