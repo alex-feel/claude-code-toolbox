@@ -336,8 +336,8 @@ HOOK_LAUNCHER_PYTHON_VERSION = '3.12'
 # Settings keys whose value is a command Claude Code runs through the shell
 # (cmd.exe on Windows). On Windows _expand_tilde_keys_in_settings() expands
 # each ~ path of the value and double-quotes it (expand_tildes_for_cmd()),
-# and the re-rooting of an isolated run quotes an absolute profile path it
-# spells into the value (ConfigHomeReroot.rewrite_for_cmd()).
+# and the re-rooting of an isolated run quotes each argument that holds a
+# profile path it spells into the value (ConfigHomeReroot.rewrite_for_cmd()).
 TILDE_EXPANSION_KEYS: set[str] = {
     'apiKeyHelper',
     'awsCredentialExport',
@@ -2104,7 +2104,13 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
 # A tilde path inside a command: ~ or ~username, then the rest of the
 # argument up to the next whitespace (~/.bashrc, ~/dir/file, ~user/.config)
 _TILDE_PATH_PATTERN = re.compile(r'(~[^/\s]*(?:/[^\s]*)?)')
-_WHITESPACE_PATTERN = re.compile(r'\s')
+# A double-quoted run of a command line cmd.exe runs: an opening quote, the
+# text up to the next quote and that closing quote when present. cmd.exe
+# toggles its quoted state at every double quote, so the runs found from
+# the left are the quoted parts of the line.
+_DOUBLE_QUOTED_RUN_PATTERN = re.compile(r'"[^"]*"?')
+# A word of the text outside double quotes, which whitespace ends
+_WORD_PATTERN = re.compile(r'\S+')
 
 
 def expand_tildes_in_command(command: str) -> str:
@@ -2131,33 +2137,58 @@ def expand_tildes_in_command(command: str) -> str:
     return _TILDE_PATH_PATTERN.sub(lambda match: normalize_tilde_path(match.group(1)), command)
 
 
-def _inside_double_quotes(command: str, index: int) -> bool:
-    """Report whether a position of a command line lies inside double quotes.
-
-    cmd.exe toggles its quoted state at every double quote, so the parity
-    of the quotes before the position decides.
+def _map_cmd_line(command: str, unquoted: Callable[[str], str], quoted: Callable[[str], str]) -> str:
+    """Map the parts of a command line cmd.exe runs: the text outside double quotes and each double-quoted run.
 
     Args:
         command: The command line.
-        index: A position in it.
+        unquoted: Maps one stretch of text outside double quotes.
+        quoted: Maps one double-quoted run, its quotes included.
 
     Returns:
-        True when an odd number of double quotes precedes the position.
+        The mapped parts joined in order.
     """
-    return command.count('"', 0, index) % 2 == 1
+    pieces: list[str] = []
+    cursor = 0
+    for run in _DOUBLE_QUOTED_RUN_PATTERN.finditer(command):
+        pieces.extend((unquoted(command[cursor:run.start()]), quoted(run.group(0))))
+        cursor = run.end()
+    pieces.append(unquoted(command[cursor:]))
+    return ''.join(pieces)
+
+
+def _expand_quoted_run(run: str) -> str:
+    """Expand the tilde paths of a double-quoted run, which cmd.exe already passes as one argument.
+
+    A run that opens with a tilde is one path, spaces included
+    (``"~/My Profiles/x"``), so it expands whole; a tilde further inside the
+    run (``"cat ~/x"``) expands in place.
+
+    Args:
+        run: The run, its quotes included.
+
+    Returns:
+        The run with its tilde paths expanded and its quotes kept.
+    """
+    body = run[1:]
+    closing = ''
+    if body.endswith('"'):
+        body, closing = body[:-1], '"'
+    expanded = normalize_tilde_path(body) if body.startswith('~') else expand_tildes_in_command(body)
+    return f'"{expanded}{closing}'
 
 
 def expand_tildes_for_cmd(command: str) -> str:
     """Expand the tilde paths of a command cmd.exe runs, each into one double-quoted argument.
 
     cmd.exe resolves no tilde, so every ~ path is expanded through
-    normalize_tilde_path(). An expanded path that stands outside the
-    author's double quotes is double-quoted from the tilde to the end of its
-    argument: a Windows home folder may hold a space, which splits an
-    unquoted path into two arguments, or one of the characters cmd.exe
-    treats as syntax (& ^ ( )), and quoting every expanded path gives the
-    command one shape on every machine. A path inside the author's quotes
-    is already one argument and gains no quotes.
+    normalize_tilde_path(). A path outside double quotes is double-quoted
+    from the tilde to the end of its argument: a Windows home folder may
+    hold a space, which splits an unquoted path into two arguments, or one
+    of the characters cmd.exe treats as syntax (& ^ ( )), and quoting every
+    expanded path gives the command one shape on every machine. A path
+    inside double quotes is already one argument and gains no quotes; one
+    that opens a quoted run spans the run up to its closing quote.
 
     Args:
         command: A command cmd.exe runs, such as an apiKeyHelper value.
@@ -2169,15 +2200,11 @@ def expand_tildes_for_cmd(command: str) -> str:
         >>> expand_tildes_for_cmd('uv run ~/.claude/scripts/key.py')  # Windows
         'uv run "C:\\\\Users\\\\First Last\\\\.claude\\\\scripts\\\\key.py"'
     """
-
-    def expand_match(match: re.Match[str]) -> str:
-        path = match.group(1)
-        expanded = normalize_tilde_path(path)
-        if expanded == path or _inside_double_quotes(command, match.start()):
-            return expanded
-        return f'"{expanded}"'
-
-    return _TILDE_PATH_PATTERN.sub(expand_match, command)
+    return _map_cmd_line(
+        command,
+        lambda text: _TILDE_PATH_PATTERN.sub(lambda match: f'"{normalize_tilde_path(match.group(1))}"', text),
+        _expand_quoted_run,
+    )
 
 
 # A path naming the base config home or a ~/.claude.json sibling in any
@@ -2246,15 +2273,17 @@ class ConfigHomeReroot:
         return _CONFIG_HOME_PATTERN.sub(lambda match: self._replacement(match, value), value)
 
     def rewrite_for_cmd(self, value: str) -> str:
-        """Return the rewrite of a command cmd.exe runs, every absolute profile path one argument.
+        """Return the rewrite of a command cmd.exe runs, every argument holding a re-rooted path one argument.
 
-        The value is rewritten exactly as rewrite() rewrites it. A profile
-        directory outside the home is spelled as an absolute path, which may
-        hold a space or a character cmd.exe treats as syntax, so each such
-        path standing outside the author's double quotes is double-quoted
-        from its start to the end of its argument. A home-relative spelling
-        keeps its home token unquoted: the Windows settings write expands a
-        tilde path and quotes it (expand_tildes_for_cmd()).
+        The value is rewritten as rewrite() rewrites it. The profile path a
+        rewrite inserts may hold a space or a character cmd.exe treats as
+        syntax, whether it is spelled below the home (``~/My Profiles/NAME``)
+        or absolute, so a word outside the author's double quotes that holds
+        a re-rooted path is double-quoted from the first such path to the
+        end of the word, once however many paths it holds. A re-rooted path
+        inside the author's quotes is already one argument and gains no
+        quotes. A quoted path that opens with a tilde expands whole in the
+        Windows settings write (expand_tildes_for_cmd()).
 
         Args:
             value: A command cmd.exe runs, such as an apiKeyHelper value.
@@ -2262,23 +2291,17 @@ class ConfigHomeReroot:
         Returns:
             The rewritten command.
         """
-        if self._relative is not None:
-            return self.rewrite(value)
-        arguments: list[tuple[int, int]] = []
-        for match in _CONFIG_HOME_PATTERN.finditer(value):
-            if arguments and match.start() < arguments[-1][1]:
-                continue
-            if self._replacement(match, value) == match.group(0) or _inside_double_quotes(value, match.start()):
-                continue
-            end = _WHITESPACE_PATTERN.search(value, match.end())
-            arguments.append((match.start(), end.start() if end is not None else len(value)))
-        pieces: list[str] = []
-        cursor = 0
-        for start, stop in arguments:
-            pieces.extend((self.rewrite(value[cursor:start]), f'"{self.rewrite(value[start:stop])}"'))
-            cursor = stop
-        pieces.append(self.rewrite(value[cursor:]))
-        return ''.join(pieces)
+        return _map_cmd_line(
+            value,
+            lambda text: _WORD_PATTERN.sub(lambda word: self._rewrite_cmd_word(word.group(0)), text),
+            self.rewrite,
+        )
+
+    def _rewrite_cmd_word(self, word: str) -> str:
+        for match in _CONFIG_HOME_PATTERN.finditer(word):
+            if self._replacement(match, word) != match.group(0):
+                return f'{word[:match.start()]}"{self.rewrite(word[match.start():])}"'
+        return word
 
     def _replacement(self, match: re.Match[str], value: str) -> str:
         sep = match.group('sep')

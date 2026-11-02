@@ -220,8 +220,14 @@ class TestApply:
             },
         }
 
-    def test_sections_are_rewritten_in_place_and_reported(self, tmp_path: Path) -> None:
-        """Destinations, commands and settings values naming the config home move into the profile."""
+    def test_sections_are_rewritten_in_place_and_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Destinations, commands and settings values naming the config home move into the profile.
+
+        The settings values take the plain rewrite of Linux and macOS here;
+        tests/test_setup_environment_cmd_paths.py covers the quoted rewrite
+        Windows gives them.
+        """
+        monkeypatch.setattr(setup_environment.sys, 'platform', 'linux')
         config = self._config()
 
         records = _reroot(tmp_path).apply(config)

@@ -221,17 +221,21 @@ def _rerooted_line(line: str, profile: str = PROFILE) -> str:
     )
 
 
+def _quoted_on_windows(path: str) -> str:
+    """Spell a settings path as setup writes it: double-quoted for cmd.exe on Windows, as given elsewhere."""
+    return f'"{path}"' if sys.platform == 'win32' else path
+
+
 def _helper_path(home: Path, *parts: str) -> str:
-    """Spell the apiKeyHelper script path as the written settings carry it: quoted on Windows, as authored elsewhere."""
+    """Spell the apiKeyHelper script path as the written settings carry it: absolute and quoted on Windows."""
     if sys.platform == 'win32':
-        return f'"{os.path.normpath(str(home.joinpath(*parts)))}"'
+        return _quoted_on_windows(os.path.normpath(str(home.joinpath(*parts))))
     return '~/' + '/'.join(parts)
 
 
 def _outside_helper_path(profile_dir: Path, *parts: str) -> str:
-    """Spell a script path below an absolute profile directory as the written settings carry it: quoted on Windows."""
-    path = '/'.join((profile_dir.as_posix(), *parts))
-    return f'"{path}"' if sys.platform == 'win32' else path
+    """Spell a script path below an absolute profile directory as the written settings carry it."""
+    return _quoted_on_windows('/'.join((profile_dir.as_posix(), *parts)))
 
 
 def _output(capsys: pytest.CaptureFixture[str]) -> str:
@@ -519,11 +523,11 @@ class TestSummaryRows:
         ) in rows
         assert (
             f'user-settings apiKeyHelper: {HELPER_COMMAND} ~/.claude/scripts/username.py -> '
-            f'{HELPER_COMMAND} ~/.claude/{PROFILE}/scripts/username.py'
+            f'{HELPER_COMMAND} {_quoted_on_windows(f"~/.claude/{PROFILE}/scripts/username.py")}'
         ) in rows
         assert (
             'user-settings awsCredentialExport: ~/.claude/scripts/aws-credentials.sh -> '
-            f'~/.claude/{PROFILE}/scripts/aws-credentials.sh'
+            f'{_quoted_on_windows(f"~/.claude/{PROFILE}/scripts/aws-credentials.sh")}'
         ) in rows
         for line in _cleanup_lines(PLATFORM_DEPENDENCIES):
             assert f'    $ {_rerooted_line(line)} [re-rooted]' in output
@@ -674,7 +678,7 @@ class TestProfileRerunRerootsAgain:
         assert f'files-to-download: ~/.claude/CLAUDE.md -> ~/.claude/{PROFILE}/CLAUDE.md' in rows
         assert (
             f'user-settings apiKeyHelper: {HELPER_COMMAND} ~/.claude/scripts/username.py -> '
-            f'{HELPER_COMMAND} ~/.claude/{PROFILE}/scripts/username.py'
+            f'{HELPER_COMMAND} {_quoted_on_windows(f"~/.claude/{PROFILE}/scripts/username.py")}'
         ) in rows
         for line in _cleanup_lines(PLATFORM_DEPENDENCIES):
             assert f'    $ {_rerooted_line(line)} [re-rooted]' in output

@@ -2,13 +2,16 @@
 
 Claude Code runs both settings values through the shell, which is cmd.exe
 on Windows (``cmd.exe /d /s /c "<value>"``). cmd.exe resolves no tilde, so
-setup expands every ``~`` path and writes it in double quotes; a profile
-directory outside the home, which the re-rooting of an isolated run spells
-as an absolute path, is double-quoted the same way. Unquoted, a path under a
-home folder whose name contains a space reaches the program as two
-arguments. A path the author already quoted keeps its quotes and gains
-none, and Linux and macOS keep the value exactly as authored. The other
-callers of expand_tildes_in_command() keep its unquoted output.
+setup expands every ``~`` path and writes it in double quotes, and a quoted
+path that opens with a tilde expands whole, spaces included. The re-rooting
+of an isolated run double-quotes each argument that holds a re-rooted path,
+from the path to the end of the argument, wherever the profile directory
+lies: below the home in a folder whose name holds a space, or outside the
+home, spelled absolute. Unquoted, a path under a folder whose name contains
+a space reaches the program as two arguments. A path the author already
+quoted keeps its quotes and gains none, and Linux and macOS keep the value
+exactly as authored. The other callers of expand_tildes_in_command() keep
+its unquoted output.
 """
 
 from __future__ import annotations
@@ -59,22 +62,6 @@ def _quoted(path: str) -> str:
     return f'"{_expanded(path)}"'
 
 
-@pytest.mark.parametrize(
-    ('command', 'index', 'inside'),
-    [
-        ('"a b" c', 0, False),
-        ('"a b" c', 1, True),
-        ('"a b" c', 4, True),
-        ('"a b" c', 5, False),
-        ('x "~/a" y', 3, True),
-        ('x ~/a', 2, False),
-    ],
-)
-def test_the_quote_state_counts_the_quotes_before_the_position(command: str, index: int, inside: bool) -> None:
-    """A position is inside double quotes when an odd number of quotes precedes it; a quote at it does not count."""
-    assert setup_environment._inside_double_quotes(command, index) is inside
-
-
 @pytest.mark.usefixtures('spaced_home')
 class TestExpandTildesForCmd:
     """Each expanded tilde path becomes one double-quoted cmd.exe argument."""
@@ -99,20 +86,29 @@ class TestExpandTildesForCmd:
         assert result == f'python "{setup_environment.normalize_tilde_path("~/.claude/key.py")}"'
 
     @pytest.mark.parametrize(
-        'value',
+        ('value', 'path', 'expected'),
         [
-            f'{HELPER} "~/.claude/scripts/helper.py"',
-            '"~/.claude/scripts/helper.cmd"',
-            'bash -c "cat ~/.claude/key.txt"',
+            (f'{HELPER} "~/.claude/scripts/helper.py"', '~/.claude/scripts/helper.py', f'{HELPER} "{{}}"'),
+            ('"~/.claude/scripts/helper.cmd" --json', '~/.claude/scripts/helper.cmd', '"{}" --json'),
+            ('bash -c "cat ~/.claude/key.txt"', '~/.claude/key.txt', 'bash -c "cat {}"'),
         ],
     )
-    def test_a_path_inside_the_authors_quotes_gains_no_quotes(self, value: str) -> None:
+    def test_a_path_inside_the_authors_quotes_gains_no_quotes(self, value: str, path: str, expected: str) -> None:
         """A path already standing inside double quotes is expanded and keeps the author's quotes only."""
-        result = setup_environment.expand_tildes_for_cmd(value)
+        assert setup_environment.expand_tildes_for_cmd(value) == expected.format(_expanded(path))
 
-        assert result == setup_environment.expand_tildes_in_command(value)
-        assert result.count('"') == value.count('"')
-        assert '~' not in result
+    @pytest.mark.parametrize('path', ['~/My Profiles/p1/scripts/helper.py', '~\\profiles\\tilde work\\helper.py'])
+    def test_a_quoted_path_opening_with_a_tilde_expands_whole(self, path: str) -> None:
+        """A double-quoted run that opens with a tilde is one path: it expands whole, its spaces included."""
+        result = setup_environment.expand_tildes_for_cmd(f'{HELPER} "{path}" --verbose')
+
+        assert result == f'{HELPER} "{_expanded(path)}" --verbose'
+
+    def test_a_quoted_path_opening_with_a_tilde_is_normalized_whole(self) -> None:
+        """The whole quoted path is normalized, not only the part before its first space."""
+        result = setup_environment.expand_tildes_for_cmd('python "~/My Profiles/p1/../p2/key.py"')
+
+        assert result == f'python "{_expanded("~/My Profiles/p2/key.py")}"'
 
     def test_several_paths_in_one_value_are_each_quoted(self) -> None:
         """Every unquoted tilde path of the value is quoted on its own; an author-quoted one keeps its quotes."""
@@ -207,22 +203,140 @@ class TestSettingsWritersOnWindows:
         assert setup_environment._expand_tilde_keys_in_settings(self._settings()) == self._settings()
 
 
+# Profile directories below the home: the default one and two relocated
+# into folders whose names hold a space
+BELOW_HOME_PROFILES = [
+    pytest.param(('.claude', PROFILE), id='default'),
+    pytest.param(('My Profiles', PROFILE), id='spaced-parent'),
+    pytest.param(('profiles', 'tilde work'), id='spaced-profile'),
+]
+
+
+def _profile_spellings(home: Path, tmp_path: Path, location: str) -> tuple[Path, str]:
+    """Return a profile directory and the spelling the re-rooting gives it in a value written with ``~/``.
+
+    Args:
+        home: The home folder.
+        tmp_path: The test's temporary directory, which holds the home.
+        location: ``below`` for a profile below the home, ``outside`` for one outside it.
+
+    Returns:
+        The profile directory and its spelling.
+    """
+    if location == 'below':
+        return home / 'My Profiles' / PROFILE, f'~/My Profiles/{PROFILE}'
+    outside = tmp_path / 'Profile Store (work)' / PROFILE
+    return outside, outside.as_posix()
+
+
+class TestRewriteForCmd:
+    """Each argument that holds a re-rooted path becomes one double-quoted argument, wherever the profile lies."""
+
+    @pytest.mark.parametrize('parts', BELOW_HOME_PROFILES)
+    def test_a_profile_below_the_home_is_quoted_with_its_home_token(
+        self, spaced_home: Path, parts: tuple[str, str],
+    ) -> None:
+        """The home-relative spelling keeps its tilde and stands in double quotes, its spaces inside them."""
+        reroot = ConfigHomeReroot(spaced_home.joinpath(*parts), spaced_home, [PROFILE])
+
+        result = reroot.rewrite_for_cmd(f'{HELPER} ~/.claude/scripts/username.py --verbose')
+
+        assert result == f'{HELPER} "~/{"/".join(parts)}/scripts/username.py" --verbose'
+
+    @pytest.mark.parametrize('location', ['below', 'outside'])
+    def test_two_paths_in_one_argument_make_one_quoted_argument(
+        self, spaced_home: Path, tmp_path: Path, location: str,
+    ) -> None:
+        """The quotes run from the first re-rooted path to the end of its argument, once."""
+        profile_dir, spelled = _profile_spellings(spaced_home, tmp_path, location)
+        reroot = ConfigHomeReroot(profile_dir, spaced_home, [PROFILE])
+
+        result = reroot.rewrite_for_cmd('tool --p=~/.claude/a:~/.claude/b --verbose')
+
+        assert result == f'tool --p="{spelled}/a:{spelled}/b" --verbose'
+
+    @pytest.mark.parametrize('location', ['below', 'outside'])
+    def test_each_argument_is_quoted_on_its_own(self, spaced_home: Path, tmp_path: Path, location: str) -> None:
+        """Two arguments that hold re-rooted paths take a pair of quotes each, an option keeping its name outside."""
+        profile_dir, spelled = _profile_spellings(spaced_home, tmp_path, location)
+        reroot = ConfigHomeReroot(profile_dir, spaced_home, [PROFILE])
+
+        result = reroot.rewrite_for_cmd('python ~/.claude/key.py --config=~/.claude/key.json')
+
+        assert result == f'python "{spelled}/key.py" --config="{spelled}/key.json"'
+
+    @pytest.mark.parametrize('location', ['below', 'outside'])
+    def test_a_path_inside_the_authors_quotes_gains_no_quotes(
+        self, spaced_home: Path, tmp_path: Path, location: str,
+    ) -> None:
+        """The author's quotes already hold the re-rooted path as one argument."""
+        profile_dir, spelled = _profile_spellings(spaced_home, tmp_path, location)
+        reroot = ConfigHomeReroot(profile_dir, spaced_home, [PROFILE])
+
+        result = reroot.rewrite_for_cmd(f'{HELPER} "~/.claude/scripts/username.py" --flag')
+
+        assert result == f'{HELPER} "{spelled}/scripts/username.py" --flag'
+
+    def test_a_userprofile_path_is_quoted_for_cmd_to_expand(self, spaced_home: Path) -> None:
+        """cmd.exe expands %USERPROFILE% inside the quotes, so the home folder's space stays inside them too."""
+        reroot = ConfigHomeReroot(spaced_home / '.claude' / PROFILE, spaced_home, [PROFILE])
+
+        result = reroot.rewrite_for_cmd('%USERPROFILE%\\.claude\\scripts\\aws-export.cmd --json')
+
+        assert result == f'"%USERPROFILE%\\.claude\\{PROFILE}\\scripts\\aws-export.cmd" --json'
+
+    def test_another_profiles_path_is_neither_rewritten_nor_quoted(self, spaced_home: Path) -> None:
+        """A path naming another installed profile stays exactly as written."""
+        reroot = ConfigHomeReroot(spaced_home / 'My Profiles' / PROFILE, spaced_home, [PROFILE, 'other'])
+        value = f'{HELPER} ~/.claude/other/scripts/username.py'
+
+        assert reroot.rewrite_for_cmd(value) == value
+
+
 class TestRerootedPathsOnWindows:
     """A re-rooted settings value reaches cmd.exe as one argument wherever the profile lies."""
 
     @pytest.mark.usefixtures('on_windows')
-    def test_a_profile_below_the_home_keeps_the_tilde_until_the_quoted_expansion(self, spaced_home: Path) -> None:
-        """The re-rooted value keeps its tilde; the settings write expands it into the profile and quotes it."""
-        settings = {'apiKeyHelper': f'{HELPER} ~/.claude/scripts/username.py'}
-        reroot = ConfigHomeReroot(spaced_home / '.claude' / PROFILE, spaced_home, [PROFILE])
+    @pytest.mark.parametrize('parts', BELOW_HOME_PROFILES)
+    def test_a_profile_below_the_home_reaches_cmd_as_one_quoted_absolute_path(
+        self, spaced_home: Path, parts: tuple[str, str],
+    ) -> None:
+        """The re-rooted value is quoted with its tilde; the settings write expands the whole quoted path."""
+        profile_dir = spaced_home.joinpath(*parts)
+        settings = {
+            'apiKeyHelper': f'{HELPER} ~/.claude/scripts/username.py',
+            'awsCredentialExport': '~/.claude/scripts/aws-export.cmd',
+        }
+        reroot = ConfigHomeReroot(profile_dir, spaced_home, [PROFILE])
 
         records = reroot.apply({'user-settings': settings})
         expanded = setup_environment._expand_tilde_keys_in_settings(settings)
 
-        assert settings['apiKeyHelper'] == f'{HELPER} ~/.claude/{PROFILE}/scripts/username.py'
-        assert records[0].rewritten == settings['apiKeyHelper']
-        profile_script = str(spaced_home / '.claude' / PROFILE / 'scripts' / 'username.py')
-        assert expanded['apiKeyHelper'] == f'{HELPER} "{os.path.normpath(profile_script)}"'
+        relative = '/'.join(parts)
+        assert settings == {
+            'apiKeyHelper': f'{HELPER} "~/{relative}/scripts/username.py"',
+            'awsCredentialExport': f'"~/{relative}/scripts/aws-export.cmd"',
+        }
+        assert [record.rewritten for record in records] == [settings['apiKeyHelper'], settings['awsCredentialExport']]
+        assert expanded == {
+            'apiKeyHelper': f'{HELPER} "{os.path.normpath(str(profile_dir / "scripts" / "username.py"))}"',
+            'awsCredentialExport': f'"{os.path.normpath(str(profile_dir / "scripts" / "aws-export.cmd"))}"',
+        }
+
+    @pytest.mark.usefixtures('on_windows')
+    def test_the_isolated_config_json_of_a_spaced_profile_folder_carries_one_quoted_path(
+        self, spaced_home: Path,
+    ) -> None:
+        """create_profile_config() writes the re-rooted helper of a spaced profile folder as one quoted path."""
+        profile_dir = spaced_home / 'My Profiles' / PROFILE
+        settings = {'apiKeyHelper': f'{HELPER} ~/.claude/scripts/username.py'}
+        ConfigHomeReroot(profile_dir, spaced_home, [PROFILE]).apply({'user-settings': settings})
+
+        assert setup_environment.create_profile_config({}, profile_dir, user_settings=settings)
+
+        written = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
+        script = os.path.normpath(str(profile_dir / 'scripts' / 'username.py'))
+        assert written['apiKeyHelper'] == f'{HELPER} "{script}"'
 
     @pytest.mark.usefixtures('on_windows')
     def test_a_profile_outside_the_home_is_spelled_absolute_and_quoted(

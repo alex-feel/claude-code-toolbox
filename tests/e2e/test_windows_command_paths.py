@@ -5,17 +5,21 @@ cmd.exe started as ``cmd.exe /d /s /c "<value>"``. cmd.exe resolves no
 ``~``, so setup expands every tilde path to the absolute path under the home
 folder and writes it in double quotes; unquoted, a home folder whose name
 contains a space splits the path into two arguments and the helper never
-starts (uv answers ``Failed to spawn``). A profile directory outside the home,
-which an isolated run spells as an absolute path, is quoted the same way, and
-a path the author already quoted keeps its quotes and gains none.
+starts (uv answers ``Failed to spawn``). An isolated run quotes each argument
+that holds a re-rooted path, so a profile directory relocated below the home
+into a folder whose name holds a space, and one outside the home that an
+isolated run spells as an absolute path, reach cmd.exe as one argument too,
+and a path the author already quoted keeps its quotes and gains none.
 
 Every test installs a configuration through main() under an isolated home
 named ``Test User``: as the base profile, as an isolated profile below the
-home, and as an isolated profile relocated to a directory outside the home
-whose name holds a space and parentheses. It then runs the written values
-through cmd.exe exactly as Claude Code starts them, with the real uv, and
-reads the helper's output. The same command with its quotes removed fails
-under the same home, which shows the home folder really splits it.
+home, as an isolated profile relocated below the home into a folder whose
+name holds a space, and as an isolated profile relocated to a directory
+outside the home whose name holds a space and parentheses. It then runs the
+written values through cmd.exe exactly as Claude Code starts them, with the
+real uv, and reads the helper's output. The same command with its quotes
+removed fails under the same home, which shows the home folder really
+splits it.
 """
 
 from __future__ import annotations
@@ -181,6 +185,38 @@ class TestHelpersUnderASpacedHome:
         assert settings['apiKeyHelper'] == f'{HELPER_COMMAND} {_quoted(scripts / "key_helper.py")}'
         assert settings['awsCredentialExport'] == f'{HELPER_COMMAND} {_quoted(scripts / "aws_export.py")}'
         assert (scripts / 'key_helper.py').is_file()
+        _assert_helpers_print_their_output(settings, tmp_path)
+        _assert_unquoted_command_splits(settings, tmp_path)
+
+    @pytest.mark.parametrize(
+        'parts',
+        [
+            pytest.param(('My Profiles', PROFILE), id='spaced-parent'),
+            pytest.param(('profiles', 'tilde work'), id='spaced-profile'),
+        ],
+    )
+    def test_profile_relocated_below_the_home_into_a_spaced_folder_runs_through_cmd(
+        self, e2e_spaced_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        parts: tuple[str, str],
+    ) -> None:
+        """The summary quotes the home-relative path; config.json carries the whole absolute path once quoted."""
+        profile_dir = e2e_spaced_home['home'].joinpath(*parts)
+        relative = '/'.join(parts)
+        cfg = write_config(configs, 'env.yaml', _config(env={'CLAUDE_CONFIG_DIR': f'~/{relative}'}))
+
+        assert run_main([str(cfg), *SKIP, '--dry-run', '--command-names', PROFILE]) == 0
+        dry_run = _output(capsys)
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', PROFILE]) == 0
+
+        settings = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
+        scripts = profile_dir / 'scripts'
+        assert settings['apiKeyHelper'] == f'{HELPER_COMMAND} {_quoted(scripts / "key_helper.py")}'
+        assert settings['awsCredentialExport'] == f'{HELPER_COMMAND} {_quoted(scripts / "aws_export.py")}'
+        assert (scripts / 'key_helper.py').is_file()
+        assert (
+            f'[re-rooted] user-settings apiKeyHelper: {HELPER_COMMAND} ~/.claude/scripts/key_helper.py -> '
+            f'{HELPER_COMMAND} "~/{relative}/scripts/key_helper.py"'
+        ) in dry_run
         _assert_helpers_print_their_output(settings, tmp_path)
         _assert_unquoted_command_splits(settings, tmp_path)
 
