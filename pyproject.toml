@@ -58,15 +58,15 @@ package = false
 [dependency-groups]
 dev = [
     "pre-commit>=4.7.0",
-    "pydantic>=2.14.1",
+    "pydantic>=2.14.2",
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1",
+    "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.17.0",
     "pytest-timeout>=2.3.1",
     "questionary>=2.0.0",
-    "types-PyYAML>=6.0.12.20260906",
-    "ty>=0.0.93",
+    "types-PyYAML>=6.0.12.20261030",
+    "ty>=0.0.95",
 ]
 
 [tool.ruff]
