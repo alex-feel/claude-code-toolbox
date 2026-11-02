@@ -8,7 +8,8 @@ cause, which tests against real TLS servers show; a missing intermediate
 certificate is such a failure for OpenSSL, while the Windows verifier
 downloads it from the address the server certificate names. The fallback
 is independent of authentication: a fetch that falls back escalates on
-401/403/404 to the credentials exactly as a verified fetch does.
+401/403/404 to the credentials exactly as a verified fetch does. The one
+request without the fallback is the api.github.com visibility probe.
 """
 
 import contextlib
@@ -390,6 +391,20 @@ class TestMissingIntermediateWithIssuerAddress:
         assert FALLBACK_WARNING not in _output(capsys)
         assert downloads
         assert set(downloads) == {('GET', issuer.path)}
+
+
+class TestGitHubRepositoryProbe:
+    """The api.github.com visibility probe verifies against the trust store and has no unverified fallback."""
+
+    def test_certificate_failure_returns_none_without_an_unverified_retry(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        server = _Server(_untrusted(_response(b'{}')))
+        with patch.object(setup_environment, 'urlopen', server):
+            assert setup_environment._github_repo_is_public('owner', 'repo') is None
+        assert len(server.calls) == 1
+        assert server.calls[0].verified
+        assert FALLBACK_WARNING not in _output(capsys)
 
 
 class TestFetchEscalatesAfterFallback:
