@@ -10,8 +10,84 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Linux and Windows run on every pull request. macOS runs when the pull
+  # request changes a file macOS behavior depends on, Package Smoke keeps it
+  # on the release pull request, and a workflow_dispatch run puts every job
+  # on every operating system.
+  plan:
+    name: Plan Test Matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      os: ${{ steps.plan.outputs.os }}
+      package-os: ${{ steps.plan.outputs.package-os }}
+      reason: ${{ steps.plan.outputs.reason }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Choose the operating systems
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          all_os='["ubuntu-latest","windows-latest","macos-latest"]'
+          if [ "$EVENT_NAME" != pull_request ]; then
+            os=$all_os
+            package_os=$all_os
+            reason="A $EVENT_NAME run puts every job on every operating system."
+          else
+            # The three-dot diff holds what the pull request itself changes,
+            # and --no-renames lists a moved file under its old path as well.
+            changed=$(mktemp)
+            trap 'rm -f "$changed"' EXIT
+            git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" > "$changed"
+            macos_path=''
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                scripts/windows/* | scripts/linux/*) ;;
+                scripts/* | tests/* | pyproject.toml | uv.lock | .python-version | .github/workflows/test.yml)
+                  macos_path=$path
+                  break
+                  ;;
+              esac
+            done < "$changed"
+            if [ -n "$macos_path" ]; then
+              printf 'macOS is needed for %q\n' "$macos_path"
+              os=$all_os
+              reason='macOS runs: the pull request changes code, tests or packaging that macOS behavior depends on.'
+            else
+              os='["ubuntu-latest","windows-latest"]'
+              reason='macOS left out: the pull request changes nothing macOS behavior depends on.'
+            fi
+            package_os=$os
+            case "$HEAD_REF" in
+              release-please--branches--*)
+                package_os=$all_os
+                reason="$reason Package Smoke runs on macOS for the release pull request."
+                ;;
+            esac
+          fi
+          echo "$reason"
+          {
+            echo "os=$os"
+            echo "package-os=$package_os"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
+
   test:
     name: Test Python on ${{ matrix.os }}
+    needs: plan
     if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -19,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
 
     steps:
       - name: Checkout code
@@ -77,6 +153,7 @@ jobs:
 
   test-install-scripts:
     name: Test Install Scripts
+    needs: plan
     if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
@@ -84,7 +161,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
 
     steps:
       - name: Checkout code
@@ -111,6 +188,7 @@ jobs:
 
   e2e-tests:
     name: E2E Tests (${{ matrix.os }})
+    needs: plan
     if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -118,7 +196,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
 
     steps:
       - name: Checkout code
@@ -212,15 +290,17 @@ jobs:
 
   package-smoke:
     # Deliberately NOT guarded by the release-please branch filter: the release
-    # PR carries the exact commit that gets published, so it must be validated.
+    # PR carries the exact commit that gets published, so it must be validated,
+    # on macOS as well (the plan's package-os holds every operating system there).
     name: Package Smoke (${{ matrix.os }})
+    needs: plan
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
 
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.package-os) }}
 
     steps:
       - name: Checkout code
@@ -256,32 +336,60 @@ jobs:
           # dependent profile through python -m cc_toolbox.cli setup.
           uvx --from "${{ steps.wheel.outputs.path }}" python tests/fixtures/packaging_smoke_links.py
 
-  # Summary job
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [test, test-install-scripts, e2e-tests, package-smoke]
-    if: ${{ always() && ! startsWith(github.head_ref, 'release-please--branches--') }}
+    needs: [plan, test, test-install-scripts, e2e-tests, package-smoke]
+    if: ${{ always() }}
+    permissions: {}
 
     steps:
       - name: Summary
+        id: summary
+        shell: bash
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          INSTALL_SCRIPTS_RESULT: ${{ needs.test-install-scripts.result }}
+          E2E_RESULT: ${{ needs.e2e-tests.result }}
+          PACKAGE_SMOKE_RESULT: ${{ needs.package-smoke.result }}
+          OS: ${{ needs.plan.outputs.os }}
+          PACKAGE_OS: ${{ needs.plan.outputs.package-os }}
+          REASON: ${{ needs.plan.outputs.reason }}
         run: |
-          echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All tests completed successfully!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Matrix" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Ubuntu + Python" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Windows + Python" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ macOS + Python" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Validation Tests" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Install scripts tested" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### E2E Tests" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Ubuntu E2E tests passed" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Windows E2E tests passed" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ macOS E2E tests passed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Package Smoke" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Wheel built and exercised via uvx on all platforms" >> $GITHUB_STEP_SUMMARY
+          # A job that succeeded or was skipped passes and any other result
+          # fails the summary. A macOS entry the plan left out is not a job,
+          # so it never appears here as a failure.
+          failed=0
+          rows=''
+          add_row() {
+            systems=-
+            case "$2" in
+              success | failure | cancelled)
+                systems=${3#\[}
+                systems=${systems%\]}
+                systems=${systems//[\" ]/}
+                systems=${systems//,/, }
+                ;;
+            esac
+            case "$2" in
+              success | skipped) ;;
+              *) failed=1 ;;
+            esac
+            rows+="| $1 | $systems | $2 |"$'\n'
+          }
+          add_row 'Plan Test Matrix' "$PLAN_RESULT" '["ubuntu-latest"]'
+          add_row 'Test Python' "$TEST_RESULT" "$OS"
+          add_row 'Test Install Scripts' "$INSTALL_SCRIPTS_RESULT" "$OS"
+          add_row 'E2E Tests' "$E2E_RESULT" "$OS"
+          add_row 'Package Smoke' "$PACKAGE_SMOKE_RESULT" "$PACKAGE_OS"
+          {
+            echo '## Test Summary'
+            echo
+            echo "${REASON:-The plan job chose no operating systems.}"
+            echo
+            echo '| Job | Operating systems | Result |'
+            echo '| --- | --- | --- |'
+            printf '%s' "$rows"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
