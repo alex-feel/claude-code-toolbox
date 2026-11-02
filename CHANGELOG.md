@@ -1,5 +1,18 @@
 # Changelog
 
+## [8.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.5.0...v8.6.0) (2026-11-02)
+
+
+### Features
+
+* verify HTTPS certificates against the OS trust store ([b9b54d5](https://github.com/alex-feel/claude-code-toolbox/commit/b9b54d572000d5647e58035fd8b9429143b61afe))
+
+
+### Bug Fixes
+
+* authenticate after falling back from certificate verification ([#496](https://github.com/alex-feel/claude-code-toolbox/issues/496)) ([b9b54d5](https://github.com/alex-feel/claude-code-toolbox/commit/b9b54d572000d5647e58035fd8b9429143b61afe))
+* quote expanded helper paths for cmd.exe on Windows ([#497](https://github.com/alex-feel/claude-code-toolbox/issues/497)) ([1bde978](https://github.com/alex-feel/claude-code-toolbox/commit/1bde97816b790cc609657efc431a08ff87c73a65))
+
 ## [8.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.4.0...v8.5.0) (2026-10-28)
 
 
