@@ -8165,7 +8165,10 @@ def _github_repo_is_public(owner: str, repo: str, *, timeout: float = 5.0) -> bo
         This helper deliberately bypasses _fetch_url_core and AuthHeaderCache
         to avoid recursion (the validator may call this DURING auth resolution
         for a different URL on the same origin). It uses a raw urllib Request
-        + urlopen with the documented GitHub REST API headers.
+        + urlopen with the documented GitHub REST API headers. urlopen's
+        default context verifies the certificate against the trust store
+        use_os_trust_store() set up, with no unverified fallback: a
+        certificate failure returns None, like any other network failure.
     """
     api_url = f'https://api.github.com/repos/{owner}/{repo}'
     request = Request(api_url)
