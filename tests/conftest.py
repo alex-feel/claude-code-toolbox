@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import shutil
+import ssl
 import sys
 import tempfile
 from collections.abc import Generator
@@ -91,6 +92,23 @@ def _restore_session_path(monkeypatch: pytest.MonkeyPatch) -> None:
     makes its undo put that value back.
     """
     monkeypatch.setenv('PATH', os.environ['PATH'])
+
+
+@pytest.fixture(autouse=True)
+def _restore_https_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore ssl.SSLContext and urllib's default opener after every test.
+
+    main() calls use_os_trust_store(), which points ssl.SSLContext at the
+    truststore class for the rest of the process, so every later test would
+    verify HTTPS against the operating system's trust store and build its
+    contexts, a local test server's among them, from that class. urlopen()
+    also keeps the opener it builds on its first call, and with it the TLS
+    context of that moment, so a test that reaches urlopen() would decide
+    the verification of every later one; each test therefore starts without
+    that opener. Both go through monkeypatch, whose undo puts them back.
+    """
+    monkeypatch.setattr(ssl, 'SSLContext', ssl.SSLContext)
+    monkeypatch.setattr('urllib.request._opener', None)
 
 
 @pytest.fixture
@@ -359,7 +377,7 @@ def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.
         return
 
     # Skip for E2E tests (they have e2e_isolated_home fixture)
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
 
     real_home = Path.home()
@@ -580,7 +598,7 @@ def _mock_manifest_write(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
     try:
         import setup_environment
@@ -764,7 +782,7 @@ def _mock_env_loader_generation(request: pytest.FixtureRequest, monkeypatch: pyt
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
 
     _excluded_classes = {
@@ -799,7 +817,7 @@ def _guard_windows_registry_writes(request: pytest.FixtureRequest, monkeypatch: 
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
-    if 'e2e' in str(request.fspath):
+    if 'e2e' in request.path.parts:
         return
     if sys.platform != 'win32':
         return

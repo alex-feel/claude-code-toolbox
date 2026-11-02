@@ -1,6 +1,7 @@
 """Tests for pre-download validation functionality in setup_environment.py."""
 
 import os
+import ssl
 import sys
 import tempfile
 import threading
@@ -82,7 +83,7 @@ class TestFileValidator:
     def test_check_with_head_ssl_error_retry(self, mock_urlopen: MagicMock) -> None:
         """Test HEAD request with SSL error and successful retry returns (True, 200)."""
         mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed')),
             MagicMock(status=200),
         ]
 
@@ -152,7 +153,7 @@ class TestFileValidator:
     def test_check_with_range_ssl_error_retry(self, mock_urlopen: MagicMock) -> None:
         """Test Range request with SSL error and successful retry returns (True, 206)."""
         mock_urlopen.side_effect = [
-            urllib.error.URLError('certificate verify failed'),
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed')),
             MagicMock(status=206),
         ]
 

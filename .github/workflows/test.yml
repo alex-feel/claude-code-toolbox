@@ -230,6 +230,7 @@ jobs:
         env:
           CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY: '1'
           CLAUDE_CODE_TOOLBOX_E2E_REAL_SCHEDULER: '1'
+          CLAUDE_CODE_TOOLBOX_E2E_REAL_TRUST_STORE: '1'
         run: uv run pytest tests/e2e/ -v --tb=long --junit-xml=e2e-results.xml
 
       - name: Upload E2E test results

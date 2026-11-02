@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import platform
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -26,59 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 import setup_environment
 from tests.conftest import empty_mcp_stats
-
-
-class TestSSLErrorHandling:
-    """Test SSL error handling and fallback scenarios."""
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_ssl_error_then_success(self, mock_urlopen):
-        """Test SSL error fallback succeeds on retry."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'ssl fallback content'
-
-        # First call raises SSL error, second succeeds with unverified context
-        mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
-            mock_response,
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://secure.example.com/file', dest)
-
-            assert result is True
-            assert dest.exists()
-            assert dest.read_bytes() == b'ssl fallback content'
-
-            # Verify SSL context was created for second call
-            assert mock_urlopen.call_count == 2
-            second_call = mock_urlopen.call_args_list[1]
-            assert 'context' in second_call[1]
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_non_ssl_error_propagates(self, mock_urlopen):
-        """Test non-SSL errors are propagated."""
-        mock_urlopen.side_effect = urllib.error.URLError('Network unreachable')
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://example.com/file', dest)
-
-            assert result is False
-            assert not dest.exists()
-
-    @patch('setup_environment.urlopen')
-    def test_download_file_generic_exception(self, mock_urlopen):
-        """Test generic exception handling in download_file."""
-        mock_urlopen.side_effect = Exception('Unexpected error')
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / 'test.txt'
-            result = setup_environment.download_file('https://example.com/file', dest)
-
-            assert result is False
-            assert not dest.exists()
 
 
 class TestGitLabURLConversionEdgeCases:
@@ -466,6 +414,60 @@ class TestCredentialsSRPSplit:
         mock_prompt.assert_called_once()
 
 
+# Repository hosts the credential sources do not recognize: a GitHub
+# Enterprise Server instance and a GitLab instance whose host name does not
+# contain "gitlab", each addressed by its web raw URL
+UNRECOGNIZED_REPOSITORY_URLS = [
+    'https://github.example.com/owner/repo/raw/main/env.yaml',
+    'https://git.example.com/group/project/-/raw/main/env.yaml',
+]
+
+
+class TestCredentialsForUnrecognizedHosts:
+    """Only a Header-Name:value CLAUDE_CODE_TOOLBOX_ENV_AUTH authenticates a host the setup does not recognize."""
+
+    @pytest.mark.parametrize('url', UNRECOGNIZED_REPOSITORY_URLS)
+    def test_tokens_and_cli_logins_are_not_applied(self, url: str) -> None:
+        tokens = {'GITHUB_TOKEN': 'gh_tok', 'GITLAB_TOKEN': 'gl_tok', 'REPO_TOKEN': 'repo_tok'}
+        with (
+            patch.dict('os.environ', tokens, clear=True),
+            patch.object(setup_environment, 'cli_stored_token', side_effect=AssertionError('CLI login asked')),
+        ):
+            assert setup_environment.resolve_credentials(url, None) == {}
+
+    @pytest.mark.parametrize('url', UNRECOGNIZED_REPOSITORY_URLS)
+    def test_header_value_override_is_sent(self, url: str) -> None:
+        with patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.resolve_credentials(url, 'Authorization:token abc')
+        assert headers == {'Authorization': 'token abc'}
+
+    @pytest.mark.parametrize('url', UNRECOGNIZED_REPOSITORY_URLS)
+    def test_plain_token_override_names_the_header_form(
+        self, url: str, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.resolve_credentials(url, 'abc')
+        assert headers == {}
+        captured = capsys.readouterr()
+        assert 'CLAUDE_CODE_TOOLBOX_ENV_AUTH="Header-Name:value"' in captured.out + captured.err
+
+    @pytest.mark.parametrize('url', UNRECOGNIZED_REPOSITORY_URLS)
+    def test_no_prompt_is_offered(self, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fail_if_called(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError('the token prompt was offered')
+
+        monkeypatch.setattr('sys.stdin.isatty', lambda: True)
+        monkeypatch.setattr('builtins.input', fail_if_called)
+        monkeypatch.setattr('getpass.getpass', fail_if_called)
+        with patch.dict('os.environ', {}, clear=True):
+            assert setup_environment.get_auth_headers(url, None) == {}
+
+    def test_gitlab_api_url_on_any_host_takes_the_gitlab_token(self) -> None:
+        url = 'https://git.example.com/api/v4/projects/group%2Fproject/repository/files/env.yaml/raw?ref=main'
+        with patch.dict('os.environ', {'GITLAB_TOKEN': 'gl_tok'}, clear=True):
+            assert setup_environment.resolve_credentials(url, None) == {'PRIVATE-TOKEN': 'gl_tok'}
+
+
 class TestBitbucketDetection:
     """Test Bitbucket repository detection."""
 
@@ -718,7 +720,7 @@ class TestFetchURLWithAuthEdgeCases:
         mock_response = MagicMock()
         mock_response.read.return_value = b'ssl content'
         mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed')),
             mock_response,
         ]
 
@@ -811,7 +813,7 @@ class TestInstallClaudeEdgeCases:
     def test_install_claude_windows_ssl_error(self, mock_run, mock_urlopen, _mock_system, _mock_is_file):
         """Test Claude installation on Windows via bootstrap download with SSL error."""
         mock_urlopen.side_effect = [
-            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, 'certificate verify failed')),
             MagicMock(read=lambda: b'# PowerShell script'),
         ]
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -1385,14 +1387,12 @@ class TestCreateSettingsComplex:
             assert env_output['THRESHOLD'] == 0.5
             assert env_output['NORMAL_VAR'] == 'string_value'
 
-    @patch('setup_environment.download_file')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which', return_value='py')
-    def test_create_profile_config_hooks_windows_python(self, mock_which, _mock_system, mock_download):
+    def test_create_profile_config_hooks_windows_python(self, mock_which, _mock_system):
         """Test hook configuration with Python scripts on Windows."""
         del mock_which  # Unused but required for patch
         del _mock_system  # Unused but required for patch
-        mock_download.return_value = True
 
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)

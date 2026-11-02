@@ -14,6 +14,7 @@ import io
 import subprocess
 from datetime import date
 from pathlib import Path
+from typing import IO
 from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -810,13 +811,16 @@ class TestInstallerPieces:
 
     def test_failed_download_deletes_the_temporary_file(self) -> None:
         created: list[str] = []
+        real_named_temporary_file = setup_environment.tempfile.NamedTemporaryFile
 
-        def fail(_url: str, path: str) -> None:
-            created.append(path)
-            raise setup_environment.urllib.error.URLError('refused')
+        def recording_temporary_file(*args: Any, **kwargs: Any) -> IO[bytes]:
+            handle = real_named_temporary_file(*args, **kwargs)
+            created.append(handle.name)
+            return handle
 
         with (
-            patch.object(setup_environment, 'urlretrieve', side_effect=fail),
+            patch.object(setup_environment.tempfile, 'NamedTemporaryFile', recording_temporary_file),
+            patch.object(setup_environment, 'urlopen', side_effect=setup_environment.urllib.error.URLError('refused')),
             pytest.raises(setup_environment.urllib.error.URLError),
         ):
             setup_environment._download_nodejs_installer('https://nodejs.org/dist/v24.22.1/node-v24.22.1.pkg')

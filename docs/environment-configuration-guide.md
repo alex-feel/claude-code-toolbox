@@ -1960,11 +1960,21 @@ The first four sources work without a terminal, which is what a [scheduled updat
 
 #### URL Handling
 
-- GitLab web URLs (`/-/raw/`) are automatically converted to API format
+- The setup recognizes a GitHub URL by its host: `github.com`, a subdomain of it such as `api.github.com`, or `raw.githubusercontent.com`. It recognizes a GitLab URL by a host name that contains `gitlab`, or by the GitLab API form (`/api/v4/projects/`) on any host. The token variables, the CLI logins, the prompt and a plain-token `CLAUDE_CODE_TOOLBOX_ENV_AUTH` apply to recognized URLs only
+- For any other host, such as a GitHub Enterprise Server instance, set `CLAUDE_CODE_TOOLBOX_ENV_AUTH` in `Header-Name:value` form, and the setup sends that header. For a GitLab instance whose host name does not contain `gitlab`, give the API form of the URL, and the GitLab credentials above apply
+- GitLab web URLs (`/-/raw/`) of a recognized GitLab host are automatically converted to API format
 - GitHub raw URLs are automatically converted to API URLs
 - Public access is attempted first; authentication is applied only on 401/403/404 responses
 - GitHub Pages URLs (`*.github.io`) are never treated as repository URLs -- no auth prompt is issued for them even on 404 responses
 - For GitHub 404 responses, the setup script probes `api.github.com/repos/{owner}/{repo}` unauthenticated to distinguish missing files in public repositories (no auth prompt) from private or nonexistent repositories (auth prompt)
+
+#### Certificate Verification
+
+The setup verifies the certificate of every HTTPS server it requests itself (the configuration, the files it references, and the Node.js release documents and installers) against the operating system's trust store: the keychain on macOS, the certificate store on Windows, and the certificate authorities of the distribution's certificate store on Linux. The certificate of a server whose certificate authority your administrator installed on the machine, such as a self-hosted GitLab, therefore verifies with no further setup, also when Python's own certificate bundle does not know that authority.
+
+When a certificate still fails verification, for example a self-signed one, the setup prints `SSL certificate verification failed, trying with unverified context` and sends that download again without verifying the certificate. Authentication works the same way over that connection: the 404 a GitLab instance answers without a token for a private project leads to the credentials above, and the download continues with them. An unverified connection does not prove that the server is the one the URL names, and your token travels over it, so remove the cause of the failure to get a verified connection: [SSL certificate verification failed](#ssl-certificate-verification-failed) lists the causes and what removes each.
+
+The Claude Code installer that the setup runs first (`install_claude.py`, a process of its own) verifies certificates with the Python interpreter's default certificate settings instead, which read the Windows certificate store but not the macOS keychain. When that verification fails, the installer falls back on its own, and its warnings also begin with `SSL certificate verification failed`. The commands the setup runs, such as the `dependencies` commands, and the programs the installer starts use the certificate settings of their own tools.
 
 ### Automatic Auto-Update Management
 
@@ -2677,6 +2687,19 @@ A profile keeps the configuration it was installed from. Giving it another confi
 ### CLAUDE_CODE_TOOLBOX_COMMAND_NAMES changes the command names of profile "NAME"
 
 A variable left over from an earlier install would rename the profile. The setup stops under `--yes`, `--dry-run` or without a terminal, and asks when a terminal is available. Pass `--command-names` with the new list to change the names deliberately, or clear the variable to keep the recorded ones.
+
+### SSL certificate verification failed
+
+The line `SSL certificate verification failed, trying with unverified context` means that the server's certificate failed verification; the setup then downloads without verification, and authentication with `GITLAB_TOKEN`, `GITHUB_TOKEN` or the other [credential sources](#auth-precedence) works as usual. The setup prints the line for each of these causes:
+
+- The certificate is self-signed, or the certificate authority that signed it is not in the operating system's trust store.
+- The certificate has expired or is not yet valid, or the computer's clock is set to a date outside the certificate's validity.
+- The certificate was issued for a different host name than the one in the URL.
+- The server sends its certificate without the intermediate certificates that connect it to a trusted certificate authority. On Linux the setup verifies with OpenSSL, which cannot complete such a chain, while a browser downloads the missing certificate from the address the server's certificate names for it (the Authority Information Access URL), so the URL can open in a browser while the setup's verification fails. On Windows and macOS the setup verifies through the system's own verifier, which downloads the missing certificate from that address as a browser does, so there this cause prints the line only when the server's certificate names no such address or the machine cannot reach it.
+
+For a self-signed certificate or a missing certificate authority, install the certificate authority that signed the server's certificate into the trust store: add it to the System keychain and trust it for SSL on macOS (Keychain Access, or `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem`), import it into Trusted Root Certification Authorities on Windows (`certutil -addstore Root ca.pem` from an elevated terminal), or copy it to `/usr/local/share/ca-certificates/` with a `.crt` extension and run `sudo update-ca-certificates` on Debian and Ubuntu. On the next run the setup's own downloads verify the certificate and print no warning. Installing a certificate authority does not help with the other causes: correct the computer's clock, use the host name the certificate was issued for in the URL, or ask the server's administrator to renew the certificate or to configure the server to send its intermediate certificates.
+
+A warning printed during the Claude Code installation step comes from the installer, which reads the Windows certificate store but not the macOS keychain (see [Certificate Verification](#certificate-verification)); when Claude Code is already installed, `--skip-install` skips that step. When the download fails after the warning with `HTTP Error 404: Not Found`, the server did not accept the request as authenticated: check that the token is set for this run and has access to the project.
 
 ### Configuration not found in repository
 
