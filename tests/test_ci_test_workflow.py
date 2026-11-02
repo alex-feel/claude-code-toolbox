@@ -384,14 +384,33 @@ class TestPlanStep:
         assert outputs == {}
 
 
-SUMMARY_RESULT_VARIABLES = (
-    'PLAN_RESULT',
-    'TEST_RESULT',
-    'INSTALL_SCRIPTS_RESULT',
-    'E2E_RESULT',
-    'PACKAGE_SMOKE_RESULT',
-)
+# Each result variable of the summary step and the label of the row that reports it.
+SUMMARY_ROWS = {
+    'PLAN_RESULT': 'Plan Test Matrix',
+    'TEST_RESULT': 'Test Python',
+    'INSTALL_SCRIPTS_RESULT': 'Test Install Scripts',
+    'E2E_RESULT': 'E2E Tests',
+    'PACKAGE_SMOKE_RESULT': 'Package Smoke',
+}
+SUMMARY_RESULT_VARIABLES = tuple(SUMMARY_ROWS)
 REASON = 'macOS left out: the pull request changes nothing macOS behavior depends on.'
+
+
+def _default_run_row(variable: str, result: str) -> str:
+    """Return the summary row for one job of a run whose matrix jobs ran on WITHOUT_MACOS.
+
+    The plan job runs on ubuntu-latest alone, and every other job on the
+    systems that the defaults of `_run_summary` give OS and PACKAGE_OS.
+
+    Args:
+        variable: The result variable of the job.
+        result: The job's result.
+
+    Returns:
+        The Markdown table row the summary writes for the job.
+    """
+    systems = 'ubuntu-latest' if variable == 'PLAN_RESULT' else ', '.join(WITHOUT_MACOS)
+    return f'| {SUMMARY_ROWS[variable]} | {systems} | {result} |'
 
 
 def _run_summary(
@@ -430,25 +449,24 @@ class TestSummaryStep:
 
         assert completed.returncode == 0, completed.stderr
         assert REASON in summary
-        for row in (
-            '| Plan Test Matrix | ubuntu-latest | success |',
-            '| Test Python | ubuntu-latest, windows-latest | success |',
-            '| Test Install Scripts | ubuntu-latest, windows-latest | success |',
-            '| E2E Tests | ubuntu-latest, windows-latest | success |',
-            '| Package Smoke | ubuntu-latest, windows-latest | success |',
-        ):
-            assert row in summary.splitlines(), summary
+        lines = summary.splitlines()
+        for variable in SUMMARY_ROWS:
+            assert _default_run_row(variable, 'success') in lines, summary
         assert summary in completed.stdout
 
     @pytest.mark.parametrize('result', ['failure', 'cancelled'])
     @pytest.mark.parametrize('variable', SUMMARY_RESULT_VARIABLES)
-    def test_failed_or_cancelled_job_fails_the_summary(
+    def test_failed_or_cancelled_job_fails_the_summary_on_its_own_row(
         self, bash: str, tmp_path: Path, variable: str, result: str,
     ) -> None:
         completed, summary = _run_summary(bash, tmp_path, **{variable: result})
 
         assert completed.returncode == 1
-        assert f'| {result} |' in summary
+        lines = summary.splitlines()
+        assert _default_run_row(variable, result) in lines, summary
+        for other in SUMMARY_ROWS:
+            if other != variable:
+                assert _default_run_row(other, 'success') in lines, summary
 
     def test_release_pull_request_with_skipped_jobs_passes(self, bash: str, tmp_path: Path) -> None:
         completed, summary = _run_summary(
