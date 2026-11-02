@@ -5,8 +5,8 @@ Downloads and configures development tools for Claude Code based on YAML configu
 
 # /// script
 # dependencies = [
-#   "pyyaml",
-#   "questionary",
+#   "pyyaml>=6.0.3",
+#   "questionary>=2.0.0",
 #   "truststore>=0.10.5",
 # ]
 # ///
