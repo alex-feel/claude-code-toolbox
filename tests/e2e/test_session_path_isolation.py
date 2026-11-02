@@ -45,7 +45,7 @@ def test_reader() -> None:
     assert os.environ['PATH'] == ORIGINAL
 '''
 
-_INNER_ARGS = ('-p', 'no:cacheprovider', '-p', 'no:asyncio', '-W', 'error')
+_INNER_ARGS = ('-p', 'no:cacheprovider', '-W', 'error')
 
 
 def test_restore_fixture_gives_the_next_test_the_session_path(pytester: pytest.Pytester) -> None:

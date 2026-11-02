@@ -60,17 +60,16 @@ package = false
 dev = [
     "cryptography>=50.0.2",
     "pre-commit>=4.7.0",
-    "pydantic>=2.14.1",
+    "pydantic>=2.14.2",
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.17.0",
     "pytest-timeout>=2.3.1",
     "pyyaml>=6.0.3",
     "questionary>=2.0.0",
     "truststore>=0.10.5",
-    "types-PyYAML>=6.0.12.20260906",
-    "ty>=0.0.93",
+    "types-PyYAML>=6.0.12.20261030",
+    "ty>=0.0.95",
 ]
 
 [tool.ruff]
@@ -158,14 +157,9 @@ unresolved-import = "ignore"
 exclude = ["tests"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "strict"
-asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
 timeout = 120
-filterwarnings = [
-    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
-]
 markers = [
     "allow_real_home: Allow test to write to real home directory (bypasses safety guard)",
     "real_binary: Exercise the real Claude CLI against an isolated CLAUDE_CONFIG_DIR (skipped when the binary is absent unless CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1)",
