@@ -5,14 +5,13 @@ When verification fails, CertificateFallbackOpener sends that request again
 over an unverified connection, and every later request of the same fetch
 goes there directly. Every certificate failure falls back, whatever its
 cause, which tests against real TLS servers show; a missing intermediate
-certificate is such a failure for OpenSSL, while the Windows verifier
-downloads it from the address the server certificate names. The fallback
+certificate is such a failure for OpenSSL, which never downloads it from
+the address the server certificate names. The fallback
 is independent of authentication: a fetch that falls back escalates on
 401/403/404 to the credentials exactly as a verified fetch does. The one
 request without the fallback is the api.github.com visibility probe.
 """
 
-import contextlib
 import datetime as dt
 import io
 import ssl
@@ -20,7 +19,6 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from collections.abc import Generator
 from email.message import Message
 from pathlib import Path
 from typing import IO
@@ -40,9 +38,9 @@ from setup_environment import FileValidator
 from tests.e2e.tls_support import CertificateAuthority
 from tests.e2e.tls_support import CertificateFiles
 from tests.e2e.tls_support import GitLabLikeServer
-from tests.e2e.tls_support import IssuerCertificateServer
 from tests.e2e.tls_support import make_certificate_authority
 from tests.e2e.tls_support import self_signed_server_certificate
+from tests.e2e.tls_support import server_naming_its_issuer
 
 # The ssl module's own class, read before any test points ssl.SSLContext at
 # the operating system's trust store
@@ -340,31 +338,19 @@ class TestRealCertificateFailures:
         assert FALLBACK_WARNING not in _output(capsys)
 
 
-@contextlib.contextmanager
-def _server_naming_its_issuer(
-    trusted: CertificateAuthority, directory: Path,
-) -> Generator[tuple[GitLabLikeServer, IssuerCertificateServer]]:
-    """Serve a certificate whose intermediate the server leaves out and whose AIA extension names where to get it."""
-    intermediate = make_certificate_authority(directory / 'intermediate', 'Intermediate test CA', issuer=trusted)
-    with IssuerCertificateServer(intermediate) as issuer:
-        certificate = intermediate.issue(directory / 'server', 'names-its-issuer', ca_issuers=issuer.url)
-        with GitLabLikeServer(certificate, {'env.yaml': SERVED}, SERVER_TOKEN) as server:
-            yield server, issuer
-
-
 class TestMissingIntermediateWithIssuerAddress:
     """A server leaves out its intermediate certificate and names, in its own certificate, where to download it.
 
     OpenSSL never downloads it, so the request falls back with the warning.
-    The Windows certificate chain engine, which verifies once
-    use_os_trust_store() is in effect, downloads it as a browser does and
-    verifies the certificate.
+    The Windows certificate chain engine downloads it and keeps a copy in
+    the user's certificate caches, so that case is an E2E test that removes
+    the copy again (tests/e2e/test_certificate_verification.py).
     """
 
     def test_openssl_falls_back_without_downloading_the_intermediate(
         self, trusted: CertificateAuthority, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        with _server_naming_its_issuer(trusted, tmp_path) as (server, issuer):
+        with server_naming_its_issuer(trusted, tmp_path, {'env.yaml': SERVED}, SERVER_TOKEN) as (server, issuer, _):
             failure = _verification_failure(server.url('env.yaml'))
             opener = CertificateFallbackOpener()
             with opener.open(_with_token(server.url('env.yaml'))) as response:
@@ -375,22 +361,6 @@ class TestMissingIntermediateWithIssuerAddress:
         assert opener.verifies is False
         assert _output(capsys).count(FALLBACK_WARNING) == 1
         assert downloads == []
-
-    @pytest.mark.skipif(sys.platform != 'win32', reason='exercises the Windows certificate chain engine')
-    def test_windows_verifier_downloads_the_intermediate(
-        self, trusted: CertificateAuthority, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        with _server_naming_its_issuer(trusted, tmp_path) as (server, issuer):
-            setup_environment.use_os_trust_store()
-            opener = CertificateFallbackOpener()
-            with opener.open(_with_token(server.url('env.yaml'))) as response:
-                body = response.read()
-            downloads = issuer.recorded()
-        assert body == SERVED
-        assert opener.verifies is True
-        assert FALLBACK_WARNING not in _output(capsys)
-        assert downloads
-        assert set(downloads) == {('GET', issuer.path)}
 
 
 class TestGitHubRepositoryProbe:

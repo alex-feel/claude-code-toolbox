@@ -8,11 +8,14 @@ and serves files the way a GitLab instance serves a private project through
 its REST API: a request without the project's token gets 404, as GitLab
 answers for a project the caller cannot see, and a request with the token
 gets the file. A second, plain HTTP server publishes an issuer's certificate
-at the address a server certificate names. Every request is recorded.
+at the address a server certificate names, and server_naming_its_issuer()
+runs both for a server that leaves its intermediate certificate out. Every
+request is recorded.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import ipaddress
 import secrets
@@ -21,6 +24,7 @@ import ssl
 import threading
 import urllib.parse
 from collections.abc import Callable
+from collections.abc import Generator
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -430,3 +434,31 @@ class IssuerCertificateServer:
             return [b'']
         start_response('200 OK', [('Content-Type', 'application/pkix-cert'), ('Content-Length', str(len(self._certificate)))])
         return [b''] if method == 'HEAD' else [self._certificate]
+
+
+@contextlib.contextmanager
+def server_naming_its_issuer(
+    root: CertificateAuthority,
+    directory: Path,
+    files: dict[str, bytes],
+    token: str,
+    *,
+    intermediate_name: str = 'Intermediate test CA',
+) -> Generator[tuple[GitLabLikeServer, IssuerCertificateServer, CertificateAuthority]]:
+    """Serve ``files`` over a certificate whose intermediate the server leaves out.
+
+    ``root`` issues an intermediate authority named ``intermediate_name``,
+    an IssuerCertificateServer publishes the intermediate, and the server
+    certificate the intermediate issues names that address in its Authority
+    Information Access extension. The GitLabLikeServer sends the server
+    certificate alone, so a client that trusts ``root`` verifies it only
+    after downloading the intermediate from that address.
+
+    Yields:
+        The GitLab-like server, the issuer server and the intermediate authority.
+    """
+    intermediate = make_certificate_authority(directory / 'intermediate', intermediate_name, issuer=root)
+    with IssuerCertificateServer(intermediate) as issuer:
+        certificate = intermediate.issue(directory / 'server', 'names-its-issuer', ca_issuers=issuer.url)
+        with GitLabLikeServer(certificate, files, token) as server:
+            yield server, issuer, intermediate

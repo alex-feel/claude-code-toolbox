@@ -170,7 +170,7 @@ markers = [
     "allow_real_home: Allow test to write to real home directory (bypasses safety guard)",
     "real_binary: Exercise the real Claude CLI against an isolated CLAUDE_CONFIG_DIR (skipped when the binary is absent unless CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1)",
     "real_scheduler: Reach the real OS scheduler instead of the fake (registration tests run only where CLAUDE_CODE_TOOLBOX_E2E_REAL_SCHEDULER=1, which CI sets)",
-    "real_trust_store: Install a test certificate authority into the operating system trust store for the test (runs only where CLAUDE_CODE_TOOLBOX_E2E_REAL_TRUST_STORE=1, which CI sets)",
+    "real_trust_store: Change the machine's certificate state for the test -- a test certificate authority in the operating system trust store, or an intermediate certificate and its address the Windows chain engine downloads into the user's certificate caches -- and undo it (runs only where CLAUDE_CODE_TOOLBOX_E2E_REAL_TRUST_STORE=1, which CI sets)",
     "real_uv_sync: Run the real uv sync that prepares hook environments instead of the recorder (skipped when uv is not on PATH)",
 ]
 

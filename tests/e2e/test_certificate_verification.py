@@ -7,30 +7,40 @@ warning, and the 404 GitLab answers without the token escalates to the
 token exactly as on a verified connection, for the configuration, the
 validation of its files and their downloads.
 
-The real trust-store test installs a certificate authority made for the
-run into the operating system's trust store and proves that main() then
-verifies a server certificate it issued, with no fallback at all. It changes
-the machine's trust store, so it runs only where
+Two tests change the machine's certificate state, so they run only where
 CLAUDE_CODE_TOOLBOX_E2E_REAL_TRUST_STORE=1, which the E2E CI job sets, and
-removes the authority again whatever the outcome.
+undo the change whatever the outcome. The real trust-store test installs a
+certificate authority made for the run into the operating system's trust
+store and proves that main() then verifies a server certificate it issued,
+with no fallback at all. The Windows chain-engine test proves that, under
+the OS trust store, a server certificate whose intermediate the server
+leaves out verifies on Windows: the chain engine downloads the intermediate
+from the address the certificate names, keeps a copy in the user's
+intermediate certificate store and the address in its URL cache, and the
+test deletes both and checks that they are gone.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import ssl
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+from urllib.request import Request
 
 import pytest
 import yaml
 
+from scripts import setup_environment
 from tests.e2e.profile_support import run_main
 from tests.e2e.tls_support import CertificateAuthority
 from tests.e2e.tls_support import GitLabLikeServer
 from tests.e2e.tls_support import make_certificate_authority
 from tests.e2e.tls_support import self_signed_server_certificate
+from tests.e2e.tls_support import server_naming_its_issuer
 
 TOKEN = 'glpat-e2e-certificate'
 FALLBACK_WARNING = 'SSL certificate verification failed, trying with unverified context'
@@ -191,3 +201,74 @@ class TestOsTrustStore:
         assert FALLBACK_WARNING not in output
         _assert_installed(e2e_isolated_home['home'], 'trust-e2e')
         _assert_every_file_served_with_the_token(server)
+
+
+def _certutil(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(['certutil', *arguments], capture_output=True, text=True, check=False, timeout=120)
+
+
+def _kept_by_the_chain_engine(intermediate: CertificateAuthority, issuer_url: str) -> list[str]:
+    """What the Windows chain engine still keeps of a downloaded intermediate.
+
+    The intermediate counts when any certificate store of the machine or the
+    user holds a certificate with its DER bytes, and the address counts when
+    certutil lists it in the URL cache of the current user.
+
+    Returns:
+        A description of each copy found; empty when nothing is left.
+    """
+    kept: list[str] = []
+    fingerprint = intermediate.fingerprint.lower()
+    if sys.platform == 'win32' and any(
+        hashlib.sha1(certificate, usedforsecurity=False).hexdigest() == fingerprint
+        for certificate, _, _ in ssl.enum_certificates('CA')
+    ):
+        kept.append(f'intermediate {intermediate.fingerprint} in the CA certificate store')
+    if issuer_url in (line.strip() for line in _certutil('-urlcache', issuer_url).stdout.splitlines()):
+        kept.append(f'{issuer_url} in the URL cache')
+    return kept
+
+
+def _forget_downloaded_intermediate(intermediate: CertificateAuthority, issuer_url: str) -> None:
+    """Delete the copy of the intermediate and the cached address the chain engine keeps after a download."""
+    _certutil('-user', '-delstore', 'CA', intermediate.fingerprint)
+    _certutil('-urlcache', issuer_url, 'delete')
+
+
+@pytest.mark.real_trust_store
+@pytest.mark.skipif(sys.platform != 'win32', reason='exercises the Windows certificate chain engine')
+@pytest.mark.skipif(
+    os.environ.get(REAL_TRUST_STORE_VARIABLE) != '1',
+    reason=(
+        'the Windows chain engine keeps a downloaded intermediate in the certificate store and URL cache of the user; '
+        f'runs where {REAL_TRUST_STORE_VARIABLE}=1 (the E2E CI job)'
+    ),
+)
+class TestWindowsChainEngineDownloadsTheIntermediate:
+    """Under the OS trust store, Windows completes a chain whose intermediate the server leaves out."""
+
+    def test_missing_intermediate_is_downloaded_and_verifies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        run = uuid.uuid4().hex[:12]
+        root = make_certificate_authority(tmp_path / 'root', f'cc-toolbox E2E root CA {run}', path_length=1)
+        monkeypatch.setenv('SSL_CERT_FILE', str(root.authority.certificate))
+        configuration = _configuration('chain-e2e')
+        with server_naming_its_issuer(
+            root, tmp_path, {'env.yaml': configuration}, TOKEN, intermediate_name=f'cc-toolbox E2E intermediate CA {run}',
+        ) as (server, issuer, intermediate):
+            try:
+                setup_environment.use_os_trust_store()
+                opener = setup_environment.CertificateFallbackOpener()
+                with opener.open(Request(server.url('env.yaml'), headers={'PRIVATE-TOKEN': TOKEN})) as response:
+                    body = response.read()
+                downloads = issuer.recorded()
+            finally:
+                _forget_downloaded_intermediate(intermediate, issuer.url)
+            left_behind = _kept_by_the_chain_engine(intermediate, issuer.url)
+        assert body == configuration
+        assert opener.verifies is True
+        assert FALLBACK_WARNING not in _output(capsys)
+        assert downloads
+        assert set(downloads) == {('GET', issuer.path)}
+        assert left_behind == []
