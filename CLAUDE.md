@@ -493,7 +493,7 @@ Recurring patterns that cause CI failures. Every item below has caused at least 
 
 ## Script Dependencies
 
-Python 3.12 required. **uv** installed by bootstrap scripts. Published runtime dependencies: PyYAML, questionary and truststore (HTTPS verification against the OS trust store; see Certificate verification under Download Retry Configuration), declared in the PEP 723 block of `setup_environment.py`, `[project].dependencies` and `[dependency-groups].dev`. Dev-only: Pydantic (consumed by `scripts/models` and its tests), cryptography (the certificates of the TLS E2E tests), pytest, ruff, pre-commit.
+Python 3.12 required. **uv** installed by bootstrap scripts. Published runtime dependencies: PyYAML, questionary and truststore (HTTPS verification against the OS trust store; see Certificate verification under Download Retry Configuration), declared with the same version specifiers in the PEP 723 block of `setup_environment.py` (the bootstrap wrappers' `uv run --no-project` installs only these), `[project].dependencies` and `[dependency-groups].dev`; `tests/test_packaging.py` parses the PEP 723 block as the specification does and fails when one declaration differs from the others or a runtime dependency loses its minimum version. Dev-only: Pydantic (consumed by `scripts/models` and its tests), cryptography (the certificates of the TLS E2E tests), pytest, ruff, pre-commit.
 
 ## Version Management
 

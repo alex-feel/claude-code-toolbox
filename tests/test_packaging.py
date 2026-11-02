@@ -3,15 +3,27 @@ Tests for the PyPI packaging configuration in pyproject.toml.
 
 The wheel maps scripts/ into the cc_toolbox package in place, so these
 assertions pin the exact file set, the path rewrite, the console entry point,
-and the pyyaml + questionary + truststore runtime dependency closure.
+and the pyyaml + questionary + truststore runtime dependency closure, which
+the PEP 723 block of setup_environment.py and the dev group declare as well.
 """
 
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
-PYPROJECT = Path(__file__).parent.parent / 'pyproject.toml'
+REPOSITORY_ROOT = Path(__file__).parent.parent
+PYPROJECT = REPOSITORY_ROOT / 'pyproject.toml'
+SETUP_SCRIPT = REPOSITORY_ROOT / 'scripts' / 'setup_environment.py'
+
+# The metadata block of PEP 723 (inline script metadata), as the
+# specification's reference implementation matches it.
+INLINE_METADATA_BLOCK = re.compile(
+    r'(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$',
+)
 
 WHEEL_FILES = [
     'scripts/__init__.py',
@@ -26,6 +38,40 @@ def pyproject() -> dict:
     """Parse pyproject.toml once for all assertions."""
     with PYPROJECT.open('rb') as f:
         return tomllib.load(f)
+
+
+def script_metadata(path: Path) -> dict:
+    """Parse the `script` metadata block of a file the way PEP 723 specifies.
+
+    Args:
+        path: The script to read.
+
+    Returns:
+        The TOML content of the file's single `script` block.
+    """
+    blocks = [
+        match for match in INLINE_METADATA_BLOCK.finditer(path.read_text(encoding='utf-8'))
+        if match.group('type') == 'script'
+    ]
+    assert len(blocks) == 1, f'{path.name} must carry exactly one `# /// script` block'
+    content = ''.join(
+        line[2:] if line.startswith('# ') else line[1:]
+        for line in blocks[0].group('content').splitlines(keepends=True)
+    )
+    return tomllib.loads(content)
+
+
+def requirements_by_name(declarations: list[str]) -> dict[str, Requirement]:
+    """Map each declared requirement to its normalized project name.
+
+    Args:
+        declarations: Requirement strings as a dependency list holds them.
+
+    Returns:
+        The parsed requirements keyed by their canonical names.
+    """
+    parsed = [Requirement(declaration) for declaration in declarations]
+    return {canonicalize_name(requirement.name): requirement for requirement in parsed}
 
 
 class TestBuildSystem:
@@ -63,10 +109,7 @@ class TestProjectMetadata:
         )
 
     def test_runtime_dependency_closure(self, pyproject: dict) -> None:
-        names = sorted(
-            dep.split('>=')[0].split('==')[0].strip()
-            for dep in pyproject['project']['dependencies']
-        )
+        names = sorted(requirements_by_name(pyproject['project']['dependencies']))
         assert names == ['pyyaml', 'questionary', 'truststore'], (
             'The runtime closure is exactly pyyaml (config parsing), '
             'questionary (interactive component picker; the numbered fallback '
@@ -76,3 +119,37 @@ class TestProjectMetadata:
 
     def test_requires_python_has_no_upper_bound(self, pyproject: dict) -> None:
         assert pyproject['project']['requires-python'] == '>=3.12'
+
+
+class TestRuntimeDependencyDeclarations:
+    """Pin the three declarations of the runtime dependencies to one another.
+
+    The bootstrap wrappers run setup_environment.py with `uv run --no-project`,
+    which installs only the dependencies of its PEP 723 block; the wheel
+    installs [project].dependencies; `uv run pytest` provisions the dev group.
+    A dependency dropped or loosened in one of them goes unnoticed on that
+    path alone, so every declaration must name the same requirements.
+    """
+
+    def test_script_block_declares_the_wheel_dependencies(self, pyproject: dict) -> None:
+        declared = requirements_by_name(script_metadata(SETUP_SCRIPT)['dependencies'])
+        assert declared == requirements_by_name(pyproject['project']['dependencies']), (
+            'The PEP 723 block of setup_environment.py must declare exactly '
+            'the requirements of [project].dependencies'
+        )
+
+    def test_dev_group_declares_the_wheel_dependencies(self, pyproject: dict) -> None:
+        dev_group = requirements_by_name(pyproject['dependency-groups']['dev'])
+        runtime = requirements_by_name(pyproject['project']['dependencies'])
+        assert {name: dev_group.get(name) for name in runtime} == runtime, (
+            '[dependency-groups].dev must declare every requirement of '
+            '[project].dependencies with the same version specifier'
+        )
+
+    def test_wheel_dependencies_carry_a_minimum_version(self, pyproject: dict) -> None:
+        runtime = requirements_by_name(pyproject['project']['dependencies'])
+        unbounded = sorted(
+            name for name, requirement in runtime.items()
+            if not any(specifier.operator == '>=' for specifier in requirement.specifier)
+        )
+        assert unbounded == [], f'Runtime dependencies without a minimum version: {unbounded}'
