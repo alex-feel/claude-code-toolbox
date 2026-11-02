@@ -333,9 +333,11 @@ DEFAULT_ARRAY_UNION_KEYS: set[str] = {
 # each hook's environment for the same interpreter, so the two never diverge.
 HOOK_LAUNCHER_PYTHON_VERSION = '3.12'
 
-# Keys that contain shell commands requiring tilde expansion
-# These keys may reference file paths that need ~ expanded to absolute paths
-# Uses expand_tildes_in_command() for consistent expansion (DRY with commit 46a086b)
+# Settings keys whose value is a command Claude Code runs through the shell
+# (cmd.exe on Windows). On Windows _expand_tilde_keys_in_settings() expands
+# each ~ path of the value and double-quotes it (expand_tildes_for_cmd()),
+# and the re-rooting of an isolated run quotes each argument that holds a
+# profile path it spells into the value (ConfigHomeReroot.rewrite_for_cmd()).
 TILDE_EXPANSION_KEYS: set[str] = {
     'apiKeyHelper',
     'awsCredentialExport',
@@ -2099,14 +2101,25 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     return expanded
 
 
+# A tilde path inside a command: ~ or ~username, then the rest of the
+# argument up to the next whitespace (~/.bashrc, ~/dir/file, ~user/.config)
+_TILDE_PATH_PATTERN = re.compile(r'(~[^/\s]*(?:/[^\s]*)?)')
+# A double-quoted run of a command line cmd.exe runs: an opening quote, the
+# text up to the next quote and that closing quote when present. cmd.exe
+# toggles its quoted state at every double quote, so the runs found from
+# the left are the quoted parts of the line.
+_DOUBLE_QUOTED_RUN_PATTERN = re.compile(r'"[^"]*"?')
+# A word of the text outside double quotes, which whitespace ends
+_WORD_PATTERN = re.compile(r'\S+')
+
+
 def expand_tildes_in_command(command: str) -> str:
     """Expand tilde paths in a shell command.
 
     When commands are executed via subprocess with shell=False or wrapped in bash -c,
     the shell's tilde expansion doesn't occur. This function explicitly expands
-    tilde paths to their absolute equivalents.
-
-    Uses normalize_tilde_path() internally for DRY compliance.
+    tilde paths to their absolute equivalents through normalize_tilde_path(),
+    leaving the quoting of the command as the author wrote it.
 
     Args:
         command: Shell command that may contain tilde paths
@@ -2121,23 +2134,77 @@ def expand_tildes_in_command(command: str) -> str:
         >>> expand_tildes_in_command("echo 'text' >> ~/.config/file")
         "echo 'text' >> /home/user/.config/file"
     """
-    # Pattern matches ~ and ~username paths
-    # Matches: ~ followed by optional username, then slash and path components
-    # Examples: ~/.bashrc, ~/dir/file, ~user/.config
-    tilde_pattern = r'(~[^/\s]*(?:/[^\s]*)?)'
+    return _TILDE_PATH_PATTERN.sub(lambda match: normalize_tilde_path(match.group(1)), command)
 
-    def expand_match(match: re.Match[str]) -> str:
-        """Expand a single tilde path match using central function."""
-        path = match.group(1)
-        # DRY: Use central normalization function
-        expanded = normalize_tilde_path(path)
-        # Only return expanded path if expansion actually occurred
-        # This prevents expanding tildes in strings like "~test" that aren't paths
-        if expanded != path:
-            return expanded
-        return path
 
-    return re.sub(tilde_pattern, expand_match, command)
+def _map_cmd_line(command: str, unquoted: Callable[[str], str], quoted: Callable[[str], str]) -> str:
+    """Map the parts of a command line cmd.exe runs: the text outside double quotes and each double-quoted run.
+
+    Args:
+        command: The command line.
+        unquoted: Maps one stretch of text outside double quotes.
+        quoted: Maps one double-quoted run, its quotes included.
+
+    Returns:
+        The mapped parts joined in order.
+    """
+    pieces: list[str] = []
+    cursor = 0
+    for run in _DOUBLE_QUOTED_RUN_PATTERN.finditer(command):
+        pieces.extend((unquoted(command[cursor:run.start()]), quoted(run.group(0))))
+        cursor = run.end()
+    pieces.append(unquoted(command[cursor:]))
+    return ''.join(pieces)
+
+
+def _expand_quoted_run(run: str) -> str:
+    """Expand the tilde paths of a double-quoted run, which cmd.exe already passes as one argument.
+
+    A run that opens with a tilde is one path, spaces included
+    (``"~/My Profiles/x"``), so it expands whole; a tilde further inside the
+    run (``"cat ~/x"``) expands in place.
+
+    Args:
+        run: The run, its quotes included.
+
+    Returns:
+        The run with its tilde paths expanded and its quotes kept.
+    """
+    body = run[1:]
+    closing = ''
+    if body.endswith('"'):
+        body, closing = body[:-1], '"'
+    expanded = normalize_tilde_path(body) if body.startswith('~') else expand_tildes_in_command(body)
+    return f'"{expanded}{closing}'
+
+
+def expand_tildes_for_cmd(command: str) -> str:
+    """Expand the tilde paths of a command cmd.exe runs, each into one double-quoted argument.
+
+    cmd.exe resolves no tilde, so every ~ path is expanded through
+    normalize_tilde_path(). A path outside double quotes is double-quoted
+    from the tilde to the end of its argument: a Windows home folder may
+    hold a space, which splits an unquoted path into two arguments, or one
+    of the characters cmd.exe treats as syntax (& ^ ( )), and quoting every
+    expanded path gives the command one shape on every machine. A path
+    inside double quotes is already one argument and gains no quotes; one
+    that opens a quoted run spans the run up to its closing quote.
+
+    Args:
+        command: A command cmd.exe runs, such as an apiKeyHelper value.
+
+    Returns:
+        The command with every tilde path expanded and quoted.
+
+    Examples:
+        >>> expand_tildes_for_cmd('uv run ~/.claude/scripts/key.py')  # Windows
+        'uv run "C:\\\\Users\\\\First Last\\\\.claude\\\\scripts\\\\key.py"'
+    """
+    return _map_cmd_line(
+        command,
+        lambda text: _TILDE_PATH_PATTERN.sub(lambda match: f'"{normalize_tilde_path(match.group(1))}"', text),
+        _expand_quoted_run,
+    )
 
 
 # A path naming the base config home or a ~/.claude.json sibling in any
@@ -2205,6 +2272,37 @@ class ConfigHomeReroot:
         """
         return _CONFIG_HOME_PATTERN.sub(lambda match: self._replacement(match, value), value)
 
+    def rewrite_for_cmd(self, value: str) -> str:
+        """Return the rewrite of a command cmd.exe runs, every argument holding a re-rooted path one argument.
+
+        The value is rewritten as rewrite() rewrites it. The profile path a
+        rewrite inserts may hold a space or a character cmd.exe treats as
+        syntax, whether it is spelled below the home (``~/My Profiles/NAME``)
+        or absolute, so a word outside the author's double quotes that holds
+        a re-rooted path is double-quoted from the first such path to the
+        end of the word, once however many paths it holds. A re-rooted path
+        inside the author's quotes is already one argument and gains no
+        quotes. A quoted path that opens with a tilde expands whole in the
+        Windows settings write (expand_tildes_for_cmd()).
+
+        Args:
+            value: A command cmd.exe runs, such as an apiKeyHelper value.
+
+        Returns:
+            The rewritten command.
+        """
+        return _map_cmd_line(
+            value,
+            lambda text: _WORD_PATTERN.sub(lambda word: self._rewrite_cmd_word(word.group(0)), text),
+            self.rewrite,
+        )
+
+    def _rewrite_cmd_word(self, word: str) -> str:
+        for match in _CONFIG_HOME_PATTERN.finditer(word):
+            if self._replacement(match, word) != match.group(0):
+                return f'{word[:match.start()]}"{self.rewrite(word[match.start():])}"'
+        return word
+
     def _replacement(self, match: re.Match[str], value: str) -> str:
         sep = match.group('sep')
         sibling = match.group('sibling')
@@ -2231,7 +2329,10 @@ class ConfigHomeReroot:
         command of every platform list and every TILDE_EXPANSION_KEYS value
         of user-settings, and the destinations of the deselected
         files-to-download entries, so the removal plan resolves the same
-        files the install wrote.
+        files the install wrote. On Windows a TILDE_EXPANSION_KEYS value is
+        a command cmd.exe runs and goes through rewrite_for_cmd(); the
+        dependency commands keep the plain rewrite, because PowerShell reads
+        a quoted path in command position as a string rather than a call.
 
         Args:
             config: The resolved, component-selected configuration.
@@ -2259,10 +2360,11 @@ class ConfigHomeReroot:
         user_settings = config.get('user-settings')
         if isinstance(user_settings, dict):
             settings_dict = cast(dict[str, Any], user_settings)
+            rewrite_setting = self.rewrite_for_cmd if sys.platform == 'win32' else self.rewrite
             for key in sorted(TILDE_EXPANSION_KEYS):
                 setting = settings_dict.get(key)
                 if isinstance(setting, str):
-                    rewritten = self.rewrite(setting)
+                    rewritten = rewrite_setting(setting)
                     if rewritten != setting:
                         settings_dict[key] = rewritten
                         records.append(RerootedPath('user-settings', key, setting, rewritten))
@@ -2502,9 +2604,11 @@ def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Expand tilde paths in settings keys that contain shell commands.
 
     Platform-conditional behavior:
-    - Windows: Tildes are expanded to absolute paths because Windows shell
-      does not resolve ~ in paths. Uses expand_tildes_in_command() for
-      DRY compliance with commit 46a086b.
+    - Windows: Claude Code runs these commands through cmd.exe, which
+      resolves no ~, so every tilde path is expanded to an absolute path
+      and double-quoted, keeping a home folder whose name contains a space
+      one argument (expand_tildes_for_cmd()); a path inside the author's
+      double quotes gains no quotes.
     - Linux/macOS/WSL: Tildes are PRESERVED. Claude Code resolves ~ to the
       correct home directory at runtime, and preserving tildes keeps paths
       portable across environments (avoids WSL HOME contamination).
@@ -2513,15 +2617,14 @@ def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
         settings: User settings dict (not modified)
 
     Returns:
-        New dict with tilde paths expanded (Windows) or preserved (Unix)
+        New dict with tilde paths expanded and quoted (Windows) or preserved (Unix)
     """
     result = settings.copy()
     if sys.platform == 'win32':
-        # Windows: Claude Code does NOT expand tildes, must pre-expand
         for key in TILDE_EXPANSION_KEYS:
             if key in result and isinstance(result[key], str):
                 original = result[key]
-                expanded = expand_tildes_in_command(original)
+                expanded = expand_tildes_for_cmd(original)
                 if expanded != original:
                     debug_log(f'Expanded tilde in {key}: {original} -> {expanded}')
                 result[key] = expanded
@@ -2612,7 +2715,8 @@ def write_user_settings(
     3. WRITE merged result back to file
 
     Before merging, applies platform-conditional tilde handling:
-    - Windows: Expands tilde paths in command keys (apiKeyHelper, awsCredentialExport)
+    - Windows: Expands and double-quotes tilde paths in command keys
+      (apiKeyHelper, awsCredentialExport), which cmd.exe runs
     - Linux/macOS/WSL: Preserves tildes for runtime resolution by Claude Code
 
     Used in non-isolated mode only: when command-names is present, the
@@ -17236,7 +17340,8 @@ def create_profile_config(
             instead of config_base_dir / 'hooks'.
         user_settings: Optional user-settings section (raw settings.json
             content with camelCase keys). Tilde paths in command keys are
-            expanded platform-conditionally before the write.
+            expanded (and on Windows double-quoted) platform-conditionally
+            before the write.
 
     Returns:
         bool: True if successful, False otherwise.

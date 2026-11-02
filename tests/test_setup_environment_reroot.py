@@ -220,8 +220,14 @@ class TestApply:
             },
         }
 
-    def test_sections_are_rewritten_in_place_and_reported(self, tmp_path: Path) -> None:
-        """Destinations, commands and settings values naming the config home move into the profile."""
+    def test_sections_are_rewritten_in_place_and_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Destinations, commands and settings values naming the config home move into the profile.
+
+        The settings values take the plain rewrite of Linux and macOS here;
+        tests/test_setup_environment_cmd_paths.py covers the quoted rewrite
+        Windows gives them.
+        """
+        monkeypatch.setattr(setup_environment.sys, 'platform', 'linux')
         config = self._config()
 
         records = _reroot(tmp_path).apply(config)
@@ -430,7 +436,7 @@ class TestWindowsTildeExpansionFollowsRerooting:
     """The Windows tilde expansion of the settings keys runs on the rewritten value."""
 
     def test_expanded_api_key_helper_points_into_the_profile(self, isolated_home: Path) -> None:
-        """After re-rooting, the expanded helper path lies inside the profile directory."""
+        """After re-rooting, the expanded and quoted helper path lies inside the profile directory."""
         settings = {'apiKeyHelper': 'uv run ~/.claude/scripts/username.py'}
         _reroot(isolated_home).apply({'user-settings': settings})
 
@@ -438,7 +444,7 @@ class TestWindowsTildeExpansionFollowsRerooting:
             expanded = setup_environment._expand_tilde_keys_in_settings(settings)
 
         expected = os.path.normpath(str(isolated_home / '.claude' / PROFILE / 'scripts' / 'username.py'))
-        assert expanded['apiKeyHelper'] == f'uv run {expected}'
+        assert expanded['apiKeyHelper'] == f'uv run "{expected}"'
 
 
 def _linked_config() -> dict[str, Any]:
