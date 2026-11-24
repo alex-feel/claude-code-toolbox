@@ -49,6 +49,7 @@ from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_child_runner
 from tests.e2e.profile_support import write_config
+from tests.e2e.profile_support import written_files
 from tests.e2e.validators import validate_manifest
 
 SKIP = ['--skip-install', '--no-admin']
@@ -356,7 +357,7 @@ class TestIsolatedRunStaysInsideItsProfile:
 
         manifest = read_manifest(profile_dir)
         assert not validate_manifest(profile_dir / 'manifest.json', {**config, 'command-names': [PROFILE]})
-        assert manifest['files_written'] == ['CLAUDE.md', 'project-overrides/override.yaml', 'scripts/username.py']
+        assert written_files(manifest) == ['CLAUDE.md', 'project-overrides/override.yaml', 'scripts/username.py']
         assert [record['dest'] for record in manifest['machine_wide_destinations']] == [
             str(home / '.serena' / 'outside.txt'),
         ]
@@ -484,7 +485,7 @@ class TestSpellingsAndExemptions:
         assert (relocated / 'CLAUDE.md').read_text(encoding='utf-8') == '# profile CLAUDE.md\n'
         assert not (e2e_isolated_home['claude_dir'] / 'CLAUDE.md').exists()
         assert not (e2e_isolated_home['claude_dir'] / PROFILE / 'CLAUDE.md').exists()
-        assert read_manifest(relocated)['files_written'] == ['CLAUDE.md']
+        assert written_files(read_manifest(relocated)) == ['CLAUDE.md']
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
@@ -618,7 +619,7 @@ class TestConfigurationSwitchSeesTheRerootedFiles:
         assert not (profile_dir / 'only-a.txt').exists()
         assert (profile_dir / 'only-b.txt').read_text(encoding='utf-8') == 'b\n'
         assert (profile_dir / 'CLAUDE.md').read_text(encoding='utf-8') == 'override: true\n'
-        assert read_manifest(profile_dir)['files_written'] == ['CLAUDE.md', 'only-b.txt']
+        assert written_files(read_manifest(profile_dir)) == ['CLAUDE.md', 'only-b.txt']
 
 
 def _fd_output(capfd: pytest.CaptureFixture[str]) -> str:
@@ -669,7 +670,7 @@ class TestProfileRerunRerootsAgain:
             'statsig': False, '.claude.json.backup': False, '.claude.json.corrupted.123': False,
         }, 'a cleanup line of the re-run left its target in the profile'
         manifest = read_manifest(profile_dir)
-        assert manifest['files_written'] == manifest_before['files_written']
+        assert written_files(manifest) == written_files(manifest_before)
         assert manifest['config_digest'] == manifest_before['config_digest']
         settings = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
         helper = _helper_path(home, '.claude', PROFILE, 'scripts', 'username.py')
@@ -776,7 +777,7 @@ class TestProfileOutsideTheHome:
 
         assert (outside / 'CLAUDE.md').read_text(encoding='utf-8') == '# profile CLAUDE.md\n'
         assert (outside / 'scripts' / 'username.py').read_text(encoding='utf-8') == 'print("user")\n'
-        assert read_manifest(outside)['files_written'] == ['CLAUDE.md', 'scripts/username.py']
+        assert written_files(read_manifest(outside)) == ['CLAUDE.md', 'scripts/username.py']
         assert not (outside / 'statsig').exists(), 'the cleanup line left the profile statsig'
         assert (claude_dir / 'statsig' / 'cache.bin').exists(), 'the cleanup line removed the base statsig'
         assert _base_snapshot(home) == before, 'an isolated run changed the base config home'
@@ -827,7 +828,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         source_file = source_dir / 'hooks' / 'project-overrides' / 'override.yaml'
         assert source_file.read_text(encoding='utf-8') == 'override: true\n'
         assert (source_dir / 'x.txt').read_text(encoding='utf-8') == 'a\n'
-        assert read_manifest(source_dir)['files_written'] == [
+        assert written_files(read_manifest(source_dir)) == [
             'hooks/hook.py', 'hooks/project-overrides/override.yaml', 'x.txt',
         ], 'the source holds every file itself'
         source_file.write_text(self.EDITED, encoding='utf-8')
@@ -861,7 +862,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
             assert not (claude_dir / 'hooks').exists()
         _assert_base_unchanged(home, before, linked if source == BASE else frozenset())
         manifest = read_manifest(dependent_dir)
-        assert manifest['files_written'] == ['x.txt']
+        assert written_files(manifest) == ['x.txt']
         assert manifest['machine_wide_destinations'] == []
         for marker in DEPENDENCY_MARKERS[:1]:
             assert (dependent_dir / marker).is_dir(), 're-rooted dependency commands run for the dependent as before'
@@ -975,7 +976,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         assert (dependent_dir / 'x.txt').read_text(encoding='utf-8') == 'a\n'
         assert source_file.read_text(encoding='utf-8') == self.EDITED, 'the source copy is its own'
         assert _base_snapshot(home, (PROFILE, DEPENDENT)) == before
-        assert read_manifest(dependent_dir)['files_written'] == [
+        assert written_files(read_manifest(dependent_dir)) == [
             'hooks/hook.py', 'hooks/project-overrides/override.yaml', 'x.txt',
         ]
         assert f'files-to-download: ~/.claude/hooks/project-overrides/override.yaml -> {LINKED_OVERRIDE}' in (
@@ -1011,7 +1012,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         assert (dependent_dir / 'x.txt').read_text(encoding='utf-8') == 'a\n'
         assert source_file.read_text(encoding='utf-8') == self.EDITED, "the base's copy is its own"
         _assert_base_unchanged(home, before, frozenset({'projects'}))
-        assert read_manifest(dependent_dir)['files_written'] == [
+        assert written_files(read_manifest(dependent_dir)) == [
             'hooks/hook.py', 'hooks/project-overrides/override.yaml', 'x.txt',
         ]
         rows = _rerooted_rows(output)
@@ -1082,7 +1083,7 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         assert (dependent_dir / 'x.txt').read_text(encoding='utf-8') == 'a\n', 'the child restored its own file'
         manifest = read_manifest(dependent_dir)
         assert manifest['installed_at'] != installed_at, 'the dependent was refreshed'
-        assert manifest['files_written'] == ['x.txt']
+        assert written_files(manifest) == ['x.txt']
         assert _resolves_to(dependent_dir / 'hooks', claude_dir / PROFILE / 'hooks')
         assert _base_snapshot(home, (PROFILE, DEPENDENT)) == before, 'the refresh changed the base config home'
 
@@ -1119,5 +1120,5 @@ class TestDependentLeavesLinkedDestinationsToTheLink:
         assert (dependent_dir / 'x.txt').read_text(encoding='utf-8') == 'a\n', 'the child restored its own file'
         manifest = read_manifest(dependent_dir)
         assert manifest['installed_at'] != installed_at, 'the dependent was refreshed'
-        assert manifest['files_written'] == ['x.txt']
+        assert written_files(manifest) == ['x.txt']
         assert _resolves_to(dependent_dir / 'hooks', claude_dir / 'hooks')

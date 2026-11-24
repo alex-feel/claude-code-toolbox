@@ -39,6 +39,7 @@ from tests.e2e.profile_support import wrappers_exist
 from tests.e2e.profile_support import write_child_runner
 from tests.e2e.profile_support import write_config
 from tests.e2e.profile_support import write_legacy_manifest
+from tests.e2e.profile_support import written_files
 
 SKIP = ['--skip-install', '--no-admin']
 CONTENT_ENTRIES = [entry for entry in LINKABLE_PROFILE_DIRS if entry != 'projects']
@@ -1008,7 +1009,7 @@ class TestConfigurationSwitch:
         source_dir = claude_dir / 'team-1'
         source_before = home_state(source_dir)
         for name in ('team-2', 'team-3', 'team-4', 'team-5'):
-            recorded = read_manifest(claude_dir / name)['files_written']
+            recorded = written_files(read_manifest(claude_dir / name))
             linked_paths = [path for path in recorded if path.split('/')[0] in LINKABLE_PROFILE_DIRS]
             assert linked_paths == [], f'{name} records files it sees through its links: {linked_paths}'
         capsys.readouterr()
@@ -1054,7 +1055,7 @@ class TestConfigurationSwitch:
         _install_source(configs, 'team-copy')
         claude_dir = e2e_isolated_home['claude_dir']
         copy = claude_dir / 'team-copy'
-        recorded = read_manifest(copy)['files_written']
+        recorded = written_files(read_manifest(copy))
         assert 'agents/core.md' in recorded
         assert 'rules/rule.md' in recorded
         shutil.rmtree(copy / 'agents')
@@ -1065,8 +1066,12 @@ class TestConfigurationSwitch:
         assert run_main([str(other), *SKIP, '--yes', '--command-names', 'team-copy', '--switch-config']) == 0
 
         output = _output(capsys)
-        assert f'file: {copy / "rules" / "rule.md"}' in output, 'a file in a real directory is residue'
-        assert f'file: {copy / "agents" / "core.md"}' not in output, 'a file behind the link is not'
+        residue = output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
+        assert f'file: {copy / "rules" / "rule.md"}' in residue, 'a file in a real directory is residue'
+        assert f'file: {copy / "agents" / "core.md"}' not in residue, 'a file behind the link is not'
+        assert (
+            f'[now reached through a directory link: no longer tracked] file: {copy / "agents" / "core.md"}'
+        ) in output, 'the leftovers report names it once and stops tracking it'
         assert not (copy / 'rules' / 'rule.md').exists()
         assert (claude_dir / 'team-1' / 'agents' / 'core.md').is_file(), 'the link target kept its file'
         assert '* agents: [on disk, not declared] the link is left alone' in output

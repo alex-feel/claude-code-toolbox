@@ -5474,7 +5474,7 @@ class TestWriteManifest:
             'config_source_url', 'config_source_type', 'config_identity', 'config_digest',
             'installed_at', 'command_names', 'components', 'link', 'origins', 'yaml_values',
             'machine_wide_destinations', 'os_env_written', 'settings_keys_written',
-            'mcp_servers', 'files_written', 'auto_update',
+            'mcp_servers', 'files_written', 'auto_update', 'leftovers',
         }
         assert data['name'] == command_name
         assert data['auto_update'] is None
@@ -5501,7 +5501,7 @@ class TestWriteManifest:
             os_env_written=['MY_VAR'],
             settings_keys_written=['theme'],
             mcp_servers=[{'name': 'srv', 'scopes': ['user']}],
-            files_written=['agents/a.md'],
+            files_written=[{'path': 'agents/a.md', 'sha256': 'cd'}],
         )
 
         resolved = (tmp_path / 'resolved-config.yaml').read_text(encoding='utf-8')
@@ -5515,7 +5515,7 @@ class TestWriteManifest:
         assert data['os_env_written'] == ['MY_VAR']
         assert data['settings_keys_written'] == ['theme']
         assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user']}]
-        assert data['files_written'] == ['agents/a.md']
+        assert data['files_written'] == [{'path': 'agents/a.md', 'sha256': 'cd'}]
 
 
 class TestRegisterGlobalCommand:

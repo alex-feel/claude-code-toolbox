@@ -1519,6 +1519,43 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
     return errors
 
 
+def _leftovers_record_errors(leftovers: object) -> list[str]:
+    """Validate the manifest's leftovers field: its keys, its items and its dropped labels.
+
+    Args:
+        leftovers: The manifest's leftovers value.
+
+    Returns:
+        One error per deviation from the shape leftovers_manifest_record() writes.
+    """
+    expected_keys = {'run_at', 'items', 'removed', 'dropped', 'skipped', 'failed'}
+    if not isinstance(leftovers, dict) or set(leftovers) != expected_keys:
+        return [f'Manifest leftovers: expected an object with {sorted(expected_keys)}, got {leftovers!r}']
+    errors: list[str] = []
+    if not isinstance(leftovers['run_at'], str) or not leftovers['run_at']:
+        errors.append(f"Manifest leftovers.run_at: expected an ISO time, got {leftovers['run_at']!r}")
+    errors.extend(
+        f'Manifest leftovers.{key}: expected a list, got {leftovers[key]!r}'
+        for key in ('items', 'removed', 'dropped', 'failed')
+        if not isinstance(leftovers[key], list)
+    )
+    errors.extend(
+        f'Manifest leftovers item: expected kind, path and sha256 of a file or destination, got {item!r}'
+        for item in (leftovers['items'] if isinstance(leftovers['items'], list) else [])
+        if not isinstance(item, dict) or set(item) != {'kind', 'path', 'sha256'}
+        or item['kind'] not in ('file', 'destination') or not isinstance(item['path'], str)
+    )
+    errors.extend(
+        f'Manifest leftovers dropped entry: expected a label and a reason, got {entry!r}'
+        for entry in (leftovers['dropped'] if isinstance(leftovers['dropped'], list) else [])
+        if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
+        or entry['reason'] not in ('changed', 'gone', 'linked')
+    )
+    if leftovers['skipped'] is not None:
+        errors.append(f"Manifest leftovers.skipped: expected None, got {leftovers['skipped']!r}")
+    return errors
+
+
 def _link_record_errors(link: object, yaml_values: object, config: dict[str, Any]) -> list[str]:
     """Validate the manifest's link record and recorded link values against the configuration's link keys.
 
@@ -1717,6 +1754,14 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         for record in servers
         if not isinstance(record, dict) or set(record) != {'name', 'scopes'}
     )
+    files = data['files_written'] if isinstance(data['files_written'], list) else []
+    errors.extend(
+        f'Manifest files_written entry: expected path and sha256, got {record!r}'
+        for record in files
+        if not isinstance(record, dict) or set(record) != {'path', 'sha256'}
+        or not isinstance(record['path'], str) or not isinstance(record['sha256'], str | None)
+    )
+    errors.extend(_leftovers_record_errors(data['leftovers']))
 
     # command_names validation: an isolated profile lists its command names,
     # the base profile lists none.

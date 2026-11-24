@@ -80,6 +80,7 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
         'mcp_servers',
         'files_written',
         'auto_update',
+        'leftovers',
     ],
 }
 

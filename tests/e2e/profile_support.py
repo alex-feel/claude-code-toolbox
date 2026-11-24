@@ -190,6 +190,11 @@ def read_manifest(profile_dir: Path) -> dict[str, Any]:
     return content
 
 
+def written_files(manifest: dict[str, Any]) -> list[str]:
+    """Return the profile-relative paths a manifest's files_written records list, in order."""
+    return [str(record['path']) for record in manifest['files_written']]
+
+
 def write_legacy_manifest(
     profile_dir: Path,
     name: str | None,

@@ -644,7 +644,9 @@ class TestProfileResidue:
         outside = tmp_path / 'shared.txt'
         outside.write_bytes(b'shared')
         manifest = {
-            'files_written': ['agents/old.md', 'agents/kept.md', 'agents/gone-already.md'],
+            'files_written': [
+                {'path': path, 'sha256': None} for path in ('agents/old.md', 'agents/kept.md', 'agents/gone-already.md')
+            ],
             'mcp_servers': [{'name': 'old-srv', 'scopes': ['user', 'profile']}, {'name': 'kept-srv', 'scopes': ['user']},
                             {'name': 'profile-only', 'scopes': ['profile']}],
             'os_env_written': ['OLD_VAR', 'KEPT_VAR'],
@@ -691,7 +693,7 @@ class TestProfileResidue:
         (profile_dir / 'rules').mkdir(parents=True)
         (profile_dir / 'rules' / 'old.md').write_text('x', encoding='utf-8')
         setup_environment.link_profile_directory(profile_dir / 'agents', source / 'agents')
-        manifest = {'files_written': ['agents/old.md', 'rules/old.md']}
+        manifest = {'files_written': [{'path': 'agents/old.md', 'sha256': None}, {'path': 'rules/old.md', 'sha256': None}]}
 
         residue = setup_environment.profile_residue(
             manifest, profile_dir, {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=claude_dir,

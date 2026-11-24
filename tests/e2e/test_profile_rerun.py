@@ -39,6 +39,7 @@ from tests.e2e.profile_support import wrappers_exist
 from tests.e2e.profile_support import write_child_runner
 from tests.e2e.profile_support import write_config
 from tests.e2e.profile_support import write_legacy_manifest
+from tests.e2e.profile_support import written_files
 from tests.e2e.validators import validate_manifest
 
 SKIP = ['--skip-install', '--no-admin']
@@ -1280,7 +1281,7 @@ class TestManifestRecords:
         assert manifest['origins'] == {'command_names': 'cli', 'components': 'yaml'}
         assert manifest['components'] is None
         assert manifest['yaml_values'] == {'command_names': [], 'components': [], 'link_dirs': None, 'link_from': None}
-        assert manifest['files_written'] == ['agents/core.md', 'extra/inside.txt', 'prompts/rule.md', 'rules/rule.md']
+        assert written_files(manifest) == ['agents/core.md', 'extra/inside.txt', 'prompts/rule.md', 'rules/rule.md']
         assert manifest['machine_wide_destinations'] == [{
             'dest': str(outside), 'source': str((configs / 'files' / 'same-a.txt').resolve()),
             'sha256': setup_environment._sha256_of_file(outside),
@@ -1288,7 +1289,7 @@ class TestManifestRecords:
         assert manifest['os_env_written'] == [], 'an isolated run routes its variables to the env loaders'
         assert manifest['settings_keys_written'] == ['claudeMdExcludes', 'model', 'theme']
         assert manifest['mcp_servers'] == [{'name': 'srv', 'scopes': ['profile']}]
-        for relative in manifest['files_written']:
+        for relative in written_files(manifest):
             assert (profile_dir / relative).is_file(), relative
 
     def test_base_install_records_os_variables_and_settings(
@@ -1315,7 +1316,7 @@ class TestManifestRecords:
         assert manifest['origins'] == {'command_names': None, 'components': 'yaml'}
         assert manifest['os_env_written'] == ['MY_VAR']
         assert manifest['settings_keys_written'] == ['hooks', 'theme']
-        assert manifest['files_written'] == ['hooks/rule.md']
+        assert written_files(manifest) == ['hooks/rule.md']
 
     def test_base_install_records_settings_env_entries_one_by_one(
         self, e2e_isolated_home: dict[str, Path], configs: Path,

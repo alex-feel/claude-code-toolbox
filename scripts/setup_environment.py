@@ -51,6 +51,8 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from pathlib import PurePosixPath
+from pathlib import PureWindowsPath
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Literal
@@ -1290,6 +1292,10 @@ class InstallationPlan:
     stale_controls_elsewhere: list[StaleControlCopy] = field(
         default_factory=lambda: list[StaleControlCopy](),
     )
+
+    # What the profile's earlier runs wrote and this configuration no longer
+    # installs; None when the profile has no manifest yet
+    leftovers: 'LeftoverReport | None' = None
 
     # Destinations outside ~/.claude that a profile of another configuration
     # recorded from a different source
@@ -10519,6 +10525,14 @@ def display_installation_summary(
             _print(f'  * {_stale_control_copy_line(copy)}')
         _print(f'  {STALE_CONTROLS_RERUN_NOTE}')
 
+    # What the profile's earlier runs wrote and this configuration no longer
+    # installs: each row says what the run finds at the path
+    if plan.leftovers is not None and plan.leftovers.has_content():
+        _print()
+        _print(f'{Colors.YELLOW}{Colors.BOLD}{LEFTOVERS_HEADING}{Colors.NC}')
+        for line in plan.leftovers.lines():
+            _print(f'  {line}')
+
     # The profile's daily update job: what Step 25 registers, re-registers,
     # keeps or removes, the command it runs, where its state lives, and the
     # last scheduled run on record
@@ -18529,6 +18543,22 @@ def planned_profile_files(
     return sorted(files)
 
 
+def _hash_file(path: Path) -> str:
+    """Hash a file's content, letting the OSError of a failed read reach the caller.
+
+    Args:
+        path: The file to hash.
+
+    Returns:
+        The hex sha256.
+    """
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _sha256_of_file(path: Path) -> str | None:
     """Hash a file's content.
 
@@ -18538,14 +18568,50 @@ def _sha256_of_file(path: Path) -> str | None:
     Returns:
         The hex sha256, or None when the file cannot be read.
     """
-    digest = hashlib.sha256()
     try:
-        with path.open('rb') as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b''):
-                digest.update(chunk)
+        return _hash_file(path)
     except OSError:
         return None
-    return digest.hexdigest()
+
+
+def _is_inside_config_home(path: Path, claude_dir: Path) -> bool:
+    """Report whether a path is the base config home or lies below it.
+
+    Args:
+        path: An absolute path.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        True for claude_dir itself and anything inside it.
+    """
+    claude_key = _normalize_config_dir_key(str(claude_dir))
+    target_key = _normalize_config_dir_key(str(path))
+    return target_key == claude_key or target_key.startswith(claude_key + '/')
+
+
+def _download_targets_outside(
+    files_to_download: list[dict[str, Any]],
+    claude_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    """Pair each files-to-download entry that writes outside ~/.claude with its absolute target.
+
+    Args:
+        files_to_download: The resolved files-to-download list.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        (entry, absolute target) for every entry with a source and a
+        destination whose target lies outside claude_dir.
+    """
+    targets: list[tuple[dict[str, Any], Path]] = []
+    for entry in files_to_download:
+        source, dest = entry.get('source'), entry.get('dest')
+        if not source or not dest:
+            continue
+        target = Path(os.path.abspath(_download_destination(str(source), str(dest))))
+        if not _is_inside_config_home(target, claude_dir):
+            targets.append((entry, target))
+    return targets
 
 
 def machine_wide_download_records(
@@ -18567,17 +18633,9 @@ def machine_wide_download_records(
         the resolved source, and the sha256 of the file on disk (None when
         the file is absent or unreadable).
     """
-    claude_key = _normalize_config_dir_key(str(claude_dir))
     records: list[dict[str, str | None]] = []
-    for entry in files_to_download:
-        source, dest = entry.get('source'), entry.get('dest')
-        if not source or not dest:
-            continue
-        target = Path(os.path.abspath(_download_destination(str(source), str(dest))))
-        target_key = _normalize_config_dir_key(str(target))
-        if target_key == claude_key or target_key.startswith(claude_key + '/'):
-            continue
-        resolved_source, _ = resolve_resource_path(str(source), config_source, base_url)
+    for entry, target in _download_targets_outside(files_to_download, claude_dir):
+        resolved_source, _ = resolve_resource_path(str(entry['source']), config_source, base_url)
         records.append({'dest': str(target), 'source': resolved_source, 'sha256': _sha256_of_file(target)})
     return records
 
@@ -18792,9 +18850,14 @@ def profile_residue(
         return [str(item) for item in cast(list[object], value)] if isinstance(value, list) else []
 
     planned = set(planned_profile_files(config, profile_dir, reroot=reroot))
+    recorded_files = [
+        str(cast(dict[str, Any], record)['path'])
+        for record in cast(list[object], manifest.get('files_written') or [])
+        if isinstance(record, dict) and isinstance(cast(dict[str, Any], record).get('path'), str)
+    ]
     files = [
         profile_dir / relative
-        for relative in _strings('files_written')
+        for relative in recorded_files
         if relative not in planned
         and (profile_dir / relative).is_file()
         and not _under_directory_link(profile_dir, relative)
@@ -18856,9 +18919,10 @@ def profile_residue(
         if not path.is_file():
             continue
         holders = recorded_elsewhere.get(_normalize_config_dir_key(dest))
+        recorded_digest = record_dict.get('sha256')
         if holders:
             kept_destinations.append((path, holders))
-        elif _sha256_of_file(path) == record_dict.get('sha256'):
+        elif recorded_digest is not None and _sha256_of_file(path) == recorded_digest:
             destinations.append(path)
 
     # The daily update job of the previous configuration, when the new one
@@ -18939,6 +19003,729 @@ def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude
         info(f'The scheduled update job {residue.scheduled_job} is removed in Step 25')
 
 
+# ---------------------------------------------------------------------------
+# Leftovers of earlier runs
+# ---------------------------------------------------------------------------
+#
+# A profile's manifest records every profile file and every destination
+# outside ~/.claude a run wrote, each with the sha256 of the bytes the run
+# left there. A re-run compares those records, and the leftovers the
+# previous run carried, with what the configuration installs now: whatever
+# it no longer installs is a leftover of an earlier run. The installation
+# summary, --dry-run and the completion summary list every leftover, and the
+# manifest's leftovers field carries each one still in place to the next
+# run, so a leftover is listed until it is gone, changed by hand, linked
+# from another profile, or installed again.
+
+LEFTOVERS_MANIFEST_KEY = 'leftovers'
+LEFTOVER_FILE = 'file'
+LEFTOVER_DESTINATION = 'destination'
+# What a re-run finds at a leftover's path
+LEFTOVER_REMOVABLE = 'removable'
+LEFTOVER_HELD = 'held'
+LEFTOVER_UNREADABLE = 'unreadable'
+LEFTOVER_CHANGED = 'changed'
+LEFTOVER_GONE = 'gone'
+LEFTOVER_LINKED = 'linked'
+# The states that keep a leftover recorded for the next run; a leftover in
+# any other state is reported once and dropped from the record
+_CARRIED_LEFTOVER_STATES = frozenset({LEFTOVER_REMOVABLE, LEFTOVER_HELD, LEFTOVER_UNREADABLE})
+# The reason the manifest records for each dropped state
+_DROPPED_LEFTOVER_REASONS = {LEFTOVER_CHANGED: 'changed', LEFTOVER_GONE: 'gone', LEFTOVER_LINKED: 'linked'}
+LEFTOVERS_HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
+LEFTOVERS_FOOTER = 'They stay in place.'
+
+
+def leftover_digest(value: object) -> str:
+    """Digest a recorded value in one canonical JSON form.
+
+    Args:
+        value: A JSON-serializable value.
+
+    Returns:
+        The hex sha256 of the value serialized with sorted keys, without
+        whitespace and with non-ASCII characters kept, so equal values give
+        equal digests whatever the order of their keys.
+    """
+    canonical = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+class LeftoverReadError(Exception):
+    """The live state of a leftover cannot be read, so the leftover cannot be checked."""
+
+
+def _file_key(path: str) -> str:
+    """Key a profile-relative file path for comparison.
+
+    Separators are unified and letter case is folded on every platform, so
+    a rename that changes only the case of a file name never reads as a
+    leftover where the file system is case-insensitive (Windows, and macOS
+    by default): there both names are the one file the run writes.
+
+    Args:
+        path: A profile-relative path.
+
+    Returns:
+        The comparison key.
+    """
+    return path.replace('\\', '/').casefold()
+
+
+def _destination_key(path: str) -> str:
+    """Key an absolute destination path for comparison, letter case folded as for profile files.
+
+    Args:
+        path: An absolute path.
+
+    Returns:
+        The comparison key.
+    """
+    return _normalize_config_dir_key(path).casefold()
+
+
+def _is_profile_relative(path: str) -> bool:
+    """Report whether a recorded file path stays inside the directory it is joined onto.
+
+    Args:
+        path: A recorded file path.
+
+    Returns:
+        False for an empty path, an absolute path, a drive or a root in
+        either the POSIX or the Windows reading, and any '..' component.
+    """
+    if not path:
+        return False
+    return all(
+        not flavor.anchor and '..' not in flavor.parts
+        for flavor in (PurePosixPath(path), PureWindowsPath(path))
+    )
+
+
+@dataclass(frozen=True)
+class LeftoverItem:
+    """One thing an earlier run wrote that this configuration no longer installs.
+
+    Attributes:
+        kind: LEFTOVER_FILE for a profile file, LEFTOVER_DESTINATION for a
+            files-to-download destination outside ~/.claude.
+        path: The profile-relative POSIX path of a file, the absolute path
+            of a destination.
+        sha256: The digest of the bytes the run wrote, or None when the run
+            cannot vouch for the bytes at the path.
+    """
+
+    kind: str
+    path: str
+    sha256: str | None
+
+    def key(self) -> tuple[str, str]:
+        """Return the identity two records of the same item share."""
+        if self.kind == LEFTOVER_FILE:
+            return self.kind, _file_key(self.path)
+        return self.kind, _destination_key(self.path)
+
+    def location(self, profile_dir: Path) -> Path:
+        """Return the absolute path of the item, a file joined onto the profile directory."""
+        if self.kind == LEFTOVER_FILE:
+            return profile_dir.joinpath(*PurePosixPath(self.path).parts)
+        return Path(self.path)
+
+    def label(self) -> str:
+        """Name the item by its identity, as the manifest records it."""
+        if self.kind == LEFTOVER_FILE:
+            return f'file: {self.path}'
+        return f'file outside ~/.claude: {self.path}'
+
+    def display(self, profile_dir: Path) -> str:
+        """Name the item by the absolute path a reader can open."""
+        if self.kind == LEFTOVER_FILE:
+            return f'file: {self.location(profile_dir)}'
+        return self.label()
+
+    def to_record(self) -> dict[str, str | None]:
+        """Render the item as the manifest's leftovers field records it."""
+        return {'kind': self.kind, 'path': self.path, 'sha256': self.sha256}
+
+    @classmethod
+    def from_record(cls, record: object, *, claude_dir: Path) -> 'LeftoverItem | None':
+        """Read an item from its record.
+
+        Args:
+            record: A record of the leftovers field.
+            claude_dir: The base ~/.claude directory.
+
+        Returns:
+            The item, or None for a record of any other shape: a kind other
+            than file or destination, no sha256 entry or one that is neither
+            a string nor null, a file path that would leave the profile
+            directory, or a destination that is relative or lies inside
+            ~/.claude.
+        """
+        if not isinstance(record, dict):
+            return None
+        record_dict = cast(dict[str, Any], record)
+        kind, path, digest = record_dict.get('kind'), record_dict.get('path'), record_dict.get('sha256')
+        if 'sha256' not in record_dict or not isinstance(path, str) or not (digest is None or isinstance(digest, str)):
+            return None
+        if kind == LEFTOVER_FILE and _is_profile_relative(path):
+            return cls(kind, path, digest)
+        if kind == LEFTOVER_DESTINATION and os.path.isabs(path) and not _is_inside_config_home(Path(path), claude_dir):
+            return cls(kind, path, digest)
+        return None
+
+
+class LeftoverEntry(NamedTuple):
+    """A leftover and what a re-run found at its path.
+
+    Attributes:
+        item: The leftover.
+        state: LEFTOVER_REMOVABLE (still exactly as written), LEFTOVER_HELD
+            (a destination another profile records), LEFTOVER_UNREADABLE,
+            LEFTOVER_CHANGED (other bytes, or no longer a regular file),
+            LEFTOVER_GONE, or LEFTOVER_LINKED (reached through a directory
+            link, so it belongs to the link's target).
+        detail: Who holds it, why it cannot be read, or which link reaches
+            it; empty for the other states.
+    """
+
+    item: LeftoverItem
+    state: str
+    detail: str = ''
+
+
+@dataclass(frozen=True)
+class PlannedRecords:
+    """What a configuration installs, compared with an earlier run's records.
+
+    Attributes:
+        files: The profile-relative paths of the profile files it installs.
+        destinations: The absolute paths of its destinations outside
+            ~/.claude.
+    """
+
+    files: frozenset[str] = frozenset()
+    destinations: frozenset[str] = frozenset()
+    _keys: frozenset[tuple[str, str]] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        keys = {LeftoverItem(LEFTOVER_FILE, path, None).key() for path in self.files}
+        keys.update(LeftoverItem(LEFTOVER_DESTINATION, path, None).key() for path in self.destinations)
+        object.__setattr__(self, '_keys', frozenset(keys))
+
+    def writes(self, item: LeftoverItem) -> bool:
+        """Report whether the configuration installs the item again, by the item's identity."""
+        return item.key() in self._keys
+
+
+def planned_records(
+    config: dict[str, Any],
+    profile_dir: Path,
+    *,
+    claude_dir: Path,
+    reroot: ConfigHomeReroot | None = None,
+) -> PlannedRecords:
+    """Collect the files and destinations a configuration installs.
+
+    Args:
+        config: The resolved configuration, taken before component
+            selection, so the files of a component deselected this run are
+            planned and stay rows of the removal plan instead of leftovers.
+        profile_dir: The profile directory the run installs into.
+        claude_dir: The base ~/.claude directory.
+        reroot: The isolated run's rerooter, as planned_profile_files()
+            takes it; None for a base run.
+
+    Returns:
+        The planned records.
+    """
+    downloads = [
+        cast(dict[str, Any], entry)
+        for entry in cast(list[object], config.get('files-to-download') or [])
+        if isinstance(entry, dict)
+    ]
+    return PlannedRecords(
+        files=frozenset(planned_profile_files(config, profile_dir, reroot=reroot)),
+        destinations=frozenset(str(target) for _entry, target in _download_targets_outside(downloads, claude_dir)),
+    )
+
+
+def _live_file_digest(path: Path) -> str | None:
+    """Read what sits at a leftover's path now.
+
+    Args:
+        path: The absolute path.
+
+    Returns:
+        The sha256 of the regular file at the path, an empty string when
+        something other than a regular file sits there, and None when
+        nothing does.
+
+    Raises:
+        LeftoverReadError: When the path cannot be examined or the file
+            cannot be read.
+    """
+    try:
+        os.lstat(path)
+        if not path.is_file():
+            return ''
+        return _hash_file(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise LeftoverReadError(e.strerror or str(e)) from e
+
+
+@dataclass(frozen=True)
+class LiveLeftoverState:
+    """The readers that tell what an earlier run's records find on disk now.
+
+    Attributes:
+        file_digest: Reads the path of a leftover as _live_file_digest()
+            does.
+        under_link: Reports whether a profile-relative path is reached
+            through a directory link.
+        destination_holders: Names the other installed profiles whose
+            manifests record a destination.
+    """
+
+    file_digest: Callable[[Path], str | None]
+    under_link: Callable[[str], bool]
+    destination_holders: Callable[[str], list[str]]
+
+    @classmethod
+    def for_profile(cls, profile_dir: Path, home_dir: Path) -> 'LiveLeftoverState':
+        """Read the live state of one profile from the file system and the installed manifests.
+
+        Args:
+            profile_dir: The profile directory.
+            home_dir: User home directory.
+
+        Returns:
+            The readers; the holders of a destination are read from the
+            manifests as they are at each call.
+        """
+        def _holders(dest: str) -> list[str]:
+            return _destinations_recorded_elsewhere(home_dir, profile_dir).get(_normalize_config_dir_key(dest), [])
+
+        return cls(
+            file_digest=_live_file_digest,
+            under_link=lambda relative: _under_directory_link(profile_dir, relative),
+            destination_holders=_holders,
+        )
+
+
+def _leftover_marker(entry: LeftoverEntry) -> str:
+    """Render the bracketed marker of a leftover row in the installation summary."""
+    markers = {
+        LEFTOVER_REMOVABLE: 'leftover',
+        LEFTOVER_HELD: f'kept: {entry.detail}',
+        LEFTOVER_UNREADABLE: f'cannot check: {entry.detail}',
+        LEFTOVER_CHANGED: 'changed since written: left in place, no longer tracked',
+        LEFTOVER_GONE: 'already gone: no longer tracked',
+        LEFTOVER_LINKED: f'{entry.detail}: no longer tracked',
+    }
+    return markers[entry.state]
+
+
+def _leftover_completion_detail(entry: LeftoverEntry) -> str:
+    """Render the parenthesized note of a leftover in the completion summary, empty for a plain leftover."""
+    details = {
+        LEFTOVER_REMOVABLE: '',
+        LEFTOVER_HELD: f' (kept: {entry.detail})',
+        LEFTOVER_UNREADABLE: f' (cannot check: {entry.detail})',
+        LEFTOVER_CHANGED: ' (changed since written)',
+        LEFTOVER_GONE: ' (already gone)',
+        LEFTOVER_LINKED: f' ({entry.detail})',
+    }
+    return details[entry.state]
+
+
+@dataclass(frozen=True)
+class LeftoverReport:
+    """The leftovers of a profile's earlier runs, as a re-run finds them.
+
+    Attributes:
+        profile_name: The profile's display name.
+        profile_dir: The profile directory.
+        entries: Every leftover with its state, profile files first, each
+            kind sorted by path.
+        untracked_note: Whether the manifest has no leftovers field, so the
+            run says once that tracking starts with it.
+    """
+
+    profile_name: str
+    profile_dir: Path
+    entries: tuple[LeftoverEntry, ...]
+    untracked_note: bool
+
+    def has_content(self) -> bool:
+        """Report whether the summary has anything to show."""
+        return bool(self.entries) or self.untracked_note
+
+    def refined(self, *, linked_entries: frozenset[str], link_source: str) -> 'LeftoverReport':
+        """Mark the profile files under the entries this run links.
+
+        From Step 3 on such a path is reached through the link, so the file
+        there belongs to the source profile: the leftover is reported once
+        and dropped, never touched.
+
+        Args:
+            linked_entries: The entries this run's link plan makes links.
+            link_source: The display name of the profile they link from.
+
+        Returns:
+            The report with those entries marked LEFTOVER_LINKED.
+        """
+        linked = {entry.casefold() for entry in linked_entries}
+        if not linked:
+            return self
+        return replace(self, entries=tuple(
+            LeftoverEntry(entry.item, LEFTOVER_LINKED, f'now linked from profile {link_source}')
+            if entry.item.kind == LEFTOVER_FILE and _file_key(entry.item.path).split('/')[0] in linked
+            else entry
+            for entry in self.entries
+        ))
+
+    def excluding(self, removed: Iterable[Path]) -> 'LeftoverReport':
+        """Drop the leftovers at the paths a configuration switch removes before Step 1.
+
+        Args:
+            removed: The absolute paths of the files and destinations the
+                accepted switch removes.
+
+        Returns:
+            The report without those entries, so it never lists them as
+            left in place and the manifest does not carry them.
+        """
+        removed_keys = {_destination_key(str(path)) for path in removed}
+        if not removed_keys:
+            return self
+        return replace(self, entries=tuple(
+            entry for entry in self.entries
+            if _destination_key(str(entry.item.location(self.profile_dir))) not in removed_keys
+        ))
+
+    def carried(self) -> list[LeftoverItem]:
+        """Return the leftovers the manifest keeps recorded for the next run."""
+        return [entry.item for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES]
+
+    def dropped(self) -> list[LeftoverEntry]:
+        """Return the leftovers reported once and dropped from the record."""
+        return [entry for entry in self.entries if entry.state not in _CARRIED_LEFTOVER_STATES]
+
+    def lines(self) -> list[str]:
+        """Render the rows of the installation summary's leftovers block, with its notes."""
+        rendered = [f'[{_leftover_marker(entry)}] {entry.item.display(self.profile_dir)}' for entry in self.entries]
+        if self.carried():
+            rendered.append(LEFTOVERS_FOOTER)
+        if self.untracked_note:
+            rendered.append(
+                f'Profile "{self.profile_name}" was installed by a release that recorded no leftovers; '
+                'they are tracked from this run on.',
+            )
+        return rendered
+
+    def completion_sections(self) -> list[tuple[str, list[str]]]:
+        """Render the completion summary's leftovers headlines, each with its items."""
+        kept = [
+            f'{entry.item.display(self.profile_dir)}{_leftover_completion_detail(entry)}'
+            for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES
+        ]
+        dropped = [
+            f'{entry.item.display(self.profile_dir)}{_leftover_completion_detail(entry)}'
+            for entry in self.dropped()
+        ]
+        sections: list[tuple[str, list[str]]] = []
+        if kept:
+            sections.append((f'Leftovers left in place ({len(kept)}):', kept))
+        if dropped:
+            sections.append(('No longer tracked:', dropped))
+        return sections
+
+
+def _recorded_leftover_candidates(manifest: dict[str, Any], claude_dir: Path) -> list[LeftoverItem]:
+    """List what a manifest records as written or carried, written records first.
+
+    Args:
+        manifest: The profile's manifest.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        The items of files_written, machine_wide_destinations and the
+        leftovers field's items, each read only in its current shape.
+    """
+    records: list[object] = [
+        {'kind': LEFTOVER_FILE, 'path': cast(dict[str, Any], record).get('path'),
+         'sha256': cast(dict[str, Any], record).get('sha256')}
+        for record in cast(list[object], manifest.get('files_written') or [])
+        if isinstance(record, dict)
+    ]
+    records.extend(
+        {'kind': LEFTOVER_DESTINATION, 'path': cast(dict[str, Any], record).get('dest'),
+         'sha256': cast(dict[str, Any], record).get('sha256')}
+        for record in cast(list[object], manifest.get('machine_wide_destinations') or [])
+        if isinstance(record, dict)
+    )
+    leftovers = manifest.get(LEFTOVERS_MANIFEST_KEY)
+    if isinstance(leftovers, dict):
+        records.extend(cast(list[object], cast(dict[str, Any], leftovers).get('items') or []))
+    items = (LeftoverItem.from_record(record, claude_dir=claude_dir) for record in records)
+    return [item for item in items if item is not None]
+
+
+def _leftover_entry(item: LeftoverItem, profile_dir: Path, live: LiveLeftoverState) -> LeftoverEntry:
+    """Find what sits at a leftover's path now.
+
+    Args:
+        item: The leftover.
+        profile_dir: The profile directory.
+        live: The live readers.
+
+    Returns:
+        The entry: linked for a profile file reached through a directory
+        link, unreadable, gone, changed for other bytes or another kind of
+        entry, held for an unchanged destination another profile records,
+        removable otherwise.
+    """
+    if item.kind == LEFTOVER_FILE and live.under_link(item.path):
+        return LeftoverEntry(item, LEFTOVER_LINKED, 'now reached through a directory link')
+    try:
+        digest = live.file_digest(item.location(profile_dir))
+    except LeftoverReadError as e:
+        return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+    if digest is None:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    if digest != item.sha256:
+        return LeftoverEntry(item, LEFTOVER_CHANGED)
+    if item.kind == LEFTOVER_DESTINATION:
+        holders = live.destination_holders(item.path)
+        if holders:
+            return LeftoverEntry(item, LEFTOVER_HELD, f'recorded by profile {", ".join(holders)}')
+    return LeftoverEntry(item, LEFTOVER_REMOVABLE)
+
+
+def compute_profile_leftovers(
+    manifest: dict[str, Any],
+    profile_dir: Path,
+    *,
+    profile_name: str,
+    planned: PlannedRecords,
+    live: LiveLeftoverState,
+    claude_dir: Path,
+) -> LeftoverReport:
+    """List what a profile's earlier runs wrote and its configuration no longer installs.
+
+    The candidates are the files and destinations the previous run recorded
+    and the leftovers it carried, one per identity, the written record
+    first. A record without a digest is never a leftover, and neither is
+    anything the configuration installs again.
+
+    Args:
+        manifest: The profile's manifest.
+        profile_dir: The profile directory.
+        profile_name: The profile's display name.
+        planned: What the configuration installs.
+        live: The live readers.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        The report.
+    """
+    candidates: dict[tuple[str, str], LeftoverItem] = {}
+    for item in _recorded_leftover_candidates(manifest, claude_dir):
+        if item.sha256 is not None and not planned.writes(item):
+            candidates.setdefault(item.key(), item)
+    entries = sorted(
+        (_leftover_entry(item, profile_dir, live) for item in candidates.values()),
+        key=lambda entry: (entry.item.kind != LEFTOVER_FILE, entry.item.key()[1]),
+    )
+    return LeftoverReport(
+        profile_name=profile_name,
+        profile_dir=profile_dir,
+        entries=tuple(entries),
+        untracked_note=LEFTOVERS_MANIFEST_KEY not in manifest,
+    )
+
+
+def leftovers_manifest_record(report: LeftoverReport | None, *, run_at: str) -> dict[str, Any]:
+    """Render the manifest's leftovers field.
+
+    Args:
+        report: The run's leftovers report, or None for a first install.
+        run_at: The ISO time the record is written.
+
+    Returns:
+        The record: the items carried to the next run, the removed and
+        failed labels, the labels dropped with their reasons, and why the
+        run skipped removal, if it did.
+    """
+    return {
+        'run_at': run_at,
+        'items': [item.to_record() for item in report.carried()] if report is not None else [],
+        'removed': [],
+        'dropped': [
+            {'label': entry.item.label(), 'reason': _DROPPED_LEFTOVER_REASONS[entry.state]}
+            for entry in report.dropped()
+        ] if report is not None else [],
+        'skipped': None,
+        'failed': [],
+    }
+
+
+def _previous_digests(
+    manifest: dict[str, Any] | None,
+    field_name: str,
+    path_key: str,
+    key_of: Callable[[str], str],
+) -> dict[str, str | None]:
+    """Map each path an earlier run recorded in a field to the digest it recorded.
+
+    Args:
+        manifest: The previous manifest, or None.
+        field_name: files_written or machine_wide_destinations.
+        path_key: The record key holding the path.
+        key_of: The comparison key of a path.
+
+    Returns:
+        Path key to recorded digest, read from records of the current shape.
+    """
+    digests: dict[str, str | None] = {}
+    for record in cast(list[object], (manifest or {}).get(field_name) or []):
+        if not isinstance(record, dict):
+            continue
+        record_dict = cast(dict[str, Any], record)
+        path, digest = record_dict.get(path_key), record_dict.get('sha256')
+        if isinstance(path, str):
+            digests[key_of(path)] = digest if isinstance(digest, str) else None
+    return digests
+
+
+def _trusted_digest(digest: str | None, previous: str | None, *, download_failed: bool) -> str | None:
+    """Keep a digest only for bytes the setup is known to have written.
+
+    Args:
+        digest: The digest of the file on disk now.
+        previous: The digest the previous manifest recorded for the path.
+        download_failed: Whether a content download of this run failed.
+
+    Returns:
+        The digest; after a failed download only when it equals the one
+        the previous run recorded, because the bytes at the path may be
+        what the failure left, and those must never count as the setup's.
+    """
+    if download_failed and digest != previous:
+        return None
+    return digest
+
+
+def file_records(
+    profile_dir: Path,
+    planned_paths: list[str],
+    previous_manifest: dict[str, Any] | None,
+    *,
+    download_failed: bool,
+) -> list[dict[str, str | None]]:
+    """Record the profile files a run installed with the digest of each.
+
+    Args:
+        profile_dir: The profile directory.
+        planned_paths: The profile-relative paths the run installs.
+        previous_manifest: The profile's previous manifest, or None.
+        download_failed: Whether a content download of this run failed.
+
+    Returns:
+        One {path, sha256} record per path; the digest is None for a file
+        that is absent or unreadable, and after a failed download for one
+        whose bytes differ from what the previous run recorded.
+    """
+    previous = _previous_digests(previous_manifest, 'files_written', 'path', _file_key)
+    return [
+        {
+            'path': path,
+            'sha256': _trusted_digest(
+                _sha256_of_file(profile_dir.joinpath(*PurePosixPath(path).parts)),
+                previous.get(_file_key(path)),
+                download_failed=download_failed,
+            ),
+        }
+        for path in planned_paths
+    ]
+
+
+def destination_records(
+    files_to_download: list[dict[str, Any]],
+    config_source: str,
+    base_url: str | None,
+    claude_dir: Path,
+    previous_manifest: dict[str, Any] | None,
+    *,
+    download_failed: bool,
+) -> list[dict[str, str | None]]:
+    """Record the destinations outside ~/.claude a run wrote, with the failed-download rule of file_records().
+
+    Args:
+        files_to_download: The resolved files-to-download list.
+        config_source: Where the configuration was loaded from.
+        base_url: The configuration's base-url, or None.
+        claude_dir: The base ~/.claude directory.
+        previous_manifest: The profile's previous manifest, or None.
+        download_failed: Whether a content download of this run failed.
+
+    Returns:
+        The records machine_wide_download_records() builds.
+    """
+    previous = _previous_digests(previous_manifest, 'machine_wide_destinations', 'dest', _destination_key)
+    records = machine_wide_download_records(files_to_download, config_source, base_url, claude_dir)
+    for record in records:
+        record['sha256'] = _trusted_digest(
+            record['sha256'], previous.get(_destination_key(str(record['dest']))), download_failed=download_failed,
+        )
+    return records
+
+
+def written_profile_records(
+    config: dict[str, Any],
+    profile_dir: Path,
+    *,
+    linked_entries: frozenset[str],
+    files_to_download: list[object],
+    config_source: str,
+    base_url: str | None,
+    claude_dir: Path,
+    previous_manifest: dict[str, Any] | None,
+    download_failed: bool,
+) -> dict[str, Any]:
+    """Build the files_written and machine_wide_destinations records Step 20 writes.
+
+    Args:
+        config: The resolved, component-selected configuration the run installed.
+        profile_dir: The profile directory.
+        linked_entries: The entries of the profile that are links.
+        files_to_download: The files-to-download entries the run processed.
+        config_source: Where the configuration was loaded from.
+        base_url: The configuration's base-url, or None.
+        claude_dir: The base ~/.claude directory.
+        previous_manifest: The profile's previous manifest, or None.
+        download_failed: Whether a content download of this run failed.
+
+    Returns:
+        Both records, keyed by their manifest field.
+    """
+    downloads = [cast(dict[str, Any], entry) for entry in files_to_download if isinstance(entry, dict)]
+    return {
+        'files_written': file_records(
+            profile_dir,
+            planned_profile_files(config, profile_dir, linked_entries=linked_entries),
+            previous_manifest,
+            download_failed=download_failed,
+        ),
+        'machine_wide_destinations': destination_records(
+            downloads, config_source, base_url, claude_dir, previous_manifest, download_failed=download_failed,
+        ),
+    }
+
+
 def write_manifest(
     config_base_dir: Path,
     command_name: str | None,
@@ -18957,9 +19744,10 @@ def write_manifest(
     os_env_written: list[str] | None = None,
     settings_keys_written: list[str] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
-    files_written: list[str] | None = None,
+    files_written: list[dict[str, str | None]] | None = None,
     link: dict[str, Any] | None = None,
     auto_update: dict[str, Any] | None = None,
+    leftovers: dict[str, Any] | None = None,
 ) -> bool:
     """Write the installation manifest of a profile.
 
@@ -18967,15 +19755,18 @@ def write_manifest(
     (None for the base profile), the configuration version, source and
     identity, the digest of the resolved configuration, all command names
     and the component delta with their origins, the configuration's own
-    values at install time, the Claude Code version the profile pins, and
-    what the run wrote: destinations outside ~/.claude with their source
-    and content hash, OS environment variables, settings keys, MCP servers,
-    and the profile files. A re-run reads the names, the delta and the
-    identity; the switch guard reads the written records to list the
-    residue another configuration would leave; _other_profile_pins() reads
-    the pin to decide whether the machine-global update controls are still
-    needed. When resolved_config is given, resolved-config.yaml is written
-    beside the manifest and config_digest is its sha256.
+    values at install time, the Claude Code version the profile pins, what
+    the run wrote (destinations outside ~/.claude with their source and
+    content hash, OS environment variables, settings keys, MCP servers, and
+    the profile files with their content hash), and the leftovers of earlier
+    runs it carries. A re-run reads the names, the delta and the identity,
+    and lists as leftovers what the written records and the carried
+    leftovers hold and its configuration no longer installs; the switch
+    guard reads the written records to list the residue another
+    configuration would leave; _other_profile_pins() reads the pin to decide
+    whether the machine-global update controls are still needed. When
+    resolved_config is given, resolved-config.yaml is written beside the
+    manifest and config_digest is its sha256.
 
     Args:
         config_base_dir: Path to the profile directory -- ~/.claude/{cmd}/
@@ -19002,7 +19793,8 @@ def write_manifest(
         os_env_written: OS environment variables this run set
         settings_keys_written: Top-level settings keys this run wrote
         mcp_servers: MCP servers this run registered, with their scopes
-        files_written: Profile-relative paths of the files this run installs
+        files_written: The files this run installs, each a {path, sha256}
+            record of its profile-relative path and content hash
         link: The profile's links as LinkSpec.record() renders them (the
             linked entries, the source profile, and the origin of each; an
             empty entry list for a typed or environment none, which a re-run
@@ -19012,6 +19804,8 @@ def write_manifest(
             auto_update_manifest_record() renders it (the time, the
             configured command and the job name), or None when the profile
             has no job
+        leftovers: The leftovers field as leftovers_manifest_record()
+            renders it; None records no leftover, as a first install does
 
     Returns:
         True if manifest was written successfully, False otherwise.
@@ -19023,6 +19817,7 @@ def write_manifest(
         rendered_config = render_resolved_config(resolved_config)
         config_digest = config_digest_of(rendered_config)
 
+    installed_at = datetime.now(UTC).isoformat()
     manifest: dict[str, Any] = {
         'name': command_name,
         'version': config_version,
@@ -19032,7 +19827,7 @@ def write_manifest(
         'config_source_type': config_source_type,
         'config_identity': config_identity_of(config_source),
         'config_digest': config_digest,
-        'installed_at': datetime.now(UTC).isoformat(),
+        'installed_at': installed_at,
         'command_names': command_names,
         'components': components,
         'link': link,
@@ -19047,6 +19842,9 @@ def write_manifest(
         'mcp_servers': mcp_servers or [],
         'files_written': files_written or [],
         'auto_update': auto_update,
+        LEFTOVERS_MANIFEST_KEY: leftovers if leftovers is not None else leftovers_manifest_record(
+            None, run_at=installed_at,
+        ),
     }
 
     try:
@@ -24175,6 +24973,23 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 ):
                     residue_to_remove = residue
 
+        # What the profile's earlier runs wrote and this configuration no
+        # longer installs, compared with the configuration before component
+        # selection (a deselected component's files are rows of the removal
+        # plan instead); computed for every profile with a manifest, also one
+        # whose recorded configuration cannot be resolved from here
+        leftover_report: LeftoverReport | None = None
+        if target_manifest is not None:
+            leftover_report = compute_profile_leftovers(
+                target_manifest, target_config_dir,
+                profile_name=profile_name,
+                planned=planned_records(config, target_config_dir, claude_dir=home_dir / '.claude', reroot=reroot),
+                live=LiveLeftoverState.for_profile(target_config_dir, home_dir),
+                claude_dir=home_dir / '.claude',
+            )
+            if residue_to_remove is not None:
+                leftover_report = leftover_report.excluding([*residue_to_remove.files, *residue_to_remove.destinations])
+
         # Guard the run against a CLAUDE_CONFIG_DIR inherited from the
         # environment. Runs as soon as the target directory is known, so no
         # component picker and no elevation prompt precedes the refusal, and
@@ -24236,6 +25051,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     'file together.',
                 )
                 sys.exit(1)
+
+        # A leftover under an entry this run links is reached through the
+        # link from Step 3 on, so it belongs to the source profile from then
+        if leftover_report is not None:
+            leftover_report = leftover_report.refined(linked_entries=linked_entries, link_source=link_spec.source)
 
         # The configuration this run installs, recorded beside the manifest
         # as resolved-config.yaml; a remembered value that overrides a
@@ -24689,6 +25509,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             machine_pinned=machine_pinned,
             user_declared_keys=user_declared_control_keys,
         )
+        plan.leftovers = leftover_report
 
         auto_confirm = args.yes
         dry_run = args.dry_run
@@ -25126,8 +25947,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         )
 
         # What this run wrote and chose, as Step 20 records it: a later
-        # re-run reads the names and the component delta, and the switch
-        # guard reads the written records to list the residue
+        # re-run reads the names and the component delta, the switch guard
+        # reads the written records to list the residue, and every re-run
+        # compares them and the carried leftovers with its configuration.
+        # The files and destinations are recorded in each branch right
+        # before Step 20, after the last content download of the run.
         manifest_records: dict[str, Any] = {
             'resolved_config': installed_config_snapshot,
             'origins': {
@@ -25141,14 +25965,9 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 **configured_link_values,
             },
             'link': link_spec.record() if primary_command_name else None,
-            'machine_wide_destinations': machine_wide_download_records(
-                [cast(dict[str, Any], f) for f in cast(list[object], files_to_download or []) if isinstance(f, dict)],
-                config_source, base_url, claude_user_dir,
-            ),
             'os_env_written': [key for key, value in os_level_env_variables.items() if value is not None],
             'settings_keys_written': written_settings_keys(user_settings, status_line, config.get('hooks')),
             'mcp_servers': mcp_server_records(mcp_servers),
-            'files_written': planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
             'auto_update': auto_update_manifest_record(
                 scheduled_update_plan.spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
             ),
@@ -25229,6 +26048,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 command_names=command_names or [primary_command_name],
                 claude_code_version=claude_code_version_normalized,
                 **manifest_records,
+                **written_profile_records(
+                    config, artifact_base_dir,
+                    linked_entries=linked_entries,
+                    files_to_download=files_to_download,
+                    config_source=config_source,
+                    base_url=base_url,
+                    claude_dir=claude_user_dir,
+                    previous_manifest=target_manifest,
+                    download_failed=bool(download_failures),
+                ),
+                leftovers=leftovers_manifest_record(leftover_report, run_at=datetime.now(UTC).isoformat()),
             )
 
             # Step 21: Create launcher script
@@ -25395,6 +26225,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 command_names=[],
                 claude_code_version=claude_code_version_normalized,
                 **manifest_records,
+                **written_profile_records(
+                    config, artifact_base_dir,
+                    linked_entries=linked_entries,
+                    files_to_download=files_to_download,
+                    config_source=config_source,
+                    base_url=base_url,
+                    claude_dir=claude_user_dir,
+                    previous_manifest=target_manifest,
+                    download_failed=bool(download_failures),
+                ),
+                leftovers=leftovers_manifest_record(leftover_report, run_at=datetime.now(UTC).isoformat()),
             )
 
             # Steps 21-22: Skip command creation
@@ -25625,6 +26466,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
+        # Under --yes nobody reads the installation summary before the run,
+        # so the closing lines repeat the leftovers it found
+        for headline, items in leftover_report.completion_sections() if leftover_report is not None else []:
+            print(f'   * {headline}')
+            for item in items:
+                print(f'       - {item}')
         scheduled_update_line = scheduled_update_completion_line(scheduled_update_plan, scheduled_update_failure)
         if scheduled_update_line:
             print(f'   * {scheduled_update_line}')
