@@ -10,7 +10,8 @@ narrow another: the next run lists, after Step 6, the entries no command
 installs any more and removes none of them even with --remove-leftovers,
 and the run after it removes them in Step 23. A command that creates its
 entry only when it is absent keeps it, and a profile whose skills/ is a link
-observes nothing there.
+observes nothing there. A skill the configuration installed itself and a
+dependency command now installs stays in place through a flagged run.
 """
 
 from __future__ import annotations
@@ -223,6 +224,67 @@ class TestLinkedSkillsAreNotObserved:
         assert list(_commands(read_manifest(claude_dir / 'src')).values()) == [['skills/s1']]
         assert read_manifest(claude_dir / 'dep')['dependency_entries'] == []
         assert (claude_dir / 'src' / 'skills' / 's1' / 'SKILL.md').is_file(), 'the command wrote through the link'
+
+
+def _copy_in(source: Path, name: str) -> str:
+    """A command that installs a skill directory by copying it whole from a source directory, replacing any earlier one."""
+    if PLATFORM == 'windows':
+        skills = '$env:USERPROFILE\\.claude\\skills'
+        return '; '.join([
+            f'New-Item -ItemType Directory -Force -Path "{skills}" | Out-Null',
+            f'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "{skills}\\{name}"',
+            f'Copy-Item -Recurse -Path "{source}" -Destination "{skills}\\{name}"',
+        ])
+    return (
+        f'mkdir -p "$HOME/.claude/skills" && rm -rf "$HOME/.claude/skills/{name}" '
+        f'&& cp -R "{source}" "$HOME/.claude/skills/{name}"'
+    )
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestSkillMovedToADependencyCommand:
+    """A skill the configuration installed itself and a dependency command now installs stays in place."""
+
+    @pytest.mark.parametrize('profile', ['prof-m', None], ids=['isolated', 'base'])
+    def test_the_command_owns_the_skill_and_the_flagged_run_leaves_it(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        configs: Path,
+        capsys: pytest.CaptureFixture[str],
+        profile: str | None,
+    ) -> None:
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / profile if profile else claude_dir
+        skill_file = profile_dir / 'skills' / 'moved' / 'SKILL.md'
+        source = configs / 'skills' / 'moved'
+        source.mkdir(parents=True)
+        (source / 'SKILL.md').write_bytes(b'# moved skill\n')
+        names = ['--command-names', profile] if profile else []
+        first = {
+            **_config(['rules/rule.md', 'rules/other.md'], []),
+            'skills': [{'name': 'moved', 'base': 'skills/moved/', 'files': ['SKILL.md']}],
+        }
+        cfg = write_config(configs, 'env.yaml', first)
+        assert run_main([str(cfg), *SKIP, '--yes', *names]) == 0
+        assert skill_file.read_bytes() == b'# moved skill\n'
+        assert 'skills/moved/SKILL.md' in [record['path'] for record in read_manifest(profile_dir)['files_written']]
+
+        # The next version installs the skill through a dependency command
+        # with the same bytes, and drops a rule, so Step 23 removes something
+        second = _config(['rules/rule.md'], [_copy_in(source, 'moved')])
+        write_config(configs, 'env.yaml', second)
+        capsys.readouterr()
+        assert run_main(['--profile', profile or 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+        output = _output(capsys)
+        assert not (profile_dir / 'rules' / 'other.md').exists(), 'the dropped rule is removed in Step 23'
+        assert skill_file.read_bytes() == b'# moved skill\n', 'the skill the command installed stays'
+        manifest = read_manifest(profile_dir)
+        assert manifest['leftovers']['removed'] == ['file: rules/other.md']
+        assert {'label': 'file: skills/moved/SKILL.md', 'reason': 'recreated'} in manifest['leftovers']['dropped']
+        assert manifest['leftovers']['items'] == []
+        assert list(_commands(manifest).values()) == [['skills/moved']]
+        assert f'file: {skill_file} (installed again by a dependency command)' in output
+        assert not validate_manifest(profile_dir / 'manifest.json', _named(second, profile))
 
 
 def _guarded(command: str) -> str:

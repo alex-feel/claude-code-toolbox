@@ -1885,11 +1885,13 @@ class TestStaleSourceRefresh:
         assert '=== Source profile' not in output
         assert home_state(e2e_isolated_home['home']) == before
 
+    @pytest.mark.parametrize('flags', [[], ['--remove-leftovers']], ids=['plain', 'remove-leftovers'])
     def test_failed_source_refresh_stops_the_run_with_the_source_retry(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        capfd: pytest.CaptureFixture[str],
+        capfd: pytest.CaptureFixture[str], flags: list[str],
     ) -> None:
         """A source refresh that exits non-zero stops the dependent's run before any of its own writes."""
+        suffix = ''.join(f' {flag}' for flag in flags)
         cfg = _install_source(configs)
         _install_dependent(cfg, 'team-2')
         claude_dir = e2e_isolated_home['claude_dir']
@@ -1898,14 +1900,14 @@ class TestStaleSourceRefresh:
         dependent_before = home_state(claude_dir / 'team-2')
         capfd.readouterr()
 
-        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2', *flags], argv0=str(runner))
 
         output = _run_output(capfd)
         assert code == 1, output
         assert '=== Source profile team-1 ===' in output
         assert 'child failed' in output
         assert 'The refresh of profile "team-1" failed (exit code 3); profile "team-2" was not installed.' in output
-        assert 'Retry the source with --profile team-1, then run this command again.' in output
+        assert f'Retry the source with --profile team-1{suffix}, then run this command again.' in output
         assert 'Step 1:' not in output
         assert home_state(claude_dir / 'team-2') == dependent_before
         assert _theme(claude_dir / 'team-2') == 'dark'
@@ -2434,11 +2436,13 @@ class TestStaleSourceRefresh:
         dependent_summary = output[output.rindex('Setup Complete!'):]
         assert 'Stale update controls left in other profiles (re-run each with --profile to remove them):' in dependent_summary
 
+    @pytest.mark.parametrize('flags', [[], ['--remove-leftovers']], ids=['plain', 'remove-leftovers'])
     def test_sibling_failure_in_the_source_refresh_installs_this_profile_and_exits_1(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        capfd: pytest.CaptureFixture[str],
+        capfd: pytest.CaptureFixture[str], flags: list[str],
     ) -> None:
         """A source whose Step 24 fails on another dependent is refreshed: this profile installs and the sibling is named."""
+        suffix = ''.join(f' {flag}' for flag in flags)
         cfg = _install_source(configs)
         _install_dependent(cfg, 'team-2')
         _install_dependent(cfg, 'team-3')
@@ -2454,7 +2458,7 @@ class TestStaleSourceRefresh:
         runner = write_child_runner(tmp_path, monkeypatch)
         capfd.readouterr()
 
-        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2', *flags], argv0=str(runner))
 
         output = _run_output(capfd)
         assert code == 1, output
@@ -2463,7 +2467,7 @@ class TestStaleSourceRefresh:
         assert 'The refresh of profile "team-1" failed' not in output
         assert 'Profile "team-1" refreshed with errors (exit code 1); review its output above' in output
         assert 'Its run could not refresh: team-3' in output
-        assert 'Retry it with --profile team-3 after this run.' in output
+        assert f'Retry it with --profile team-3{suffix} after this run.' in output
         assert 'Profile "team-1" refreshed; installing "team-2" from its resolved-config.yaml' in output
         fresh_digest = read_manifest(claude_dir / 'team-1')['config_digest']
         assert fresh_digest != stale_digest
@@ -2475,17 +2479,21 @@ class TestStaleSourceRefresh:
         dependent_tail = output[output.rindex('Profile "team-1" refreshed; installing "team-2"'):]
         assert 'Setup Completed with Errors' in dependent_tail
         assert 'The following dependent profiles failed to refresh:' in dependent_tail
-        assert '- team-3: not refreshed by the run of profile "team-1"; retry with --profile team-3' in dependent_tail
+        assert (
+            f'- team-3: not refreshed by the run of profile "team-1"; retry with --profile team-3{suffix}\n'
+        ) in dependent_tail
         assert 'Review the output of each failed dependent above, then retry it with its --profile command.' in dependent_tail
         assert (
             'The run of profile "team-1" that refreshed the source of this profile ended with exit code 1.'
         ) in dependent_tail
 
+    @pytest.mark.parametrize('flags', [[], ['--remove-leftovers']], ids=['plain', 'remove-leftovers'])
     def test_source_run_failing_after_recording_its_configuration_installs_this_profile_and_exits_1(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        capfd: pytest.CaptureFixture[str],
+        capfd: pytest.CaptureFixture[str], flags: list[str],
     ) -> None:
         """A source run whose own dependency fails still records the configuration: this profile installs, exit 1."""
+        suffix = ''.join(f' {flag}' for flag in flags)
         cfg = _install_source(configs)
         _install_dependent(cfg, 'team-2')
         claude_dir = e2e_isolated_home['claude_dir']
@@ -2496,7 +2504,7 @@ class TestStaleSourceRefresh:
         runner = write_child_runner(tmp_path, monkeypatch)
         capfd.readouterr()
 
-        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], argv0=str(runner))
+        code = run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2', *flags], argv0=str(runner))
 
         output = _run_output(capfd)
         assert code == 1, output
@@ -2515,7 +2523,7 @@ class TestStaleSourceRefresh:
         assert (
             'The run of profile "team-1" that refreshed the source of this profile ended with exit code 1.'
         ) in dependent_tail
-        assert 'Review its output above, then retry it with --profile team-1.' in dependent_tail
+        assert f'Review its output above, then retry it with --profile team-1{suffix}.' in dependent_tail
         assert 'The following dependent profiles failed to refresh:' not in dependent_tail
 
 

@@ -13,9 +13,12 @@ update controls are never recorded.
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import subprocess
 import sys
 from collections.abc import Callable
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -73,11 +76,10 @@ class Machine:
             mcp=self.read_mcp,
         )
 
-    def writer(self, *, deletes: bool = True) -> Callable[[dict[str, str | None]], bool]:
-        """Stand in for set_all_os_env_variables(): delete each variable handed over as None."""
-        def _write(env_vars: dict[str, str | None]) -> bool:
-            for name, value in env_vars.items():
-                assert value is None, 'a leftover removal only deletes'
+    def writer(self, *, deletes: bool = True) -> Callable[[Sequence[str]], bool]:
+        """Stand in for delete_toolbox_os_env_variables(): delete each variable named."""
+        def _write(names: Sequence[str]) -> bool:
+            for name in names:
                 if deletes:
                     self.env.pop(name, None)
             return deletes
@@ -205,6 +207,120 @@ class TestShellExportReader:
 
         with pytest.raises(LeftoverReadError, match=r'\.zshenv'):
             setup_environment._read_shell_export_values(shell_files, 'TOOL_HOME')
+
+
+class TestToolboxBlockRemoval:
+    """A leftover variable leaves the toolbox block of a shell file; the lines a user wrote outside it stay."""
+
+    def test_only_the_line_inside_the_block_leaves(self, tmp_path: Path) -> None:
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text('# mine\nexport TOOL_HOME="mine"\n', encoding='utf-8')
+        assert setup_environment.add_export_to_file(bashrc, 'TOOL_HOME', 'v')
+        assert setup_environment.add_export_to_file(bashrc, 'OTHER', 'x')
+
+        assert setup_environment.remove_export_from_toolbox_block(bashrc, 'TOOL_HOME')
+
+        content = bashrc.read_text(encoding='utf-8')
+        assert content.startswith('# mine\nexport TOOL_HOME="mine"\n')
+        assert 'export TOOL_HOME="v"' not in content
+        assert setup_environment._read_shell_export_values([bashrc], 'TOOL_HOME') == ()
+        assert setup_environment._read_shell_export_values([bashrc], 'OTHER') == ('x',)
+
+    def test_a_block_the_removal_empties_goes_with_it(self, tmp_path: Path) -> None:
+        bashrc, zshenv = tmp_path / '.bashrc', tmp_path / '.zshenv'
+        bashrc.write_text('export TOOL_HOME="mine"\n', encoding='utf-8')
+        for path in (bashrc, zshenv):
+            assert setup_environment.add_export_to_file(path, 'TOOL_HOME', 'v')
+            assert setup_environment.remove_export_from_toolbox_block(path, 'TOOL_HOME')
+
+        assert bashrc.read_text(encoding='utf-8') == 'export TOOL_HOME="mine"\n'
+        assert zshenv.read_text(encoding='utf-8') == ''
+
+    def test_the_set_syntax_file_keeps_its_own_line(self, tmp_path: Path) -> None:
+        set_file = tmp_path / 'cfg' / 'fish' / 'config.fish'
+        set_file.parent.mkdir(parents=True)
+        set_file.write_text('set -gx TOOL_HOME "mine"\n', encoding='utf-8')
+        assert setup_environment.add_export_to_file(set_file, 'TOOL_HOME', 'v')
+
+        assert setup_environment.remove_export_from_toolbox_block(set_file, 'TOOL_HOME')
+
+        assert set_file.read_text(encoding='utf-8') == 'set -gx TOOL_HOME "mine"\n'
+
+    def test_a_file_without_a_block_or_without_the_file_is_left_alone(self, tmp_path: Path) -> None:
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text('export TOOL_HOME="mine"\n', encoding='utf-8')
+
+        assert setup_environment.remove_export_from_toolbox_block(bashrc, 'TOOL_HOME')
+        assert setup_environment.remove_export_from_toolbox_block(tmp_path / '.zshenv', 'TOOL_HOME')
+
+        assert bashrc.read_text(encoding='utf-8') == 'export TOOL_HOME="mine"\n'
+        assert not (tmp_path / '.zshenv').exists()
+
+    def test_a_null_entry_still_deletes_every_line(self, tmp_path: Path) -> None:
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text('export TOOL_HOME="mine"\n', encoding='utf-8')
+        assert setup_environment.add_export_to_file(bashrc, 'TOOL_HOME', 'v')
+
+        assert setup_environment.remove_export_from_file(bashrc, 'TOOL_HOME')
+
+        assert 'TOOL_HOME' not in bashrc.read_text(encoding='utf-8')
+
+
+class TestDeleteToolboxOsEnvVariables:
+    """Step 23 deletes a leftover variable where Step 7 wrote it and nowhere else."""
+
+    def test_shell_files_lose_only_the_block_lines(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        bashrc, zshenv = tmp_path / '.bashrc', tmp_path / '.zshenv'
+        bashrc.write_text('export TOOL_HOME="mine"\n', encoding='utf-8')
+        for path in (bashrc, zshenv):
+            assert setup_environment.add_export_to_file(path, 'TOOL_HOME', 'v')
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [bashrc, zshenv])
+        monkeypatch.setattr(setup_environment.shutil, 'which', lambda _cmd: None)
+        monkeypatch.setenv('TOOL_HOME', 'v')
+
+        assert setup_environment.delete_toolbox_os_env_variables(['TOOL_HOME'])
+
+        assert bashrc.read_text(encoding='utf-8') == 'export TOOL_HOME="mine"\n'
+        assert zshenv.read_text(encoding='utf-8') == ''
+        assert _REAL_READ_OS_ENV_VARIABLE('TOOL_HOME') == ()
+        assert 'TOOL_HOME' not in os.environ
+
+    def test_the_fish_universal_variable_the_setup_set_is_erased(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def _run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [tmp_path / '.bashrc'])
+        monkeypatch.setattr(setup_environment.shutil, 'which', lambda cmd: '/usr/bin/fish' if cmd == 'fish' else None)
+        monkeypatch.setattr(setup_environment.subprocess, 'run', _run)
+
+        assert setup_environment.delete_toolbox_os_env_variables(['TOOL_HOME'])
+
+        assert calls == [['fish', '-c', 'set -Ue TOOL_HOME']]
+
+    def test_windows_deletes_the_user_environment_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        written: list[tuple[str, str | None]] = []
+
+        def _write(name: str, value: str | None) -> bool:
+            written.append((name, value))
+            return name != 'REFUSED'
+
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        monkeypatch.setattr(setup_environment, 'set_os_env_variable_windows', _write)
+        monkeypatch.setenv('TOOL_HOME', 'v')
+        monkeypatch.setenv('REFUSED', 'r')
+
+        assert not setup_environment.delete_toolbox_os_env_variables(['TOOL_HOME', 'REFUSED'])
+
+        assert written == [('TOOL_HOME', None), ('REFUSED', None)]
+        assert 'TOOL_HOME' not in os.environ
+        assert os.environ['REFUSED'] == 'r', 'a variable the deletion left keeps its value in the process'
 
 
 class TestReadOsEnvVariable:
@@ -522,22 +638,22 @@ class TestStep23:
     def test_variables_leave_through_one_writer_call(self, claude_dir: Path) -> None:
         machine = Machine()
         machine.env = {'TOOL_HOME': ('v',), 'TOOL_PATH': ('p',)}
-        calls: list[dict[str, str | None]] = []
+        calls: list[list[str]] = []
         writer = machine.writer()
 
-        def _record(env_vars: dict[str, str | None]) -> bool:
-            calls.append(dict(env_vars))
-            return writer(env_vars)
+        def _record(names: Sequence[str]) -> bool:
+            calls.append(list(names))
+            return writer(names)
 
         report = _report(
             claude_dir,
             LeftoverEntry(_os_env_item('TOOL_HOME', 'v'), 'removable'),
             LeftoverEntry(_os_env_item('TOOL_PATH', 'p'), 'removable'),
         )
-        with patch.object(setup_environment, 'set_all_os_env_variables', side_effect=_record):
+        with patch.object(setup_environment, 'delete_toolbox_os_env_variables', side_effect=_record):
             removal = _step(report, machine, claude_dir=claude_dir, profile_dir=claude_dir)
 
-        assert calls == [{'TOOL_HOME': None, 'TOOL_PATH': None}]
+        assert calls == [['TOOL_HOME', 'TOOL_PATH']]
         assert [(o.entry.item.label(), o.result) for o in removal.outcomes] == [
             ('OS environment variable: TOOL_HOME', 'removed'), ('OS environment variable: TOOL_PATH', 'removed'),
         ]
@@ -548,7 +664,7 @@ class TestStep23:
         machine.env = {'TOOL_HOME': ('v',)}
         report = _report(claude_dir, LeftoverEntry(_os_env_item('TOOL_HOME', 'v'), 'removable'))
 
-        with patch.object(setup_environment, 'set_all_os_env_variables', side_effect=machine.writer(deletes=False)):
+        with patch.object(setup_environment, 'delete_toolbox_os_env_variables', side_effect=machine.writer(deletes=False)):
             removal = _step(report, machine, claude_dir=claude_dir, profile_dir=claude_dir)
 
         [outcome] = removal.outcomes
@@ -560,7 +676,7 @@ class TestStep23:
         machine.env = {'TOOL_HOME': ('edited',)}
         report = _report(claude_dir, LeftoverEntry(_os_env_item('TOOL_HOME', 'v'), 'removable'))
 
-        with patch.object(setup_environment, 'set_all_os_env_variables') as writer:
+        with patch.object(setup_environment, 'delete_toolbox_os_env_variables') as writer:
             removal = _step(report, machine, claude_dir=claude_dir, profile_dir=claude_dir)
 
         writer.assert_not_called()
@@ -577,7 +693,7 @@ class TestStep23:
             'os_env_written': [{'name': 'TOOL_HOME', 'sha256': digest('v2')}], 'mcp_servers': [],
         })
 
-        with patch.object(setup_environment, 'set_all_os_env_variables') as writer:
+        with patch.object(setup_environment, 'delete_toolbox_os_env_variables') as writer:
             removal = _step(report, machine, claude_dir=claude_dir, profile_dir=claude_dir, written=written)
 
         writer.assert_not_called()
@@ -665,7 +781,7 @@ class TestStep23:
         machine.env = {'TOOL_HOME': ('v',)}
         report = _report(claude_dir, LeftoverEntry(_os_env_item('TOOL_HOME', 'v'), 'removable'))
 
-        with patch.object(setup_environment, 'set_all_os_env_variables') as writer:
+        with patch.object(setup_environment, 'delete_toolbox_os_env_variables') as writer:
             removal = setup_environment.run_leftovers_step(
                 report, remove=False, download_failed=False, written=PlannedRecords(),
                 live=machine.live(), profile_dir=claude_dir, claude_dir=claude_dir,
@@ -697,9 +813,9 @@ class TestStep23:
             destination_holders=lambda _dest: [], os_env=machine.read_env, mcp=machine.read_mcp,
         )
 
-        def _write(env_vars: dict[str, str | None]) -> bool:
+        def _write(names: Sequence[str]) -> bool:
             order.append(f'env: rule present={rule.exists()}')
-            return machine.writer()(env_vars)
+            return machine.writer()(names)
 
         def _remove(*args: Any) -> None:
             order.append(f'mcp: variable present={bool(machine.env)}')
@@ -707,7 +823,7 @@ class TestStep23:
 
         with (
             patch.object(setup_environment, 'find_command', return_value='/usr/bin/claude'),
-            patch.object(setup_environment, 'set_all_os_env_variables', side_effect=_write),
+            patch.object(setup_environment, 'delete_toolbox_os_env_variables', side_effect=_write),
             patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes', side_effect=_remove),
         ):
             removal = setup_environment.run_leftovers_step(
@@ -738,7 +854,7 @@ class TestFailedDownload:
         with (
             patch.object(setup_environment, '_record_manifest_leftovers', _REAL_RECORD_MANIFEST_LEFTOVERS),
             patch.object(setup_environment, 'find_command', return_value='/usr/bin/claude'),
-            patch.object(setup_environment, 'set_all_os_env_variables') as writer,
+            patch.object(setup_environment, 'delete_toolbox_os_env_variables') as writer,
             patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes') as remover,
         ):
             removal = setup_environment.run_leftovers_step(

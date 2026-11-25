@@ -566,6 +566,30 @@ class TestAfterDependencyCommands:
             ('held', 'its dependency command failed in this run'), ('removable', ''),
         ]
 
+    def test_a_profile_file_inside_or_at_an_entry_a_command_installed_is_no_longer_tracked(
+        self, profile_dir: Path,
+    ) -> None:
+        inside, at_entry = LeftoverItem('file', 'skills/S1/SKILL.md', 'h'), LeftoverItem('file', 'rules/r.md', 'h')
+        elsewhere = LeftoverItem('file', 'skills/s2/SKILL.md', 'h')
+        report = _report(
+            profile_dir, *(LeftoverEntry(item, 'removable') for item in (inside, at_entry, elsewhere)),
+        )
+        after = report.after_dependency_commands(
+            credited=frozenset({'skills/s1', 'rules/r.md'}), failed_commands=frozenset(), listed_now=(),
+        )
+        assert [entry.state for entry in after.entries] == ['recreated', 'recreated', 'removable']
+        assert after.carried() == [elsewhere]
+        record = setup_environment.leftovers_manifest_record(after, run_at='t')
+        assert record['items'] == [elsewhere.to_record()]
+        assert record['dropped'] == [
+            {'label': 'file: skills/S1/SKILL.md', 'reason': 'recreated'},
+            {'label': 'file: rules/r.md', 'reason': 'recreated'},
+        ]
+        assert ('No longer tracked:', [
+            f'file: {profile_dir / "skills" / "S1" / "SKILL.md"} (installed again by a dependency command)',
+            f'file: {profile_dir / "rules" / "r.md"} (installed again by a dependency command)',
+        ]) in after.completion_sections()
+
     def test_entries_listed_now_are_recorded_and_never_part_of_this_run_s_removal(self, profile_dir: Path) -> None:
         listed = _item('skills/s9', 'h', 'dropped')
         after = _report(profile_dir).after_dependency_commands(
@@ -648,6 +672,20 @@ class TestStep23:
         assert changed.exists()
         assert again.exists()
 
+    def test_a_profile_file_inside_an_entry_this_run_wrote_is_dropped_as_written_again(
+        self, profile_dir: Path,
+    ) -> None:
+        entry = _skill(profile_dir, 'moved')
+        skill_file = entry / 'SKILL.md'
+        listed = LeftoverEntry(
+            LeftoverItem('file', 'skills/moved/SKILL.md', setup_environment._hash_file(skill_file)), 'removable',
+        )
+        written = PlannedRecords(dependency_entries=frozenset({'skills/moved'}))
+        assert _results(_step(_report(profile_dir, listed), profile_dir, written=written)) == {
+            'skills/moved/SKILL.md': ('dropped', 'written again'),
+        }
+        assert skill_file.read_text(encoding='utf-8') == 'skill'
+
     def test_a_failed_removal_is_carried(self, profile_dir: Path) -> None:
         entry = _skill(profile_dir, 's1')
         report = _report(profile_dir, self._listed(entry))
@@ -715,6 +753,18 @@ class TestManifest:
         assert planned.writes(_item('skills/s1', 'h'))
         assert planned.writes(_item('rules/r.md', 'h'))
         assert not planned.writes(_item('skills/s2', 'h'))
+
+    def test_a_file_inside_or_at_an_entry_the_commands_installed_is_written(self) -> None:
+        written = PlannedRecords(dependency_entries=frozenset({'skills/S1', 'rules/r.md'}))
+        for path in ('skills/s1/SKILL.md', 'skills/s1/refs/deep.md', 'rules/r.md'):
+            assert written.writes(LeftoverItem('file', path, 'h')), path
+        assert not written.writes(LeftoverItem('file', 'skills/s2/SKILL.md', 'h'))
+        assert not written.writes(LeftoverItem('file', 'rules/other.md', 'h'))
+
+    def test_a_planned_file_never_makes_its_sibling_files_written(self) -> None:
+        planned = PlannedRecords(files=frozenset({'skills/s1/SKILL.md'}))
+        assert planned.writes(LeftoverItem('file', 'skills/s1/SKILL.md', 'h'))
+        assert not planned.writes(LeftoverItem('file', 'skills/s1/old.md', 'h'))
 
 
 class TestUnitTestIsolation:

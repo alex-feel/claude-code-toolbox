@@ -132,6 +132,30 @@ class TestRefreshDependents:
         for argv in calls:
             assert argv[-1] == FLAG, argv
 
+    @pytest.mark.parametrize(
+        ('remove_leftovers', 'remedy'),
+        [(True, f'retry with --profile team-2 {FLAG}'), (False, 'retry with --profile team-2')],
+    )
+    def test_a_failed_dependent_is_retried_the_way_it_ran(
+        self, remove_leftovers: bool, remedy: str, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def _fail(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.CompletedProcess(argv, 3)
+
+        with (
+            patch.object(setup_environment.subprocess, 'run', side_effect=_fail),
+            patch.object(setup_environment, 'is_admin', return_value=True),
+        ):
+            results = setup_environment.refresh_dependents(
+                [_profile(tmp_path, 'team-2')], remove_leftovers=remove_leftovers,
+            )
+        capsys.readouterr()
+        assert [result.line() for result in results] == [f'team-2: failed (exit code 3); {remedy}']
+
+    def test_the_elevated_terminal_note_follows_the_flagged_retry(self) -> None:
+        result = setup_environment.DependentResult('team-2', 1, True, True)
+        assert result.line().startswith(f'team-2: failed (exit code 1); retry with --profile team-2 {FLAG} from an')
+
 
 class TestSourceRefresh:
     """The refresh of a stale source hands the dependent run's flag to the source's run."""
@@ -154,6 +178,16 @@ class TestSourceRefresh:
         refresh = self._refresh(tmp_path, remove_leftovers=False)
         assert FLAG not in refresh.child_arguments('team-2')
         assert FLAG not in refresh.rows()[1]
+
+    @pytest.mark.parametrize(
+        ('remove_leftovers', 'suffix'), [(True, f' {FLAG}'), (False, '')], ids=['flagged', 'unflagged'],
+    )
+    def test_retry_commands_repeat_the_flag_the_refresh_ran_with(
+        self, remove_leftovers: bool, suffix: str, tmp_path: Path,
+    ) -> None:
+        refresh = self._refresh(tmp_path, remove_leftovers=remove_leftovers)
+        assert refresh.retry_command('team-1') == f'--profile team-1{suffix}'
+        assert refresh.retry_command('team-3') == f'--profile team-3{suffix}'
 
 
 class TestSummaryPreviews:

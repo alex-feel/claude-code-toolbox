@@ -11187,40 +11187,71 @@ def remove_export_from_file(config_file: Path, name: str) -> bool:
                 continue
             new_lines.append(line)
 
-        new_content = '\n'.join(new_lines)
-
-        # Clean up empty marker blocks
-        if ENV_VAR_MARKER_START in new_content:
-            start_idx = new_content.find(ENV_VAR_MARKER_START)
-            end_idx = new_content.find(ENV_VAR_MARKER_END)
-
-            if end_idx != -1:
-                before = new_content[:start_idx]
-                block = new_content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
-                after = new_content[end_idx + len(ENV_VAR_MARKER_END) :]
-
-                # Check if block is empty (only markers and whitespace)
-                block_lines = block.split('\n')
-                has_content = False
-                for block_line in block_lines:
-                    if block_line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
-                        continue
-                    if block_line.strip():
-                        has_content = True
-                        break
-
-                if not has_content:
-                    # Block is empty, remove it entirely
-                    new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
-                    # Handle edge case where file becomes only newlines
-                    if new_content.strip() == '':
-                        new_content = ''
+        new_content = _without_empty_marker_block('\n'.join(new_lines))
 
         # Only write if content changed
         if new_content != original_content:
             config_file.write_text(new_content, encoding='utf-8')
         return True
 
+    except OSError as e:
+        warning(f'Could not modify {config_file}: {e}')
+        return False
+
+
+def _without_empty_marker_block(content: str) -> str:
+    """Drop the claude-code-toolbox marker block of a shell config file's content when it holds nothing.
+
+    Args:
+        content: The file's content.
+
+    Returns:
+        The content without the block when the block holds only its markers
+        and blank lines; an empty string when nothing else is left; the
+        content unchanged otherwise.
+    """
+    start_idx = content.find(ENV_VAR_MARKER_START)
+    end_idx = content.find(ENV_VAR_MARKER_END)
+    if start_idx == -1 or end_idx == -1:
+        return content
+    before = content[:start_idx]
+    block = content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
+    after = content[end_idx + len(ENV_VAR_MARKER_END) :]
+    if any(line.strip() for line in block.split('\n') if line not in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END)):
+        return content
+    stripped = before.rstrip('\n') + '\n' + after.lstrip('\n')
+    return '' if stripped.strip() == '' else stripped
+
+
+def remove_export_from_toolbox_block(config_file: Path, name: str) -> bool:
+    """Remove the line add_export_to_file() wrote for a variable from the claude-code-toolbox marker block.
+
+    A line that sets the variable outside the block is the user's own and
+    stays. The block goes when the removal leaves it empty.
+
+    Args:
+        config_file: Path to the shell config file.
+        name: Environment variable name to remove.
+
+    Returns:
+        bool: True if successful (or the file or its block doesn't exist),
+        False on error.
+    """
+    if not config_file.exists():
+        return True
+    try:
+        content = config_file.read_text(encoding='utf-8')
+        start = content.find(ENV_VAR_MARKER_START)
+        if start == -1:
+            return True
+        end = content.find(ENV_VAR_MARKER_END)
+        stop = end + len(ENV_VAR_MARKER_END) if end != -1 else len(content)
+        prefix = _get_export_prefix(config_file, name)
+        block = [line for line in content[start:stop].split('\n') if not line.strip().startswith(prefix)]
+        new_content = _without_empty_marker_block(content[:start] + '\n'.join(block) + content[stop:])
+        if new_content != content:
+            config_file.write_text(new_content, encoding='utf-8')
+        return True
     except OSError as e:
         warning(f'Could not modify {config_file}: {e}')
         return False
@@ -11304,25 +11335,28 @@ def set_os_env_variable_unix(name: str, value: str | None) -> bool:
                 if not add_export_to_file(config_file, name, value):
                     all_success = False
 
-        # Fish universal variables: propagate immediately to all running Fish instances
-        # config.fish (set -gx) remains the durable persistence mechanism;
-        # set -Ux provides instant propagation to open Fish sessions
-        if shutil.which('fish'):
-            try:
-                if value is None:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ue {name}'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-                else:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ux {name} "{value}"'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-            except (OSError, subprocess.TimeoutExpired):
-                pass  # Non-critical: config.fish write is the durable mechanism
+        _update_fish_universal_variable(name, value)
 
     return all_success
+
+
+def _update_fish_universal_variable(name: str, value: str | None) -> None:
+    """Set or erase a Fish universal variable, so every running Fish session sees the change at once.
+
+    config.fish (set -gx) remains the durable persistence mechanism; set -Ux
+    provides instant propagation to open Fish sessions. Nothing happens
+    without Fish.
+
+    Args:
+        name: Environment variable name.
+        value: Value to set, or None to erase the variable.
+    """
+    if not shutil.which('fish'):
+        return
+    command = f'set -Ue {name}' if value is None else f'set -Ux {name} "{value}"'
+    # Non-critical: the config.fish write is the durable mechanism
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(['fish', '-c', command], capture_output=True, check=False, timeout=5)
 
 
 def set_os_env_variable(name: str, value: str | None) -> bool:
@@ -11401,21 +11435,80 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     if failed_count > 0:
         warning(f'Failed to configure {failed_count} environment variable(s)')
 
-    # Print unset guidance for deleted variables on Unix
-    if sys.platform != 'win32' and deleted_names:
-        info('To remove deleted variable(s) from your current shell session, run:')
-        for var_name in deleted_names:
-            print(f'  unset {var_name}')
-        if shutil.which('fish'):
-            info('For Fish shell:')
-            for var_name in deleted_names:
-                print(f'  set -e {var_name}')
+    _print_unset_guidance(deleted_names)
 
     # Broadcast WM_SETTINGCHANGE after all env var operations (Windows)
     if sys.platform == 'win32' and (set_count > 0 or delete_count > 0):
         _broadcast_wm_settingchange()
 
     return failed_count == 0
+
+
+def _print_unset_guidance(deleted_names: Sequence[str]) -> None:
+    """Tell a Linux or macOS user how to drop deleted variables from the shell session they run the setup in.
+
+    Args:
+        deleted_names: The variables deleted from the shell config files.
+    """
+    if sys.platform == 'win32' or not deleted_names:
+        return
+    info('To remove deleted variable(s) from your current shell session, run:')
+    for var_name in deleted_names:
+        print(f'  unset {var_name}')
+    if shutil.which('fish'):
+        info('For Fish shell:')
+        for var_name in deleted_names:
+            print(f'  set -e {var_name}')
+
+
+def _delete_toolbox_os_env_variable(name: str) -> bool:
+    """Delete one OS environment variable from where Step 7 writes it, and from the current process.
+
+    Args:
+        name: Environment variable name.
+
+    Returns:
+        bool: True when every place was updated, False when one failed.
+    """
+    if sys.platform == 'win32':
+        result = set_os_env_variable_windows(name, None)
+    else:
+        results = [remove_export_from_toolbox_block(config_file, name) for config_file in get_all_shell_config_files()]
+        _update_fish_universal_variable(name, None)
+        result = all(results)
+    if result:
+        os.environ.pop(name, None)
+    return result
+
+
+def delete_toolbox_os_env_variables(names: Sequence[str]) -> bool:
+    """Delete OS environment variables the setup set, where Step 7 wrote them and nowhere else.
+
+    A leftover variable is one the setup wrote: on Windows the one value of
+    the user environment, on Linux and macOS the line add_export_to_file()
+    wrote into the claude-code-toolbox block of each shell config file, and
+    the Fish universal variable set_os_env_variable_unix() set. A line that
+    sets the variable outside the block is the user's own and stays, unlike
+    the deletion a null os-env-variables entry asks for
+    (set_all_os_env_variables()), which removes every line that sets it.
+
+    Args:
+        names: The variable names.
+
+    Returns:
+        bool: True if every deletion succeeded, False if any failed.
+    """
+    deleted: list[str] = []
+    for name in names:
+        info(f'Deleting environment variable: {name}')
+        if _delete_toolbox_os_env_variable(name):
+            deleted.append(name)
+    if deleted:
+        success(f'Deleted {len(deleted)} environment variable(s)')
+    if len(deleted) < len(names):
+        warning(f'Failed to delete {len(names) - len(deleted)} environment variable(s)')
+    _print_unset_guidance(deleted)
+    return len(deleted) == len(names)
 
 
 def partition_os_env_variables(
@@ -18285,17 +18378,20 @@ class DependentResult(NamedTuple):
         code: Its exit code.
         needs_elevation: Whether the run failed on a machine where its
             dependency commands need administrator rights the parent lacks.
+        remove_leftovers: Whether the child ran with --remove-leftovers, so
+            its retry runs with it too.
     """
 
     name: str
     code: int
     needs_elevation: bool
+    remove_leftovers: bool = False
 
     def line(self) -> str:
         """Render the result for the reports."""
         if self.code == 0:
             return f'{self.name}: ok'
-        remedy = f'retry with --profile {self.name}'
+        remedy = f'retry with --profile {self.name}' + (f' {REMOVE_LEFTOVERS_FLAG}' if self.remove_leftovers else '')
         if self.needs_elevation:
             remedy += ' from an elevated terminal (a global npm install needs administrator rights the run could not request)'
         return f'{self.name}: failed (exit code {self.code}); {remedy}'
@@ -18356,7 +18452,7 @@ def refresh_dependents(
         if code != 0 and platform.system() == 'Windows' and not is_admin():
             snapshot = dependent_run_snapshot(profile, source_commands=None if run_all_commands else source_commands)
             needs_elevation = bool(admin_elevation_reasons(snapshot, argparse.Namespace(skip_install=True)))
-        results.append(DependentResult(profile.name, code, needs_elevation))
+        results.append(DependentResult(profile.name, code, needs_elevation, remove_leftovers))
     return results
 
 
@@ -19024,6 +19120,19 @@ def _file_key(path: str) -> str:
     return path.replace('\\', '/').casefold()
 
 
+def _content_entry_key(path: str) -> str:
+    """Key the top-level content directory entry a profile-relative path lies in, or is.
+
+    Args:
+        path: A profile-relative path.
+
+    Returns:
+        The _file_key() of its first two components, '<content
+        directory>/<name>' for a path inside a content directory.
+    """
+    return '/'.join(_file_key(path).split('/')[:2])
+
+
 def _destination_key(path: str) -> str:
     """Key an absolute destination path for comparison, letter case folded as for profile files.
 
@@ -19392,7 +19501,8 @@ class PlannedRecords:
         dependency_entries: The profile-relative paths of the content
             directory entries its dependency commands installed. A
             dependency entry that holds one of the files, or is one, counts
-            as installed too.
+            as installed too, and so does a profile file that lies inside
+            one of these entries, or is one: the command installed it.
     """
 
     files: frozenset[str] = frozenset()
@@ -19403,12 +19513,12 @@ class PlannedRecords:
     mcp_servers: frozenset[str] = frozenset()
     dependency_entries: frozenset[str] = frozenset()
     _keys: frozenset[tuple[str, str]] = field(init=False, repr=False, compare=False)
+    _installed_entries: frozenset[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         keys = {LeftoverItem(LEFTOVER_FILE, path, None).key() for path in self.files}
         keys.update(
-            (LEFTOVER_DEPENDENCY_ENTRY, '/'.join(_file_key(path).split('/')[:2]))
-            for path in [*self.files, *self.dependency_entries]
+            (LEFTOVER_DEPENDENCY_ENTRY, _content_entry_key(path)) for path in [*self.files, *self.dependency_entries]
         )
         keys.update(LeftoverItem(LEFTOVER_DESTINATION, path, None).key() for path in self.destinations)
         keys.update(item.key() for item in self.settings)
@@ -19417,10 +19527,25 @@ class PlannedRecords:
             LeftoverItem.mcp_server(name, scope, None).key() for name in self.mcp_servers for scope in MCP_CLI_SCOPES
         )
         object.__setattr__(self, '_keys', frozenset(keys))
+        object.__setattr__(
+            self, '_installed_entries', frozenset(_content_entry_key(path) for path in self.dependency_entries),
+        )
 
     def writes(self, item: LeftoverItem) -> bool:
-        """Report whether the configuration installs the item again, by the item's identity."""
-        return item.key() in self._keys
+        """Report whether the configuration installs the item again, by the item's identity.
+
+        Args:
+            item: A leftover.
+
+        Returns:
+            True for an item of the same identity, and for a profile file
+            inside a dependency entry the commands installed, or that is
+            one: it was installed again with the entry. A planned file never
+            makes another file of its entry installed.
+        """
+        if item.key() in self._keys:
+            return True
+        return item.kind == LEFTOVER_FILE and _content_entry_key(item.path) in self._installed_entries
 
     def writes_group(self, event: str, group: object) -> bool:
         """Report whether the configuration writes a hook group, as it sits in settings.json, under an event."""
@@ -20653,11 +20778,13 @@ def _after_dependency_commands(
 
     Returns:
         A carried dependency entry a command installed again as recreated,
-        one whose command failed as held, every other entry unchanged.
+        and so a carried profile file inside such an entry, or that is one;
+        a dependency entry whose command failed as held; every other entry
+        unchanged.
     """
-    if entry.item.kind != LEFTOVER_DEPENDENCY_ENTRY or entry.state not in _CARRIED_LEFTOVER_STATES:
+    if entry.item.kind not in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY) or entry.state not in _CARRIED_LEFTOVER_STATES:
         return entry
-    if _file_key(entry.item.path) in credited:
+    if _content_entry_key(entry.item.path) in credited:
         return LeftoverEntry(entry.item, LEFTOVER_RECREATED)
     return _held_for_failed_command(entry, failed_commands)
 
@@ -20791,10 +20918,12 @@ class LeftoverReport:
         """Fold in what the Step 6 dependency commands of this run did.
 
         A dependency entry an earlier run listed that a command of this run
-        installed again is no longer a leftover; one whose command failed
-        stays, because the command may not have finished installing it
-        again. The entries no command installs any more are listed now:
-        recorded for the next run and never removed by this one.
+        installed again is no longer a leftover, and neither is a profile
+        file an earlier run wrote inside such an entry, or at its path: the
+        command owns it now. A dependency entry whose command failed stays,
+        because the command may not have finished installing it again. The
+        entries no command installs any more are listed now: recorded for
+        the next run and never removed by this one.
 
         Args:
             credited: The comparison keys of the entries this run's
@@ -21500,12 +21629,14 @@ def _removal_outcome(entry: LeftoverEntry, failure: str | None) -> LeftoverOutco
 
 
 def remove_os_env_leftovers(entries: Sequence[LeftoverEntry], live: LiveLeftoverState) -> list[LeftoverOutcome]:
-    """Remove OS environment variable leftovers with one call of the OS environment writer.
+    """Remove OS environment variable leftovers with one call of the deleter of what the setup set.
 
     Each variable is looked at again first and handed to
-    set_all_os_env_variables() for deletion only while it still holds the
-    value the setup wrote. Afterwards each one is read again, so the outcome
-    says whether it is gone, whatever the writer reported.
+    delete_toolbox_os_env_variables() only while it still holds the value
+    the setup wrote, so on Linux and macOS only the line in the toolbox block
+    of each shell file goes and a line the user wrote outside the block
+    stays. Afterwards each one is read again, so the outcome says whether it
+    is gone, whatever the deleter reported.
 
     Args:
         entries: The variables.
@@ -21520,7 +21651,7 @@ def remove_os_env_leftovers(entries: Sequence[LeftoverEntry], live: LiveLeftover
     decided = [_not_removable_outcome(entry) for entry in fresh]
     names = [entry.item.path for entry, outcome in zip(fresh, decided, strict=True) if outcome is None]
     if names:
-        set_all_os_env_variables(dict.fromkeys(names))
+        delete_toolbox_os_env_variables(names)
     outcomes: list[LeftoverOutcome] = []
     for entry, outcome in zip(fresh, decided, strict=True):
         if outcome is not None:
@@ -26271,6 +26402,18 @@ class SourceRefresh(NamedTuple):
             *([REMOVE_LEFTOVERS_FLAG] if self.remove_leftovers else []),
         ]
 
+    def retry_command(self, profile: str) -> str:
+        """Name the command that retries the source, or a dependent its run left behind, as the refresh ran it.
+
+        Args:
+            profile: The source's or the dependent's display name.
+
+        Returns:
+            ``--profile NAME``, with ``--remove-leftovers`` when the refresh
+            ran with it, so the retry removes the leftovers too.
+        """
+        return f'--profile {profile}' + (f' {REMOVE_LEFTOVERS_FLAG}' if self.remove_leftovers else '')
+
     def elevation_reasons(
         self, home_dir: Path, profile_names: Iterable[str], *, node_upgrade: 'NodeUpgradePlan | None' = None,
     ) -> list[str]:
@@ -28012,7 +28155,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'The refresh of profile "{source_refresh.source}" failed (exit code {refresh_code}); '
                     f'profile "{profile_name}" was not installed.',
                 )
-                info(f'Retry the source with --profile {source_refresh.source}, then run this command again.')
+                info(
+                    f'Retry the source with {source_refresh.retry_command(source_refresh.source)}, '
+                    'then run this command again.',
+                )
                 sys.exit(1)
             if not recorded:
                 print()
@@ -28035,7 +28181,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                         f'Its run could not refresh: {", ".join(source_refresh_failures)}',
                     )
                 for name in source_refresh_failures:
-                    info(f'Retry it with --profile {name} after this run.')
+                    info(f'Retry it with {source_refresh.retry_command(name)} after this run.')
             success(
                 f'Profile "{source_refresh.source}" refreshed; installing "{profile_name}" from its '
                 f'{RESOLVED_CONFIG_FILENAME}',
@@ -28870,7 +29016,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'The run of profile "{source_refresh.source}" that refreshed the source of this profile ended '
                     f'with exit code {source_refresh_code}.',
                 )
-                error(f'Review its output above, then retry it with --profile {source_refresh.source}.')
+                error(f'Review its output above, then retry it with {source_refresh.retry_command(source_refresh.source)}.')
                 print()
             if dependent_failures or source_refresh_failures:
                 assert source_refresh is not None or not source_refresh_failures
@@ -28881,7 +29027,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     assert source_refresh is not None
                     error(
                         f'  - {name}: not refreshed by the run of profile "{source_refresh.source}"; '
-                        f'retry with --profile {name}',
+                        f'retry with {source_refresh.retry_command(name)}',
                     )
                 print()
                 error('Review the output of each failed dependent above, then retry it with its --profile command.')

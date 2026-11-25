@@ -8,7 +8,9 @@ configuration is then changed in place (its identity stays the same, as an
 update of a remote configuration does) and the profile is re-run: the
 summary lists each variable the configuration no longer sets, a run given
 --remove-leftovers deletes in Step 23 each one still holding the value the
-setup wrote, and a variable changed by hand is left alone. A base MCP server
+setup wrote, and a variable changed by hand is left alone. On Linux and
+macOS the deletion takes only the line inside the toolbox block, so a line
+the user wrote outside it stays. A base MCP server
 is recorded and listed from the home's .claude.json, where the CLI keeps
 user-scope servers; its removal through the real CLI is the subject of
 tests/e2e/test_real_binary_leftovers.py.
@@ -155,6 +157,34 @@ class TestOsEnvLeftovers:
         assert _read(DROPPED) == ('edited by hand',)
         leftovers = read_manifest(claude_dir)['leftovers']
         assert leftovers['dropped'] == [{'label': f'OS environment variable: {DROPPED}', 'reason': 'changed'}]
+        assert leftovers['items'] == []
+
+    @pytest.mark.skipif(
+        sys.platform == 'win32', reason='Windows keeps the variable in the user environment, which has no toolbox block',
+    )
+    def test_a_line_the_user_wrote_outside_the_toolbox_block_stays(
+        self, e2e_isolated_home: dict[str, Path], config_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        claude_dir, bashrc = e2e_isolated_home['claude_dir'], e2e_isolated_home['home'] / '.bashrc'
+        bashrc.write_text(f'# mine\nexport {DROPPED}="mine"\n', encoding='utf-8')
+        _install(config_path, {DROPPED: 'one', KEPT: 'two'})
+        assert bashrc.read_text(encoding='utf-8').startswith(f'# mine\nexport {DROPPED}="mine"\n')
+        assert _read(DROPPED) == ('one',)
+        write_config(config_path.parent, config_path.name, _config({KEPT: 'two'}))
+        capsys.readouterr()
+
+        assert run_main([str(config_path), *SKIP, '--yes', FLAG], real_os_env=True) == 0
+
+        output = printed(capsys)
+        assert f'Removed leftover OS environment variable: {DROPPED}' in output
+        assert _read(DROPPED) == ()
+        assert _read(KEPT) == ('two',)
+        content = bashrc.read_text(encoding='utf-8')
+        assert content.startswith(f'# mine\nexport {DROPPED}="mine"\n'), 'the line outside the block stays'
+        assert f'export {DROPPED}="one"' not in content
+        assert f'export {KEPT}="two"' in content
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert leftovers['removed'] == [f'OS environment variable: {DROPPED}']
         assert leftovers['items'] == []
 
     def test_child_runs_read_and_remove_what_the_parent_set(
