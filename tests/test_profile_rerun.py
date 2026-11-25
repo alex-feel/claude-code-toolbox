@@ -25,11 +25,25 @@ import pytest
 from scripts import setup_environment
 from scripts.setup_environment import CommandNames
 from scripts.setup_environment import ComponentSelection
+from scripts.setup_environment import LeftoverEntry
+from scripts.setup_environment import LeftoverItem
 from scripts.setup_environment import ProfileResidue
 from scripts.setup_environment import resolve_command_names
 
 _REAL_READ_TARGET_MANIFEST = setup_environment._read_target_manifest
 _REAL_INSTALLED_PROFILES = setup_environment.installed_profiles
+
+
+def _setting(keys: list[str], value: object) -> dict[str, Any]:
+    """A settings_written record of a value."""
+    return {'kind': 'setting', 'path': keys, 'sha256': setup_environment.leftover_digest(value)}
+
+
+def _setting_entry(keys: list[str], value: object) -> LeftoverEntry:
+    """A removable settings leftover of a value."""
+    item = LeftoverItem.from_record(_setting(keys, value), claude_dir=Path())
+    assert item is not None
+    return LeftoverEntry(item, 'removable')
 
 
 def _args(
@@ -111,7 +125,7 @@ def _manifest(
         'yaml_values': yaml_values if yaml_values is not None else {'command_names': [], 'components': []},
         'machine_wide_destinations': [],
         'os_env_written': [],
-        'settings_keys_written': [],
+        'settings_written': [],
         'mcp_servers': [],
         'files_written': [],
     }
@@ -622,14 +636,7 @@ class TestInstallRecords:
             {'dest': str(tmp_path / 'missing.txt'), 'source': 'https://host/missing.txt', 'sha256': None},
         ]
 
-    def test_settings_keys_and_mcp_records(self) -> None:
-        keys = setup_environment.written_settings_keys({'theme': 'dark', 'gone': None}, {'file': 's.py'}, {'events': [{}]})
-        assert keys == ['hooks', 'statusLine', 'theme']
-        assert setup_environment.written_settings_keys(None, None, None) == []
-        env_keys = setup_environment.written_settings_keys(
-            {'theme': 'dark', 'env': {'FOO': 'x', 'GONE': None, 'DISABLE_UPDATES': '1'}}, None, None,
-        )
-        assert env_keys == ['env.DISABLE_UPDATES', 'env.FOO', 'theme'], 'env entries are recorded one by one'
+    def test_mcp_records(self) -> None:
         servers = setup_environment.mcp_server_records([
             {'name': 'a', 'scope': ['user', 'profile']}, {'name': 'b'}, {'scope': 'user'},
         ])
@@ -654,7 +661,7 @@ class TestProfileResidue:
             'mcp_servers': [{'name': 'old-srv', 'scopes': ['user', 'profile']}, {'name': 'kept-srv', 'scopes': ['user']},
                             {'name': 'profile-only', 'scopes': ['profile']}],
             'os_env_written': ['OLD_VAR', 'KEPT_VAR'],
-            'settings_keys_written': ['theme', 'model'],
+            'settings_written': [_setting(['theme'], 'dark'), _setting(['model'], 'm')],
             'machine_wide_destinations': [
                 {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)},
             ],
@@ -665,6 +672,7 @@ class TestProfileResidue:
             'os-env-variables': {'KEPT_VAR': '1'},
             'user-settings': {'theme': 'light'},
         }
+        (profile_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
 
         residue = setup_environment.profile_residue(
             manifest, profile_dir, config, isolated=False, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
@@ -674,16 +682,17 @@ class TestProfileResidue:
             files=[profile_dir / 'agents' / 'old.md'],
             mcp_servers=[('old-srv', ['user'])],
             os_env=['OLD_VAR'],
-            settings_keys=['model'],
+            settings=[_setting_entry(['model'], 'm')],
             destinations=[outside],
             kept_destinations=[],
+            settings_dir=profile_dir,
         )
         assert bool(residue)
         assert residue.lines() == [
             f'file: {profile_dir / "agents" / "old.md"}',
             'MCP server: old-srv (scope: user)',
             'OS environment variable: OLD_VAR',
-            'settings.json key: model',
+            f'{profile_dir / "settings.json"}: model',
             f'file outside ~/.claude: {outside}',
         ]
 
@@ -710,9 +719,16 @@ class TestProfileResidue:
         """The binary controls belong to the pin gate and the Step 16 sweep, not to a configuration switch."""
         manifest = {
             'os_env_written': ['DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO'],
-            'settings_keys_written': ['env.DISABLE_AUTOUPDATER', 'env.DISABLE_UPDATES', 'env.FOO', 'theme'],
+            'settings_written': [
+                _setting(['env', 'DISABLE_AUTOUPDATER'], '1'), _setting(['env', 'DISABLE_UPDATES'], '1'),
+                _setting(['env', 'FOO'], 'x'), _setting(['theme'], 'dark'),
+            ],
         }
         config = {'user-settings': {'theme': 'light'}}
+        (tmp_path / '.claude').mkdir()
+        (tmp_path / '.claude' / 'settings.json').write_text(json.dumps({'theme': 'dark', 'env': {
+            'DISABLE_AUTOUPDATER': '1', 'DISABLE_UPDATES': '1', 'FOO': 'x',
+        }}), encoding='utf-8')
 
         residue = setup_environment.profile_residue(
             manifest, tmp_path / '.claude', config, isolated=False, config_source='c.yaml', base_url=None,
@@ -720,8 +736,10 @@ class TestProfileResidue:
         )
 
         assert residue.os_env == ['FOO']
-        assert residue.settings_keys == ['env.FOO']
-        assert residue.lines() == ['OS environment variable: FOO', 'settings.json env variable: FOO']
+        assert residue.settings == [_setting_entry(['env', 'FOO'], 'x')]
+        assert residue.lines() == [
+            'OS environment variable: FOO', f'{tmp_path / ".claude" / "settings.json"}: env.FOO',
+        ]
 
     def test_destination_another_profile_records_is_kept(self, tmp_path: Path) -> None:
         """A destination outside ~/.claude that another installed profile records is listed, never removed."""
@@ -764,7 +782,7 @@ class TestProfileResidue:
         assert residue.kept_destinations == []
 
     def test_isolated_profile_carries_no_settings_or_os_residue(self, tmp_path: Path) -> None:
-        manifest = {'os_env_written': ['OLD_VAR'], 'settings_keys_written': ['theme']}
+        manifest = {'os_env_written': ['OLD_VAR'], 'settings_written': [_setting(['theme'], 'dark')]}
         residue = setup_environment.profile_residue(
             manifest, tmp_path / 'p', {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=tmp_path,
         )
@@ -791,7 +809,8 @@ class TestProfileResidue:
         kept.write_bytes(b'x')
         (claude_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
         residue = ProfileResidue(
-            [skill_file], [('old-srv', ['user'])], ['OLD_VAR'], ['model'], [outside], [(kept, ['other'])],
+            [skill_file], [('old-srv', ['user'])], ['OLD_VAR'], [_setting_entry(['model'], 'm')], [outside],
+            [(kept, ['other'])],
         )
 
         with (
@@ -811,14 +830,14 @@ class TestProfileResidue:
         assert json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8')) == {'theme': 'dark'}
 
     def test_remove_residue_deletes_env_entries_one_by_one(self, tmp_path: Path) -> None:
-        """An env entry residue leaves the other variables of the env object in place."""
+        """A settings residue leaves the other variables of the env object in place."""
         claude_dir = tmp_path / '.claude'
         claude_dir.mkdir()
         settings = claude_dir / 'settings.json'
         settings.write_text(
             json.dumps({'theme': 'dark', 'env': {'FOO': 'x', 'DISABLE_UPDATES': '1'}}), encoding='utf-8',
         )
-        residue = ProfileResidue([], [], [], ['env.FOO'], [], [])
+        residue = ProfileResidue([], [], [], [_setting_entry(['env', 'FOO'], 'x')], [], [])
 
         setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
 
@@ -829,7 +848,9 @@ class TestProfileResidue:
         claude_dir.mkdir()
         settings = claude_dir / 'settings.json'
         settings.write_text(json.dumps({'theme': 'dark', 'env': {'FOO': 'x'}, 'model': 'm'}), encoding='utf-8')
-        residue = ProfileResidue([], [], [], ['env.FOO', 'model'], [], [])
+        residue = ProfileResidue(
+            [], [], [], [_setting_entry(['env', 'FOO'], 'x'), _setting_entry(['model'], 'm')], [], [],
+        )
 
         setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
 

@@ -517,9 +517,11 @@ class TestProfileWithConfiguration:
             ),
             (
                 'variable', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
-                'Clear CLAUDE_CODE_TOOLBOX_ENV_CONFIG (unset CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or '
-                'Remove-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG in PowerShell) and re-run the profile with its own '
-                'configuration: --profile team-1.',
+                (
+                    'Clear CLAUDE_CODE_TOOLBOX_ENV_CONFIG (unset CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or '
+                    'Remove-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG in PowerShell) and re-run the profile with its own '
+                    'configuration: --profile team-1.'
+                ),
             ),
         ],
     )
@@ -1287,7 +1289,7 @@ class TestManifestRecords:
             'sha256': setup_environment._sha256_of_file(outside),
         }]
         assert manifest['os_env_written'] == [], 'an isolated run routes its variables to the env loaders'
-        assert manifest['settings_keys_written'] == ['claudeMdExcludes', 'model', 'theme']
+        assert manifest['settings_written'] == [], 'an isolated profile rebuilds its config.json each run'
         assert manifest['mcp_servers'] == [{'name': 'srv', 'scopes': ['profile']}]
         for relative in written_files(manifest):
             assert (profile_dir / relative).is_file(), relative
@@ -1295,7 +1297,7 @@ class TestManifestRecords:
     def test_base_install_records_os_variables_and_settings(
         self, e2e_isolated_home: dict[str, Path], configs: Path,
     ) -> None:
-        """A base install records the OS variables it set and the settings keys it wrote."""
+        """A base install records the OS variables it set and the settings values and hook groups it wrote."""
         config = {
             'name': 'Base',
             'os-env-variables': {'MY_VAR': 'x', 'GONE_VAR': None},
@@ -1315,19 +1317,22 @@ class TestManifestRecords:
         assert manifest['command_names'] == []
         assert manifest['origins'] == {'command_names': None, 'components': 'yaml'}
         assert manifest['os_env_written'] == ['MY_VAR']
-        assert manifest['settings_keys_written'] == ['hooks', 'theme']
+        assert sorted((record['kind'], record['path']) for record in manifest['settings_written']) == [
+            ('hook-group', ['hooks', 'PostToolUse']), ('setting', ['theme']),
+        ]
         assert written_files(manifest) == ['hooks/rule.md']
 
     def test_base_install_records_settings_env_entries_one_by_one(
         self, e2e_isolated_home: dict[str, Path], configs: Path,
     ) -> None:
-        """Each env variable the settings write is its own record, so a switch can remove one and keep the rest."""
+        """Each env variable the settings write is its own record, so a removal can take one and keep the rest."""
         config = {'name': 'Base', 'user-settings': {'theme': 'dark', 'env': {'FOO': 'x', 'GONE': None}}}
         cfg = write_config(configs, 'base.yaml', config)
 
         assert run_main([str(cfg), *SKIP, '--yes']) == 0
 
-        assert read_manifest(e2e_isolated_home['claude_dir'])['settings_keys_written'] == ['env.FOO', 'theme']
+        records = read_manifest(e2e_isolated_home['claude_dir'])['settings_written']
+        assert sorted(record['path'] for record in records) == [['env', 'FOO'], ['theme']]
 
 
 def _three_components() -> dict[str, Any]:
@@ -1672,7 +1677,9 @@ class TestSwitchKeepsMachineWideControls:
         assert run_main([str(cfg_base), *SKIP, '--yes']) == 0
         manifest = read_manifest(claude_dir)
         assert 'DISABLE_UPDATES' in manifest['os_env_written']
-        assert 'env.DISABLE_UPDATES' in manifest['settings_keys_written']
+        recorded_paths = [record['path'] for record in manifest['settings_written']]
+        assert ['env', 'FOO'] in recorded_paths
+        assert ['env', 'DISABLE_UPDATES'] not in recorded_paths, 'a machine-wide control is never recorded'
         settings_env = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))['env']
         assert settings_env['DISABLE_UPDATES'] == '1'
         assert settings_env['FOO'] == 'x'
@@ -1683,7 +1690,7 @@ class TestSwitchKeepsMachineWideControls:
 
         output = _output(capsys)
         assert 'OS environment variable: FOO' in output
-        assert 'settings.json env variable: FOO' in output
+        assert f'{claude_dir / "settings.json"}: env.FOO' in output
         assert 'DISABLE_UPDATES' not in output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
         assert {'FOO': None} in os_env_writes, 'the variable the previous configuration set is deleted'
         for write in os_env_writes:

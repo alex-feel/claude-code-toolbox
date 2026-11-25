@@ -76,7 +76,7 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
         'yaml_values',
         'machine_wide_destinations',
         'os_env_written',
-        'settings_keys_written',
+        'settings_written',
         'mcp_servers',
         'files_written',
         'auto_update',

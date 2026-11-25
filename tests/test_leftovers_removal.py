@@ -16,7 +16,9 @@ import hashlib
 import io
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -70,9 +72,9 @@ def _live(
     dependents: tuple[InstalledProfile, ...] = (),
 ) -> LiveLeftoverState:
     """A live state over the real file system and real settings files, with links and holders given."""
-    def _references(relative: str) -> str | None:
+    def _references(relative: str, view: Mapping[Path, dict[str, Any]]) -> str | None:
         return setup_environment._hook_file_references(
-            relative, profile_dir=profile_dir, settings_files=settings_files, dependents=dependents,
+            relative, profile_dir=profile_dir, settings_files=settings_files, dependents=dependents, view=view,
         )
 
     return LiveLeftoverState(

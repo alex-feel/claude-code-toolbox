@@ -1213,7 +1213,7 @@ class TestResidue:
         monkeypatch.setattr(setup_environment, 'default_scheduler_platform', lambda: platform)
         manifest = {
             'auto_update': {'time': '03:30', 'command': None, 'job': plan.name},
-            'files_written': [], 'mcp_servers': [], 'os_env_written': [], 'settings_keys_written': [],
+            'files_written': [], 'mcp_servers': [], 'os_env_written': [], 'settings_written': [],
             'machine_wide_destinations': [],
         }
         monkeypatch.setattr(setup_environment, 'installed_profiles', lambda *_a, **_kw: [])

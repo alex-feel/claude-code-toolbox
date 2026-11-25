@@ -5473,7 +5473,7 @@ class TestWriteManifest:
             'name', 'version', 'claude_code_version', 'config_source',
             'config_source_url', 'config_source_type', 'config_identity', 'config_digest',
             'installed_at', 'command_names', 'components', 'link', 'origins', 'yaml_values',
-            'machine_wide_destinations', 'os_env_written', 'settings_keys_written',
+            'machine_wide_destinations', 'os_env_written', 'settings_written',
             'mcp_servers', 'files_written', 'auto_update', 'leftovers',
         }
         assert data['name'] == command_name
@@ -5499,7 +5499,7 @@ class TestWriteManifest:
             yaml_values={'command_names': [], 'components': ['core']},
             machine_wide_destinations=[{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}],
             os_env_written=['MY_VAR'],
-            settings_keys_written=['theme'],
+            settings_written=[{'kind': 'setting', 'path': ['theme'], 'sha256': 'ef'}],
             mcp_servers=[{'name': 'srv', 'scopes': ['user']}],
             files_written=[{'path': 'agents/a.md', 'sha256': 'cd'}],
         )
@@ -5513,7 +5513,7 @@ class TestWriteManifest:
         assert data['yaml_values'] == {'command_names': [], 'components': ['core']}
         assert data['machine_wide_destinations'] == [{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}]
         assert data['os_env_written'] == ['MY_VAR']
-        assert data['settings_keys_written'] == ['theme']
+        assert data['settings_written'] == [{'kind': 'setting', 'path': ['theme'], 'sha256': 'ef'}]
         assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user']}]
         assert data['files_written'] == [{'path': 'agents/a.md', 'sha256': 'cd'}]
 

@@ -82,7 +82,7 @@ def _manifest(
         'yaml_values': yaml_values if yaml_values is not None else {'command_names': [], 'components': []},
         'machine_wide_destinations': [],
         'os_env_written': [],
-        'settings_keys_written': [],
+        'settings_written': [],
         'mcp_servers': [],
         'files_written': [],
     }

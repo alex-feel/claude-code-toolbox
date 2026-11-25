@@ -14,7 +14,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import stat
 import sys
 from collections.abc import Generator
@@ -24,17 +23,17 @@ from typing import Any
 import pytest
 
 from scripts import setup_environment
+from tests.e2e.leftovers_support import HEADING
+from tests.e2e.leftovers_support import REMOVES
+from tests.e2e.leftovers_support import SKIP
+from tests.e2e.leftovers_support import leftover_rows as _block
+from tests.e2e.leftovers_support import printed as _output
 from tests.e2e.profile_support import home_state
 from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_child_runner
 from tests.e2e.profile_support import write_config
 from tests.e2e.validators import validate_manifest
-
-SKIP = ['--skip-install', '--no-admin']
-HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
-_ANSI = re.compile(r'\x1b\[[0-9;]*m')
-REMOVES = 'Step 23 removes each item marked [remove] only while it still holds what the setup wrote.'
 
 
 @pytest.fixture
@@ -55,12 +54,6 @@ def configs(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding='utf-8')
     return directory
-
-
-def _output(capture: pytest.CaptureFixture[str]) -> str:
-    """Everything the run printed, with Windows line endings normalized and colors left out."""
-    captured = capture.readouterr()
-    return _ANSI.sub('', (captured.out + captured.err).replace('\r\n', '\n'))
 
 
 def _full(outside: Path) -> dict[str, Any]:
@@ -89,12 +82,6 @@ def _hooked(script: str, helpers: list[str]) -> dict[str, Any]:
             'events': [{'event': 'Stop', 'type': 'command', 'command': script}],
         },
     }
-
-
-def _block(output: str) -> list[str]:
-    """The rows of the installation summary's leftovers block, below its heading line."""
-    assert HEADING in output, output
-    return output.split(HEADING)[1].split('\n', 1)[1].split('\n\n')[0].strip('\n').split('\n')
 
 
 @contextlib.contextmanager
@@ -348,28 +335,33 @@ class TestRenamedHookFile:
         config = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
         assert (profile_dir / 'hooks' / 'b.py').as_posix() in json.dumps(config['hooks'])
 
-    def test_base_profile_keeps_a_script_its_settings_json_still_wires(
+    def test_base_profile_without_the_flag_keeps_the_script_its_settings_json_wires(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The base settings.json keeps the hook group that runs the old script, so the script stays with it."""
+        """The union-merged base settings.json keeps the hook group that runs the old script until the flag removes it."""
         cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
         claude_dir = e2e_isolated_home['claude_dir']
         assert run_main([str(cfg), *SKIP, '--yes']) == 0
         write_config(configs, 'hooks.yaml', _hooked('b.py', []))
         capsys.readouterr()
 
-        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
 
         output = _output(capsys)
         settings = claude_dir / 'settings.json'
         assert _block(output) == [
             f'  [kept: still wired in {settings} hooks.Stop] file: {claude_dir / "hooks" / "a.py"}',
             f'  [kept: stays with hooks/a.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}',
+            f'  [leftover] {settings}: hooks.Stop group matcher "" (1 hook)',
             '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
         ]
         assert (claude_dir / 'hooks' / 'a.py').is_file(), 'a wired script is never removed'
         assert (claude_dir / 'hooks' / 'h.py').is_file()
-        assert [item['path'] for item in read_manifest(claude_dir)['leftovers']['items']] == ['hooks/a.py', 'hooks/h.py']
+        items = read_manifest(claude_dir)['leftovers']['items']
+        assert [(item['kind'], item['path']) for item in items] == [
+            ('file', 'hooks/a.py'), ('file', 'hooks/h.py'), ('hook-group', ['hooks', 'Stop']),
+        ]
 
     def test_a_dependent_that_links_hooks_keeps_the_script_until_its_refresh(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,

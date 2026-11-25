@@ -1519,6 +1519,47 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
     return errors
 
 
+_SETTINGS_KINDS = ('setting', 'setting-element', 'hook-group')
+_LABEL_PREFIXES = ('file', 'settings.json: ')
+
+
+def _settings_record_shape_error(record: object) -> bool:
+    """Report whether a settings record departs from the shape settings_write_records() writes.
+
+    Args:
+        record: A settings_written record or a settings item of the leftovers field.
+
+    Returns:
+        True for anything but a kind, a non-empty key list and a digest, plus
+        the matcher digest and the hook digests of a hook group.
+    """
+    if not isinstance(record, dict) or record.get('kind') not in _SETTINGS_KINDS:
+        return True
+    path = record.get('path')
+    if not isinstance(path, list) or not path or not all(isinstance(key, str) for key in path):
+        return True
+    if not isinstance(record.get('sha256'), str):
+        return True
+    if record['kind'] != 'hook-group':
+        return set(record) != {'kind', 'path', 'sha256'}
+    entries = record.get('entries')
+    return (
+        set(record) != {'kind', 'path', 'sha256', 'matcher', 'entries'} or len(path) != 2 or path[0] != 'hooks'
+        or not isinstance(record.get('matcher'), str)
+        or not isinstance(entries, list) or not all(isinstance(entry, str) for entry in entries)
+    )
+
+
+def _leftover_item_shape_error(item: object) -> bool:
+    """Report whether a leftovers item is neither a file or destination record nor a settings record."""
+    if isinstance(item, dict) and item.get('kind') in _SETTINGS_KINDS:
+        return _settings_record_shape_error(item)
+    return (
+        not isinstance(item, dict) or set(item) != {'kind', 'path', 'sha256'}
+        or item['kind'] not in ('file', 'destination') or not isinstance(item['path'], str)
+    )
+
+
 def _leftovers_record_errors(leftovers: object) -> list[str]:
     """Validate the manifest's leftovers field: its keys, its items, its dropped labels and its kept reasons.
 
@@ -1543,13 +1584,12 @@ def _leftovers_record_errors(leftovers: object) -> list[str]:
         f'Manifest leftovers kept entry: expected a label and the reason it stays, got {entry!r}'
         for entry in (leftovers['kept'] if isinstance(leftovers['kept'], list) else [])
         if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
-        or not str(entry['label']).startswith('file') or not entry['reason']
+        or not str(entry['label']).startswith(_LABEL_PREFIXES) or not entry['reason']
     )
     errors.extend(
-        f'Manifest leftovers item: expected kind, path and sha256 of a file or destination, got {item!r}'
+        f'Manifest leftovers item: expected the record of a file, a destination or a settings item, got {item!r}'
         for item in (leftovers['items'] if isinstance(leftovers['items'], list) else [])
-        if not isinstance(item, dict) or set(item) != {'kind', 'path', 'sha256'}
-        or item['kind'] not in ('file', 'destination') or not isinstance(item['path'], str)
+        if _leftover_item_shape_error(item)
     )
     errors.extend(
         f'Manifest leftovers dropped entry: expected a label and a reason, got {entry!r}'
@@ -1561,7 +1601,7 @@ def _leftovers_record_errors(leftovers: object) -> list[str]:
         f'Manifest leftovers.{key} entry: expected a label, got {label!r}'
         for key in ('removed', 'failed')
         for label in (leftovers[key] if isinstance(leftovers[key], list) else [])
-        if not isinstance(label, str) or not label.startswith('file')
+        if not isinstance(label, str) or not label.startswith(_LABEL_PREFIXES)
     )
     if leftovers['skipped'] not in (None, 'content downloads failed'):
         errors.append(f"Manifest leftovers.skipped: expected None or the skip reason, got {leftovers['skipped']!r}")
@@ -1748,7 +1788,7 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     if not isinstance(data['yaml_values'], dict):
         errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
     errors.extend(_link_record_errors(data['link'], data['yaml_values'], config))
-    record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_keys_written', 'mcp_servers', 'files_written')
+    record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_written', 'mcp_servers', 'files_written')
     errors.extend(
         f'Manifest {record_key}: expected a list, got {data[record_key]!r}'
         for record_key in record_keys
@@ -1760,6 +1800,14 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         for record in destinations
         if not isinstance(record, dict) or set(record) != {'dest', 'source', 'sha256'}
     )
+    settings = data['settings_written'] if isinstance(data['settings_written'], list) else []
+    errors.extend(
+        f'Manifest settings_written entry: expected the record of a value, a list element or a hook group, got {record!r}'
+        for record in settings
+        if _settings_record_shape_error(record)
+    )
+    if config.get('command-names') and settings:
+        errors.append(f'Manifest settings_written: an isolated profile records none, got {settings!r}')
     servers = data['mcp_servers'] if isinstance(data['mcp_servers'], list) else []
     errors.extend(
         f'Manifest mcp_servers entry: expected name and scopes, got {record!r}'
