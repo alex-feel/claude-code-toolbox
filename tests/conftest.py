@@ -535,6 +535,34 @@ def _guard_real_scheduler(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
 
 
 @pytest.fixture(autouse=True)
+def _guard_real_os_env_reads(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail a unit test that reads the machine's own OS environment variables.
+
+    A re-run of the base profile reads the value of every OS environment
+    variable an earlier run set, where Step 7 writes it: the Windows user
+    environment, or the shell configuration files under the real home on
+    Linux and macOS. A unit test must decide what that read finds, so the
+    reader is replaced by a guard that fails the test; a test hands the
+    leftovers code a reader of its own. E2E tests read the isolated home's
+    shell files, or the file-backed user environment their conftest installs
+    on Windows. Tests of the reader itself call the reference they capture
+    at import time.
+    """
+    if 'e2e' in request.path.parts:
+        return
+
+    def _refuse(name: str) -> NoReturn:
+        pytest.fail(f'a unit test read the real OS environment variable {name!r}')
+
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, 'read_os_env_variable', _refuse)
+
+
+@pytest.fixture(autouse=True)
 def _mock_stale_controls_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent the stale-controls cleanup sweeps from touching the real filesystem.
 

@@ -3,8 +3,11 @@
 The tests install real local YAML files into an isolated home with the real
 launcher, wrapper, profile-config and manifest writers; only network access,
 the Claude Code binary, MCP registration, OS-level variables and the Windows
-PATH registry are replaced. A configuration is written to disk so its
-resolved path is a real identity the manifest records and a re-run compares.
+PATH registry are replaced, and a test can ask for the real MCP registration
+and the real OS-level writer, which writes the isolated home's shell files on
+Linux and macOS and the fake user environment of tests/e2e/conftest.py on
+Windows. A configuration is written to disk so its resolved path is a real
+identity the manifest records and a re-run compares.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +28,7 @@ import yaml
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
 from tests.e2e.expected import EXPECTED_FILES
+from tests.e2e.user_environment_fake import is_installed as user_environment_fake_installed
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -87,6 +92,8 @@ def run_main(
     os_env_writes: list[dict[str, str | None]] | None = None,
     claude_path: str | None = '/usr/bin/claude',
     validation_result: tuple[bool, list[tuple[str, str, bool, str]]] | None = (True, []),
+    real_os_env: bool = False,
+    real_mcp: bool = False,
 ) -> int:
     """Run main() with the given arguments and return its exit code.
 
@@ -111,11 +118,24 @@ def run_main(
             reports: every file accessible by default, or a failure with
             its ``(file_type, path, is_valid, method)`` rows; None runs the
             real validation, which reaches the servers the files name.
+        real_os_env: Whether the run sets and deletes OS-level variables
+            with the real writer instead of handing them to the recorder:
+            in the isolated home's shell files on Linux and macOS (Fish
+            hidden, as in a child run), in the fake user environment on
+            Windows. ``os_env_writes`` then records nothing.
+        real_mcp: Whether Step 13 registers the MCP servers through the
+            ``claude`` command ``claude_path`` names instead of being
+            replaced; a test passing it runs the real binary.
 
     Returns:
         The exit code; 0 when main() returns normally.
     """
+    if real_os_env and sys.platform == 'win32':
+        assert user_environment_fake_installed(setup_environment), (
+            'the real OS environment writer of a Windows test must write the fake user environment'
+        )
     original_find = setup_environment.find_command
+    real_which = shutil.which
     remaining = list(answers or [])
 
     def _find_command(name: str) -> str | None:
@@ -129,6 +149,9 @@ def run_main(
             os_env_writes.append(dict(env_vars))
         return True
 
+    def _which_without_fish(cmd: str, *args: Any, **kwargs: Any) -> str | None:
+        return None if cmd == 'fish' else real_which(cmd, *args, **kwargs)
+
     # Every run starts from the environment the test prepared: main() exports
     # the profile's CLAUDE_CONFIG_DIR and the IDE auto-install control into
     # its own process, which a real shell never carries into the next run
@@ -140,9 +163,14 @@ def run_main(
             if validation_result is not None else contextlib.nullcontext()
         ),
         patch('scripts.setup_environment.cleanup_temp_paths_from_registry', return_value=(0, [])),
-        patch('scripts.setup_environment.set_all_os_env_variables', side_effect=_record_os_env),
-        patch('scripts.setup_environment.configure_all_mcp_servers',
-              return_value=(True, [], empty_mcp_stats())),
+        (
+            patch('scripts.setup_environment.set_all_os_env_variables', side_effect=_record_os_env)
+            if not real_os_env else patch.object(shutil, 'which', _which_without_fish)
+        ),
+        (
+            patch('scripts.setup_environment.configure_all_mcp_servers', return_value=(True, [], empty_mcp_stats()))
+            if not real_mcp else contextlib.nullcontext()
+        ),
         patch('scripts.setup_environment.find_command', side_effect=_find_command),
         patch('scripts.setup_environment._dev_tty_available', return_value=False),
         patch('scripts.setup_environment._read_user_input', side_effect=_read_answer),

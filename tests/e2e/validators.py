@@ -1520,7 +1520,8 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
 
 
 _SETTINGS_KINDS = ('setting', 'setting-element', 'hook-group')
-_LABEL_PREFIXES = ('file', 'settings.json: ')
+_LABEL_PREFIXES = ('file', 'settings.json: ', 'OS environment variable: ', 'MCP server: ')
+_MCP_CLI_SCOPES = ('user', 'local', 'project')
 
 
 def _settings_record_shape_error(record: object) -> bool:
@@ -1551,9 +1552,16 @@ def _settings_record_shape_error(record: object) -> bool:
 
 
 def _leftover_item_shape_error(item: object) -> bool:
-    """Report whether a leftovers item is neither a file or destination record nor a settings record."""
+    """Report whether a leftovers item is no file, destination, settings, variable or server record."""
     if isinstance(item, dict) and item.get('kind') in _SETTINGS_KINDS:
         return _settings_record_shape_error(item)
+    if isinstance(item, dict) and item.get('kind') == 'os-env':
+        return set(item) != {'kind', 'name', 'sha256'} or not isinstance(item['name'], str)
+    if isinstance(item, dict) and item.get('kind') == 'mcp-server':
+        return (
+            set(item) != {'kind', 'name', 'scope', 'sha256'} or not isinstance(item['name'], str)
+            or item['scope'] not in _MCP_CLI_SCOPES
+        )
     return (
         not isinstance(item, dict) or set(item) != {'kind', 'path', 'sha256'}
         or item['kind'] not in ('file', 'destination') or not isinstance(item['path'], str)
@@ -1808,11 +1816,23 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     )
     if config.get('command-names') and settings:
         errors.append(f'Manifest settings_written: an isolated profile records none, got {settings!r}')
+    variables = data['os_env_written'] if isinstance(data['os_env_written'], list) else []
+    errors.extend(
+        f'Manifest os_env_written entry: expected a name and the digest of its value, got {record!r}'
+        for record in variables
+        if not isinstance(record, dict) or set(record) != {'name', 'sha256'}
+        or not isinstance(record['name'], str) or not isinstance(record['sha256'], str)
+    )
+    if config.get('command-names') and variables:
+        errors.append(f'Manifest os_env_written: an isolated profile records none, got {variables!r}')
     servers = data['mcp_servers'] if isinstance(data['mcp_servers'], list) else []
     errors.extend(
-        f'Manifest mcp_servers entry: expected name and scopes, got {record!r}'
+        f'Manifest mcp_servers entry: expected a name, its scopes and a digest per CLI scope, got {record!r}'
         for record in servers
-        if not isinstance(record, dict) or set(record) != {'name', 'scopes'}
+        if not isinstance(record, dict) or set(record) != {'name', 'scopes', 'sha256'}
+        or not isinstance(record['sha256'], dict)
+        or sorted(record['sha256']) != sorted(scope for scope in record['scopes'] if scope != 'profile')
+        or not all(digest is None or isinstance(digest, str) for digest in record['sha256'].values())
     )
     files = data['files_written'] if isinstance(data['files_written'], list) else []
     errors.extend(

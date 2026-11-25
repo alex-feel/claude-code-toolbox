@@ -1290,7 +1290,7 @@ class TestManifestRecords:
         }]
         assert manifest['os_env_written'] == [], 'an isolated run routes its variables to the env loaders'
         assert manifest['settings_written'] == [], 'an isolated profile rebuilds its config.json each run'
-        assert manifest['mcp_servers'] == [{'name': 'srv', 'scopes': ['profile']}]
+        assert manifest['mcp_servers'] == [{'name': 'srv', 'scopes': ['profile'], 'sha256': {}}]
         for relative in written_files(manifest):
             assert (profile_dir / relative).is_file(), relative
 
@@ -1316,7 +1316,7 @@ class TestManifestRecords:
         assert manifest['name'] is None
         assert manifest['command_names'] == []
         assert manifest['origins'] == {'command_names': None, 'components': 'yaml'}
-        assert manifest['os_env_written'] == ['MY_VAR']
+        assert manifest['os_env_written'] == [{'name': 'MY_VAR', 'sha256': setup_environment.leftover_digest('x')}]
         assert sorted((record['kind'], record['path']) for record in manifest['settings_written']) == [
             ('hook-group', ['hooks', 'PostToolUse']), ('setting', ['theme']),
         ]
@@ -1673,29 +1673,34 @@ class TestSwitchKeepsMachineWideControls:
             'user-settings': {'theme': 'dark', 'env': {'FOO': 'x'}},
         })
         cfg_new = write_config(configs, 'new.yaml', {'name': 'Unpinned Base', 'user-settings': {'theme': 'light'}})
-        assert run_main([str(cfg_iso), *SKIP, '--yes', '--command-names', 'pinned-1']) == 0
-        assert run_main([str(cfg_base), *SKIP, '--yes']) == 0
+        assert run_main([str(cfg_iso), *SKIP, '--yes', '--command-names', 'pinned-1'], real_os_env=True) == 0
+        assert run_main([str(cfg_base), *SKIP, '--yes'], real_os_env=True) == 0
         manifest = read_manifest(claude_dir)
-        assert 'DISABLE_UPDATES' in manifest['os_env_written']
+        assert manifest['os_env_written'] == [{'name': 'FOO', 'sha256': setup_environment.leftover_digest('x')}], (
+            'a machine-wide control is never recorded'
+        )
+        controls = {key: setup_environment.read_os_env_variable(key) for key in setup_environment.MACHINE_WIDE_ENV_CONTROLS}
+        assert controls['DISABLE_UPDATES'] == ('1',)
+        assert controls['DISABLE_AUTOUPDATER'] == ('1',)
+        assert setup_environment.read_os_env_variable('FOO') == ('x',)
         recorded_paths = [record['path'] for record in manifest['settings_written']]
         assert ['env', 'FOO'] in recorded_paths
         assert ['env', 'DISABLE_UPDATES'] not in recorded_paths, 'a machine-wide control is never recorded'
         settings_env = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))['env']
         assert settings_env['DISABLE_UPDATES'] == '1'
         assert settings_env['FOO'] == 'x'
-        os_env_writes: list[dict[str, str | None]] = []
         capsys.readouterr()
 
-        assert run_main([str(cfg_new), *SKIP, '--yes', '--switch-config'], os_env_writes=os_env_writes) == 0
+        assert run_main([str(cfg_new), *SKIP, '--yes', '--switch-config'], real_os_env=True) == 0
 
         output = _output(capsys)
         assert 'OS environment variable: FOO' in output
         assert f'{claude_dir / "settings.json"}: env.FOO' in output
         assert 'DISABLE_UPDATES' not in output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
-        assert {'FOO': None} in os_env_writes, 'the variable the previous configuration set is deleted'
-        for write in os_env_writes:
-            for key in setup_environment.MACHINE_WIDE_ENV_CONTROLS:
-                assert key not in write, f'{key} deletion scheduled by {write}'
+        assert setup_environment.read_os_env_variable('FOO') == (), 'the variable the previous configuration set is deleted'
+        assert {
+            key: setup_environment.read_os_env_variable(key) for key in setup_environment.MACHINE_WIDE_ENV_CONTROLS
+        } == controls, 'the controls another profile still needs stay set'
         settings = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))
         assert settings['theme'] == 'light'
         assert settings['env']['DISABLE_UPDATES'] == '1', 'the control another profile still needs was removed'

@@ -30,6 +30,7 @@ from scripts.setup_environment import LeftoverItem
 from scripts.setup_environment import ProfileResidue
 from scripts.setup_environment import resolve_command_names
 
+_digest = setup_environment.leftover_digest
 _REAL_READ_TARGET_MANIFEST = setup_environment._read_target_manifest
 _REAL_INSTALLED_PROFILES = setup_environment.installed_profiles
 
@@ -44,6 +45,20 @@ def _setting_entry(keys: list[str], value: object) -> LeftoverEntry:
     item = LeftoverItem.from_record(_setting(keys, value), claude_dir=Path())
     assert item is not None
     return LeftoverEntry(item, 'removable')
+
+
+_LIVE_ENTRY: dict[str, Any] = {'type': 'http', 'url': 'https://mcp.example/mcp'}
+
+
+def _live_machine(env: dict[str, str], mcp: dict[str, dict[str, Any]]) -> setup_environment.LiveLeftoverState:
+    """Live readers over an in-memory OS environment and MCP registrations, the files read from disk."""
+    return setup_environment.LiveLeftoverState(
+        file_digest=setup_environment._live_file_digest,
+        under_link=lambda _relative: False,
+        destination_holders=lambda _dest: [],
+        os_env=lambda name: (env[name],) if name in env else (),
+        mcp=lambda name: dict(mcp.get(name, {})),
+    )
 
 
 def _args(
@@ -637,10 +652,14 @@ class TestInstallRecords:
         ]
 
     def test_mcp_records(self) -> None:
-        servers = setup_environment.mcp_server_records([
-            {'name': 'a', 'scope': ['user', 'profile']}, {'name': 'b'}, {'scope': 'user'},
-        ])
-        assert servers == [{'name': 'a', 'scopes': ['user', 'profile']}, {'name': 'b', 'scopes': ['user']}]
+        servers = setup_environment.mcp_server_records(
+            [{'name': 'a', 'scope': ['user', 'profile']}, {'name': 'b'}, {'scope': 'user'}],
+            live_entries=lambda _name: None,
+        )
+        assert servers == [
+            {'name': 'a', 'scopes': ['user', 'profile'], 'sha256': {'user': None}},
+            {'name': 'b', 'scopes': ['user'], 'sha256': {'user': None}},
+        ]
 
 
 class TestProfileResidue:
@@ -658,9 +677,12 @@ class TestProfileResidue:
             'files_written': [
                 {'path': path, 'sha256': None} for path in ('agents/old.md', 'agents/kept.md', 'agents/gone-already.md')
             ],
-            'mcp_servers': [{'name': 'old-srv', 'scopes': ['user', 'profile']}, {'name': 'kept-srv', 'scopes': ['user']},
-                            {'name': 'profile-only', 'scopes': ['profile']}],
-            'os_env_written': ['OLD_VAR', 'KEPT_VAR'],
+            'mcp_servers': [
+                {'name': 'old-srv', 'scopes': ['user', 'profile'], 'sha256': {'user': _digest(_LIVE_ENTRY)}},
+                {'name': 'kept-srv', 'scopes': ['user'], 'sha256': {'user': _digest(_LIVE_ENTRY)}},
+                {'name': 'profile-only', 'scopes': ['profile'], 'sha256': {}},
+            ],
+            'os_env_written': [{'name': 'OLD_VAR', 'sha256': _digest('1')}, {'name': 'KEPT_VAR', 'sha256': _digest('1')}],
             'settings_written': [_setting(['theme'], 'dark'), _setting(['model'], 'm')],
             'machine_wide_destinations': [
                 {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)},
@@ -674,14 +696,20 @@ class TestProfileResidue:
         }
         (profile_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
 
+        live = _live_machine(
+            {'OLD_VAR': '1', 'KEPT_VAR': '1'},
+            {'old-srv': {'user': _LIVE_ENTRY}, 'kept-srv': {'user': _LIVE_ENTRY}},
+        )
+
         residue = setup_environment.profile_residue(
             manifest, profile_dir, config, isolated=False, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
+            live=live,
         )
 
         assert residue == ProfileResidue(
             files=[profile_dir / 'agents' / 'old.md'],
-            mcp_servers=[('old-srv', ['user'])],
-            os_env=['OLD_VAR'],
+            mcp_servers=[LeftoverEntry(LeftoverItem.mcp_server('old-srv', 'user', _digest(_LIVE_ENTRY)), 'removable')],
+            os_env=[LeftoverEntry(LeftoverItem.os_env('OLD_VAR', _digest('1')), 'removable')],
             settings=[_setting_entry(['model'], 'm')],
             destinations=[outside],
             kept_destinations=[],
@@ -718,7 +746,10 @@ class TestProfileResidue:
     def test_machine_wide_controls_are_never_residue(self, tmp_path: Path) -> None:
         """The binary controls belong to the pin gate and the Step 16 sweep, not to a configuration switch."""
         manifest = {
-            'os_env_written': ['DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO'],
+            'os_env_written': [
+                {'name': name, 'sha256': _digest('1')}
+                for name in ('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO')
+            ],
             'settings_written': [
                 _setting(['env', 'DISABLE_AUTOUPDATER'], '1'), _setting(['env', 'DISABLE_UPDATES'], '1'),
                 _setting(['env', 'FOO'], 'x'), _setting(['theme'], 'dark'),
@@ -730,12 +761,17 @@ class TestProfileResidue:
             'DISABLE_AUTOUPDATER': '1', 'DISABLE_UPDATES': '1', 'FOO': 'x',
         }}), encoding='utf-8')
 
-        residue = setup_environment.profile_residue(
-            manifest, tmp_path / '.claude', config, isolated=False, config_source='c.yaml', base_url=None,
-            claude_dir=tmp_path / '.claude',
+        live = _live_machine(
+            dict.fromkeys(('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO'), '1'),
+            {},
         )
 
-        assert residue.os_env == ['FOO']
+        residue = setup_environment.profile_residue(
+            manifest, tmp_path / '.claude', config, isolated=False, config_source='c.yaml', base_url=None,
+            claude_dir=tmp_path / '.claude', live=live,
+        )
+
+        assert [entry.item.path for entry in residue.os_env] == ['FOO']
         assert residue.settings == [_setting_entry(['env', 'FOO'], 'x')]
         assert residue.lines() == [
             'OS environment variable: FOO', f'{tmp_path / ".claude" / "settings.json"}: env.FOO',
@@ -809,16 +845,25 @@ class TestProfileResidue:
         kept.write_bytes(b'x')
         (claude_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
         residue = ProfileResidue(
-            [skill_file], [('old-srv', ['user'])], ['OLD_VAR'], [_setting_entry(['model'], 'm')], [outside],
+            [skill_file],
+            [LeftoverEntry(LeftoverItem.mcp_server('old-srv', 'user', _digest(_LIVE_ENTRY)), 'removable')],
+            [LeftoverEntry(LeftoverItem.os_env('OLD_VAR', _digest('1')), 'removable')],
+            [_setting_entry(['model'], 'm')], [outside],
             [(kept, ['other'])],
         )
+        env = {'OLD_VAR': '1'}
+        mcp: dict[str, dict[str, Any]] = {'old-srv': {'user': _LIVE_ENTRY}}
 
         with (
             patch.object(setup_environment, 'find_command', return_value='/usr/bin/claude'),
-            patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes') as remove_mcp,
-            patch.object(setup_environment, 'set_all_os_env_variables', return_value=True) as set_env,
+            patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes',
+                         side_effect=lambda *_args: mcp.pop('old-srv')) as remove_mcp,
+            patch.object(setup_environment, 'set_all_os_env_variables',
+                         side_effect=lambda _vars: env.pop('OLD_VAR') is not None) as set_env,
         ):
-            setup_environment.remove_profile_residue(residue, profile_dir=profile_dir, claude_dir=claude_dir)
+            setup_environment.remove_profile_residue(
+                residue, profile_dir=profile_dir, claude_dir=claude_dir, live=_live_machine(env, mcp),
+            )
 
         assert not skill_file.exists()
         assert not skill_file.parent.exists(), 'the emptied skill directory is pruned'
@@ -827,6 +872,8 @@ class TestProfileResidue:
         assert kept.read_bytes() == b'x', 'a destination another profile records is never removed'
         remove_mcp.assert_called_once_with('/usr/bin/claude', 'old-srv', ['user'], None, profile_dir)
         set_env.assert_called_once_with({'OLD_VAR': None})
+        assert env == {}
+        assert mcp == {}
         assert json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8')) == {'theme': 'dark'}
 
     def test_remove_residue_deletes_env_entries_one_by_one(self, tmp_path: Path) -> None:

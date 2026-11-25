@@ -5498,9 +5498,9 @@ class TestWriteManifest:
             components={'select': 'core', 'with': None, 'without': None},
             yaml_values={'command_names': [], 'components': ['core']},
             machine_wide_destinations=[{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}],
-            os_env_written=['MY_VAR'],
+            os_env_written=[{'name': 'MY_VAR', 'sha256': '01'}],
             settings_written=[{'kind': 'setting', 'path': ['theme'], 'sha256': 'ef'}],
-            mcp_servers=[{'name': 'srv', 'scopes': ['user']}],
+            mcp_servers=[{'name': 'srv', 'scopes': ['user'], 'sha256': {'user': '02'}}],
             files_written=[{'path': 'agents/a.md', 'sha256': 'cd'}],
         )
 
@@ -5512,9 +5512,9 @@ class TestWriteManifest:
         assert data['components'] == {'select': 'core', 'with': None, 'without': None}
         assert data['yaml_values'] == {'command_names': [], 'components': ['core']}
         assert data['machine_wide_destinations'] == [{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}]
-        assert data['os_env_written'] == ['MY_VAR']
+        assert data['os_env_written'] == [{'name': 'MY_VAR', 'sha256': '01'}]
         assert data['settings_written'] == [{'kind': 'setting', 'path': ['theme'], 'sha256': 'ef'}]
-        assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user']}]
+        assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user'], 'sha256': {'user': '02'}}]
         assert data['files_written'] == [{'path': 'agents/a.md', 'sha256': 'cd'}]
 
 

@@ -9951,6 +9951,7 @@ def collect_machine_wide_writes(
     scheduled_update: 'ScheduledUpdatePlan | None' = None,
     node_upgrade: 'NodeUpgradePlan | None' = None,
     leftover_destinations: Sequence[str] = (),
+    leftover_mcp_servers: Sequence[str] = (),
 ) -> list[str]:
     """Name every write of an isolated run that reaches beyond its profile.
 
@@ -9991,6 +9992,8 @@ def collect_machine_wide_writes(
             or None when the run does not run the Node.js step.
         leftover_destinations: The destinations outside ~/.claude that
             Step 23 removes as leftovers of earlier runs (--remove-leftovers).
+        leftover_mcp_servers: The project-scope MCP servers Step 23 removes
+            as leftovers from the working directory's .mcp.json.
 
     Returns:
         One line per machine-wide write, in execution order.
@@ -10043,6 +10046,11 @@ def collect_machine_wide_writes(
     if has_dependency_commands:
         writes.append('Dependency commands: run machine-wide (listed above)')
     writes.extend(f'remove leftover file: {path}' for path in leftover_destinations)
+    if leftover_mcp_servers:
+        writes.append(
+            '.mcp.json in the working directory: remove leftover project-scope MCP server(s) '
+            f'{", ".join(leftover_mcp_servers)}',
+        )
     if scheduled_update is not None and scheduled_update.changes_registration:
         if scheduled_update.action == 'remove':
             writes.append(f'OS scheduler: remove the daily update job {scheduled_update.name}')
@@ -18735,21 +18743,82 @@ def _is_machine_wide_control_record(key: str) -> bool:
     return key in MACHINE_WIDE_ENV_CONTROLS
 
 
-def mcp_server_records(mcp_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Record the MCP servers a run registers with their scopes.
+def os_env_records(os_level_env: Mapping[str, str | None], *, isolated: bool) -> list[dict[str, str]]:
+    """Record the OS environment variables a base run set, as digests of their values.
+
+    Args:
+        os_level_env: What Step 7 handed to the OS environment writer; a
+            None value is a deletion and sets nothing.
+        isolated: Whether the run installs an isolated profile, which sets
+            only the machine-wide binary controls in the OS environment.
+
+    Returns:
+        One {name, sha256} record per variable set, the sha256 being
+        leftover_digest() of the value as written; none for an isolated run,
+        and never one for a machine-wide binary control, which belongs to
+        the pin gate and the Step 16 sweep.
+    """
+    if isolated:
+        return []
+    return [
+        {'name': name, 'sha256': leftover_digest(str(value))}
+        for name, value in os_level_env.items()
+        if value is not None and not _is_machine_wide_control_record(name)
+    ]
+
+
+def mcp_server_records(
+    mcp_servers: list[dict[str, Any]],
+    *,
+    live_entries: Callable[[str], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """Record the MCP servers a run registers with their scopes and the entry each CLI scope holds.
 
     Args:
         mcp_servers: The resolved mcp-servers list.
+        live_entries: Reads the entry stored for a server name at each CLI
+            scope, or None when the files holding them cannot be read (see
+            _read_live_mcp_entries()).
 
     Returns:
-        One record per named server: its name and normalized scopes.
+        One record per named server: its name, its normalized scopes, and per
+        CLI scope it names the leftover_digest() of the entry stored there.
+        The digest is recorded only for an entry equal to what the
+        configuration declares, so an entry Step 13 did not write (its
+        registration failed, the entry was made by hand) is never counted as
+        the setup's; None otherwise.
     """
     records: list[dict[str, Any]] = []
     for server in mcp_servers:
         name = str(server.get('name') or '').strip()
-        if name:
-            records.append({'name': name, 'scopes': _mcp_scopes_or_empty(server.get('scope', 'user'))})
+        if not name:
+            continue
+        scopes = _mcp_scopes_or_empty(server.get('scope', 'user'))
+        cli_scopes = [scope for scope in scopes if scope != 'profile']
+        live = live_entries(name) if cli_scopes else None
+        expected = _build_expected_mcp_entry(server) if cli_scopes else None
+        digests: dict[str, str | None] = {}
+        for scope in cli_scopes:
+            entry = live.get(scope) if live is not None else None
+            setup_wrote_it = entry is not None and expected is not None and _mcp_entries_equal(entry, expected)
+            digests[scope] = leftover_digest(entry) if setup_wrote_it else None
+        records.append({'name': name, 'scopes': scopes, 'sha256': digests})
     return records
+
+
+def _declared_mcp_server_names(config: dict[str, Any]) -> frozenset[str]:
+    """Name every MCP server a configuration declares, at any scope: Step 13 manages each of these names."""
+    return frozenset(
+        str(cast(dict[str, Any], server).get('name') or '').strip()
+        for server in cast(list[object], config.get('mcp-servers') or [])
+        if isinstance(server, dict) and str(cast(dict[str, Any], server).get('name') or '').strip()
+    )
+
+
+def _declared_os_env_names(config: dict[str, Any]) -> frozenset[str]:
+    """Name every OS environment variable a configuration declares, set or deleted: Step 7 manages each of these."""
+    variables = config.get('os-env-variables')
+    return frozenset(str(name) for name in cast(dict[str, Any], variables)) if isinstance(variables, dict) else frozenset()
 
 
 class ProfileResidue(NamedTuple):
@@ -18758,11 +18827,13 @@ class ProfileResidue(NamedTuple):
     Attributes:
         files: Absolute paths of recorded profile files the new
             configuration does not install and that still exist.
-        mcp_servers: (name, scopes) of recorded MCP servers the new
-            configuration does not declare, non-profile scopes only.
-        os_env: OS environment variables the previous run set and the new
-            configuration does not, the machine-wide binary controls
-            excluded.
+        mcp_servers: The MCP server registrations, one per CLI scope, the
+            previous run recorded and the new configuration does not
+            declare, each still holding what the setup wrote.
+        os_env: The OS environment variables the previous run of a base
+            profile set and the new configuration does not declare, each
+            still holding the value the setup wrote; the machine-wide binary
+            controls are never among them.
         settings: The values, list elements and hook groups the previous
             run wrote into a base profile's settings.json and the new
             configuration does not write, each still holding what the
@@ -18782,8 +18853,8 @@ class ProfileResidue(NamedTuple):
     """
 
     files: list[Path]
-    mcp_servers: list[tuple[str, list[str]]]
-    os_env: list[str]
+    mcp_servers: list['LeftoverEntry']
+    os_env: list['LeftoverEntry']
     settings: list['LeftoverEntry']
     destinations: list[Path]
     kept_destinations: list[tuple[Path, list[str]]]
@@ -18800,8 +18871,7 @@ class ProfileResidue(NamedTuple):
         rendered = [f'file: {path}' for path in self.files]
         if self.scheduled_job:
             rendered.append(f'scheduled update job: {self.scheduled_job}')
-        rendered.extend(f'MCP server: {name} (scope: {", ".join(scopes)})' for name, scopes in self.mcp_servers)
-        rendered.extend(f'OS environment variable: {key}' for key in self.os_env)
+        rendered.extend(entry.item.label() for entry in [*self.mcp_servers, *self.os_env])
         if self.settings_dir is not None:
             rendered.extend(entry.display(self.settings_dir) for entry in self.settings)
         rendered.extend(f'file outside ~/.claude: {path}' for path in self.destinations)
@@ -18863,6 +18933,7 @@ def profile_residue(
     base_url: str | None,
     claude_dir: Path,
     reroot: ConfigHomeReroot | None = None,
+    live: 'LiveLeftoverState | None' = None,
 ) -> ProfileResidue:
     """Compute what switching a profile to another configuration leaves behind.
 
@@ -18880,6 +18951,8 @@ def profile_residue(
             configuration installs are compared at their re-rooted paths,
             which is how the previous run recorded them; None for a base
             run.
+        live: Reads the OS environment variables and the MCP registrations
+            as they are now; None reads the profile's own.
 
     Returns:
         The residue; empty when the new configuration covers everything the
@@ -18887,10 +18960,6 @@ def profile_residue(
         link on disk is never residue: it belongs to the link's target, so
         removing it would edit another directory.
     """
-    def _strings(key: str) -> list[str]:
-        value = manifest.get(key)
-        return [str(item) for item in cast(list[object], value)] if isinstance(value, list) else []
-
     planned = set(planned_profile_files(config, profile_dir, reroot=reroot))
     recorded_files = [
         str(cast(dict[str, Any], record)['path'])
@@ -18905,30 +18974,19 @@ def profile_residue(
         and not _under_directory_link(profile_dir, relative)
     ]
 
-    new_servers = {record['name'] for record in mcp_server_records(
-        [cast(dict[str, Any], s) for s in cast(list[object], config.get('mcp-servers') or []) if isinstance(s, dict)],
-    )}
-    servers: list[tuple[str, list[str]]] = []
-    for record in cast(list[object], manifest.get('mcp_servers') or []):
-        if not isinstance(record, dict):
-            continue
-        record_dict = cast(dict[str, Any], record)
-        name = str(record_dict.get('name') or '')
-        scopes = [str(s) for s in cast(list[object], record_dict.get('scopes') or []) if str(s) != 'profile']
-        if name and name not in new_servers and scopes:
-            servers.append((name, scopes))
-
-    # The machine-wide binary controls are never residue: the pin gate and
-    # the Step 16 sweep decide their removal, and a run that drops a pin
-    # while another installed profile still pins must leave them in place
-    os_env: list[str] = []
+    # An MCP registration or an OS environment variable is residue only
+    # while it holds what the setup wrote. The machine-wide binary controls
+    # are never residue: the pin gate and the Step 16 sweep decide their
+    # removal, and a run that drops a pin while another installed profile
+    # still pins must leave them in place
+    if live is None:
+        live = LiveLeftoverState.for_profile(profile_dir, claude_dir.parent, isolated=isolated)
+    declared = PlannedRecords(os_env=_declared_os_env_names(config), mcp_servers=_declared_mcp_server_names(config))
+    servers = _machine_residue(_mcp_server_record_items(manifest), declared, live)
+    os_env: list[LeftoverEntry] = []
     settings: list[LeftoverEntry] = []
     if not isolated:
-        new_env = {key for key, value in (config.get('os-env-variables') or {}).items() if value is not None}
-        os_env = [
-            key for key in _strings('os_env_written')
-            if key not in new_env and not _is_machine_wide_control_record(key)
-        ]
+        os_env = _machine_residue(_os_env_record_items(manifest), declared, live)
         settings = _settings_residue(manifest, profile_dir, config)
 
     new_downloads = [
@@ -19009,6 +19067,7 @@ def remove_profile_residue(
     profile_dir: Path,
     claude_dir: Path,
     written: 'PlannedRecords | None' = None,
+    live: 'LiveLeftoverState | None' = None,
 ) -> None:
     """Remove what a profile's previous configuration left behind.
 
@@ -19019,6 +19078,9 @@ def remove_profile_residue(
             a base profile's settings residue.
         written: What this run's own steps wrote, whose hook groups a
             settings removal never touches; None when nothing was written.
+        live: Reads the OS environment variables and the MCP registrations,
+            each checked again right before its removal; None reads the
+            profile's own.
     """
     if residue.settings:
         # Each value, element and hook group leaves only while it still
@@ -19043,17 +19105,14 @@ def remove_profile_residue(
             except OSError:
                 break
             parent = parent.parent
-    if residue.mcp_servers:
-        claude_cmd = find_command('claude')
-        if claude_cmd:
-            for name, scopes in residue.mcp_servers:
-                _remove_mcp_server_from_cli_scopes(
-                    claude_cmd, name, scopes, None, profile_dir if profile_dir != claude_dir else None,
-                )
-        else:
-            warning('Cannot remove the previous MCP servers: claude command not found')
-    if residue.os_env:
-        set_all_os_env_variables(dict.fromkeys(residue.os_env))
+    if residue.os_env or residue.mcp_servers:
+        isolated = profile_dir != claude_dir
+        if live is None:
+            live = LiveLeftoverState.for_profile(profile_dir, claude_dir.parent, isolated=isolated)
+        # Each variable and registration leaves only while it still holds
+        # what the setup wrote, checked again as it is now
+        remove_os_env_leftovers(residue.os_env, live)
+        remove_mcp_leftovers(residue.mcp_servers, live, config_dir=profile_dir if isolated else None)
     if residue.scheduled_job:
         # The job is removed by Step 25, which checks the rights the removal
         # needs, reports a refused removal and keeps the job recorded until
@@ -19069,8 +19128,11 @@ def remove_profile_residue(
 # outside ~/.claude a run wrote, each with the sha256 of the bytes the run
 # left there, and for the base profile every value, list element and hook
 # group Steps 14 and 18 wrote into settings.json, each with the sha256 of
-# its JSON. A re-run compares those records, and the leftovers the previous
-# run carried, with what the configuration installs now: whatever it no
+# its JSON, and the sha256 of the value of every OS environment variable
+# Step 7 set; every run records, per CLI scope, the sha256 of the entry each
+# MCP server it registered holds. A re-run compares those records, and the
+# leftovers the previous run carried, with what the configuration installs
+# now: whatever it no
 # longer installs is a leftover of an earlier run. The installation summary,
 # --dry-run and the completion summary list every leftover, and the
 # manifest's leftovers field carries each one still in place to the next
@@ -19088,6 +19150,12 @@ LEFTOVER_SETTING = 'setting'
 LEFTOVER_SETTING_ELEMENT = 'setting-element'
 LEFTOVER_HOOK_GROUP = 'hook-group'
 LEFTOVER_SETTINGS_KINDS = frozenset({LEFTOVER_SETTING, LEFTOVER_SETTING_ELEMENT, LEFTOVER_HOOK_GROUP})
+# An OS environment variable of the base profile, and an MCP server
+# registration at one CLI scope
+LEFTOVER_OS_ENV = 'os-env'
+LEFTOVER_MCP_SERVER = 'mcp-server'
+# The kinds whose leftover lies at a path of its own
+LEFTOVER_PATH_KINDS = frozenset({LEFTOVER_FILE, LEFTOVER_DESTINATION})
 SETTINGS_FILE_NAME = 'settings.json'
 # The manifest field of the base settings.json records
 SETTINGS_WRITTEN_KEY = 'settings_written'
@@ -19122,6 +19190,11 @@ LEFTOVER_DROPPED = 'dropped'
 # Why Step 23 removed nothing: a failed content download may have left the
 # files the configuration installs in place of the leftovers missing
 LEFTOVERS_SKIPPED_DOWNLOADS = 'content downloads failed'
+# Why a removal Step 23 carried out did not take: the state read again
+# afterwards still holds the leftover, or no command removes it
+LEFTOVER_VARIABLE_STILL_SET = 'the variable is still set'
+LEFTOVER_SERVER_STILL_REGISTERED = 'the server is still registered'
+LEFTOVER_NO_CLAUDE_COMMAND = 'claude command not found'
 # The top-level profile directory of the hook files a settings file can wire
 LEFTOVER_HOOKS_DIR = 'hooks'
 LEFTOVERS_HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
@@ -19226,19 +19299,26 @@ class LeftoverItem:
 
     Attributes:
         kind: LEFTOVER_FILE for a profile file, LEFTOVER_DESTINATION for a
-            files-to-download destination outside ~/.claude, and for the
-            base settings.json LEFTOVER_SETTING (a value),
+            files-to-download destination outside ~/.claude, for the base
+            settings.json LEFTOVER_SETTING (a value),
             LEFTOVER_SETTING_ELEMENT (an element of a list) or
-            LEFTOVER_HOOK_GROUP (a matcher group of a hook event).
+            LEFTOVER_HOOK_GROUP (a matcher group of a hook event),
+            LEFTOVER_OS_ENV for an OS environment variable of the base
+            profile, and LEFTOVER_MCP_SERVER for an MCP server registered
+            at one CLI scope.
         path: The profile-relative POSIX path of a file, the absolute path
-            of a destination, the keys of a settings item joined with dots.
+            of a destination, the keys of a settings item joined with dots,
+            the name of a variable or a server.
         sha256: The digest of the bytes the run wrote, or of the JSON of a
-            settings item (leftover_digest()); None when the run cannot
-            vouch for what sits at the path.
+            settings item, a variable's value or a server's entry
+            (leftover_digest()); None when the run cannot vouch for what
+            sits there.
         keys: The keys from the top of settings.json to a settings item; a
             hook group's are 'hooks' and its event.
         matcher: The digest of a hook group's matcher.
         entries: The digests of a hook group's hooks.
+        scope: The CLI scope of an MCP server registration (user, local or
+            project); empty for every other item.
     """
 
     kind: str
@@ -19247,6 +19327,7 @@ class LeftoverItem:
     keys: tuple[str, ...] = ()
     matcher: str | None = None
     entries: tuple[str, ...] = ()
+    scope: str = ''
 
     @classmethod
     def setting(
@@ -19261,9 +19342,23 @@ class LeftoverItem:
         """Build a settings item from its keys."""
         return cls(kind, '.'.join(keys), sha256, tuple(keys), matcher, tuple(entries))
 
+    @classmethod
+    def os_env(cls, name: str, sha256: str | None) -> 'LeftoverItem':
+        """Build the item of an OS environment variable a base run set."""
+        return cls(LEFTOVER_OS_ENV, name, sha256)
+
+    @classmethod
+    def mcp_server(cls, name: str, scope: str, sha256: str | None) -> 'LeftoverItem':
+        """Build the item of an MCP server registered at one CLI scope."""
+        return cls(LEFTOVER_MCP_SERVER, name, sha256, scope=scope)
+
     def is_setting(self) -> bool:
         """Report whether the item lives in the base settings.json."""
         return self.kind in LEFTOVER_SETTINGS_KINDS
+
+    def has_path(self) -> bool:
+        """Report whether the item lies at a path of its own: a profile file or a destination."""
+        return self.kind in LEFTOVER_PATH_KINDS
 
     def key(self) -> tuple[str, str]:
         """Return the identity two records of the same item share.
@@ -19272,12 +19367,20 @@ class LeftoverItem:
             The kind and a comparison key: a file and a destination are one
             item per path, and so is a value of settings.json; a list
             element and a hook group are one item per path and digest,
-            because a list holds many.
+            because a list holds many; a variable is one item per name,
+            letter case folded as for a file, so a rename that changes only
+            the case never removes the variable the run just set where
+            names are case-insensitive (Windows); a server is one item per
+            name and scope.
         """
         if self.kind == LEFTOVER_FILE:
             return self.kind, _file_key(self.path)
         if self.kind == LEFTOVER_DESTINATION:
             return self.kind, _destination_key(self.path)
+        if self.kind == LEFTOVER_OS_ENV:
+            return self.kind, self.path.casefold()
+        if self.kind == LEFTOVER_MCP_SERVER:
+            return self.kind, f'{self.scope} {self.path}'
         keys = json.dumps(list(self.keys), ensure_ascii=False)
         if self.kind == LEFTOVER_SETTING:
             return self.kind, keys
@@ -19293,13 +19396,14 @@ class LeftoverItem:
             The path of a file or a destination.
 
         Raises:
-            ValueError: For a settings item, which lies inside settings.json.
+            ValueError: For an item at no path of its own: a settings item,
+                a variable or a server.
         """
         if self.kind == LEFTOVER_FILE:
             return profile_dir.joinpath(*PurePosixPath(self.path).parts)
         if self.kind == LEFTOVER_DESTINATION:
             return Path(self.path)
-        raise ValueError(f'{self.label()} lies inside settings.json, not at a path of its own')
+        raise ValueError(f'{self.label()} lies at no path of its own')
 
     def _settings_part(self, shown: str) -> str:
         """Render what a settings item is inside settings.json."""
@@ -19310,11 +19414,15 @@ class LeftoverItem:
         return self.path
 
     def label(self) -> str:
-        """Name the item by its identity, as the manifest records it; a settings value is never named."""
+        """Name the item by its identity, as the manifest records it; a value is never named."""
         if self.kind == LEFTOVER_FILE:
             return f'file: {self.path}'
         if self.kind == LEFTOVER_DESTINATION:
             return f'file outside ~/.claude: {self.path}'
+        if self.kind == LEFTOVER_OS_ENV:
+            return f'OS environment variable: {self.path}'
+        if self.kind == LEFTOVER_MCP_SERVER:
+            return f'MCP server: {self.path} (scope: {self.scope})'
         return f'{SETTINGS_FILE_NAME}: {self._settings_part("")}'
 
     def display(self, profile_dir: Path, shown: str = '') -> str:
@@ -19331,12 +19439,16 @@ class LeftoverItem:
         """
         if self.kind == LEFTOVER_FILE:
             return f'file: {self.location(profile_dir)}'
-        if self.kind == LEFTOVER_DESTINATION:
+        if not self.is_setting():
             return self.label()
         return f'{profile_dir / SETTINGS_FILE_NAME}: {self._settings_part(shown)}'
 
     def to_record(self) -> dict[str, Any]:
         """Render the item as the manifest's leftovers field records it."""
+        if self.kind == LEFTOVER_OS_ENV:
+            return {'kind': self.kind, 'name': self.path, 'sha256': self.sha256}
+        if self.kind == LEFTOVER_MCP_SERVER:
+            return {'kind': self.kind, 'name': self.path, 'scope': self.scope, 'sha256': self.sha256}
         if not self.is_setting():
             return {'kind': self.kind, 'path': self.path, 'sha256': self.sha256}
         record: dict[str, Any] = {'kind': self.kind, 'path': list(self.keys), 'sha256': self.sha256}
@@ -19358,9 +19470,11 @@ class LeftoverItem:
             kind, no sha256 entry or one that is neither a string nor null,
             a file path that would leave the profile directory, a
             destination that is relative or lies inside ~/.claude, a
-            settings path that is not a non-empty list of strings, or a hook
+            settings path that is not a non-empty list of strings, a hook
             group whose path is not hooks and an event or that lacks its
-            matcher digest and the list of its hook digests.
+            matcher digest and the list of its hook digests, a variable name
+            that is not one, or a server without a name, with whitespace in
+            it, or at a scope that is no CLI scope.
         """
         if not isinstance(record, dict):
             return None
@@ -19370,6 +19484,8 @@ class LeftoverItem:
             return None
         if kind in LEFTOVER_SETTINGS_KINDS:
             return cls._settings_from_record(str(kind), record_dict, digest)
+        if kind in (LEFTOVER_OS_ENV, LEFTOVER_MCP_SERVER):
+            return cls._machine_from_record(str(kind), record_dict, digest)
         if not isinstance(path, str):
             return None
         if kind == LEFTOVER_FILE and _is_profile_relative(path):
@@ -19390,6 +19506,16 @@ class LeftoverItem:
         if len(keys) != 2 or keys[0] != 'hooks' or not isinstance(matcher, str) or entries is None:
             return None
         return cls.setting(kind, keys, digest, matcher=matcher, entries=entries)
+
+    @classmethod
+    def _machine_from_record(cls, kind: str, record: dict[str, Any], digest: str | None) -> 'LeftoverItem | None':
+        """Read a variable or a server registration from its record, or None for any other shape (see from_record())."""
+        name, scope = record.get('name'), record.get('scope')
+        if kind == LEFTOVER_OS_ENV:
+            return cls.os_env(name, digest) if isinstance(name, str) and ENV_VAR_NAME_PATTERN.fullmatch(name) else None
+        if not isinstance(name, str) or not name or any(char.isspace() for char in name) or scope not in MCP_CLI_SCOPES:
+            return None
+        return cls.mcp_server(name, str(scope), digest)
 
 
 class LeftoverEntry(NamedTuple):
@@ -19436,18 +19562,28 @@ class PlannedRecords:
             settings.json, in order, so the file can be read as the run
             leaves it before the run writes it; empty when only the
             records are known.
+        os_env: The names of the OS environment variables it declares, set
+            or deleted: Step 7 manages each of them.
+        mcp_servers: The names of the MCP servers it declares, at any scope:
+            Step 13 manages every CLI scope of each of them.
     """
 
     files: frozenset[str] = frozenset()
     destinations: frozenset[str] = frozenset()
     settings: tuple[LeftoverItem, ...] = ()
     settings_deltas: tuple[dict[str, Any], ...] = ()
+    os_env: frozenset[str] = frozenset()
+    mcp_servers: frozenset[str] = frozenset()
     _keys: frozenset[tuple[str, str]] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         keys = {LeftoverItem(LEFTOVER_FILE, path, None).key() for path in self.files}
         keys.update(LeftoverItem(LEFTOVER_DESTINATION, path, None).key() for path in self.destinations)
         keys.update(item.key() for item in self.settings)
+        keys.update(LeftoverItem.os_env(name, None).key() for name in self.os_env)
+        keys.update(
+            LeftoverItem.mcp_server(name, scope, None).key() for name in self.mcp_servers for scope in MCP_CLI_SCOPES
+        )
         object.__setattr__(self, '_keys', frozenset(keys))
 
     def writes(self, item: LeftoverItem) -> bool:
@@ -19467,7 +19603,7 @@ def planned_records(
     reroot: ConfigHomeReroot | None = None,
     base: bool = False,
 ) -> PlannedRecords:
-    """Collect the files, destinations and base settings a configuration installs.
+    """Collect the files, destinations, base settings, OS environment variables and MCP servers a configuration installs.
 
     Args:
         config: The resolved configuration, taken before component
@@ -19495,6 +19631,8 @@ def planned_records(
         destinations=frozenset(str(target) for _entry, target in _download_targets_outside(downloads, claude_dir)),
         settings=tuple(_settings_items_of(_settings_records_of_deltas(*deltas))),
         settings_deltas=deltas,
+        os_env=_declared_os_env_names(config),
+        mcp_servers=_declared_mcp_server_names(config),
     )
 
 
@@ -19923,6 +20061,123 @@ def _live_file_digest(path: Path) -> str | None:
         raise LeftoverReadError(e.strerror or str(e)) from e
 
 
+def _read_user_environment_value(name: str) -> str | None:
+    """Read a variable of the Windows user environment (HKCU\\Environment), where Step 7 sets it.
+
+    The registry's OSError reaches the caller when the user environment
+    cannot be read.
+
+    Args:
+        name: The variable name.
+
+    Returns:
+        The value as stored, or None when the variable is absent and on any
+        other platform, which keeps no user environment.
+    """
+    if sys.platform != 'win32':
+        return None
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
+        try:
+            value, _kind = winreg.QueryValueEx(key, name)
+        except FileNotFoundError:
+            return None
+    return str(value)
+
+
+def _read_shell_export_values(config_files: Sequence[Path], name: str) -> tuple[str, ...]:
+    """Read the values a variable holds in the toolbox block of shell configuration files.
+
+    add_export_to_file() writes one line per variable, in each file's own
+    syntax, inside the block between ENV_VAR_MARKER_START and
+    ENV_VAR_MARKER_END; a line outside the block is not the setup's.
+
+    Args:
+        config_files: The shell configuration files Step 7 writes.
+        name: The variable name.
+
+    Returns:
+        The distinct values the blocks hold, in file order: none when no
+        block sets the variable, one when every block that sets it agrees,
+        several when they disagree. A file that does not exist, or whose
+        block does not set the variable, does not count.
+
+    Raises:
+        LeftoverReadError: When a file exists and cannot be read as text.
+    """
+    values: list[str] = []
+    for config_file in config_files:
+        try:
+            content = config_file.read_text(encoding='utf-8')
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeDecodeError) as e:
+            raise LeftoverReadError(f'{config_file} cannot be read: {e}') from e
+        start = content.find(ENV_VAR_MARKER_START)
+        if start == -1:
+            continue
+        end = content.find(ENV_VAR_MARKER_END)
+        block = content[start:end + len(ENV_VAR_MARKER_END)] if end != -1 else content[start:]
+        prefix = _get_export_prefix(config_file, name)
+        for line in block.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                value = stripped[len(prefix):]
+                quoted = len(value) >= 2 and value.startswith('"') and value.endswith('"')
+                values.append(value[1:-1] if quoted else value)
+    return tuple(dict.fromkeys(values))
+
+
+def read_os_env_variable(name: str) -> tuple[str, ...]:
+    """Read the values an OS environment variable holds where Step 7 writes it.
+
+    Windows keeps one value in the user environment; Linux and macOS keep a
+    line in the toolbox block of every shell configuration file
+    (get_all_shell_config_files()).
+
+    Args:
+        name: The variable name.
+
+    Returns:
+        The distinct values found: none when the variable is absent, one when
+        it is set, several when shell files disagree.
+
+    Raises:
+        LeftoverReadError: When the user environment or a shell file cannot
+            be read.
+    """
+    if sys.platform == 'win32':
+        try:
+            value = _read_user_environment_value(name)
+        except OSError as e:
+            raise LeftoverReadError(f'the user environment cannot be read: {e.strerror or e}') from e
+        return () if value is None else (value,)
+    return _read_shell_export_values(get_all_shell_config_files(), name)
+
+
+def _live_mcp_registrations(name: str, config_dir: Path | None) -> dict[str, Any]:
+    """Read the entry each CLI scope holds for an MCP server name.
+
+    Args:
+        name: The server name.
+        config_dir: The isolated profile directory whose .claude.json holds
+            the profile's user- and local-scope servers, or None for the
+            base profile.
+
+    Returns:
+        Scope to entry; a scope that does not hold the name maps to None.
+
+    Raises:
+        LeftoverReadError: When the .claude.json or the working directory's
+            .mcp.json cannot be read as a JSON object.
+    """
+    entries = _read_live_mcp_entries(name, config_dir)
+    if entries is None:
+        raise LeftoverReadError(
+            f'{_claude_global_config_file(config_dir)} or {Path.cwd() / ".mcp.json"} cannot be read as a JSON object',
+        )
+    return entries
+
+
 @dataclass(frozen=True)
 class LiveLeftoverState:
     """The readers that tell what an earlier run's records find on disk now.
@@ -19943,6 +20198,10 @@ class LiveLeftoverState:
         settings_after: The view of a settings file once the settings
             leftovers Step 23 removes before the hook files are gone, so
             the summary marks a hook file wired only by them as removable.
+        os_env: Reads the values an OS environment variable holds, as
+            read_os_env_variable() does.
+        mcp: Reads the entry each CLI scope holds for an MCP server name,
+            as _live_mcp_registrations() does.
     """
 
     file_digest: Callable[[Path], str | None]
@@ -19953,6 +20212,8 @@ class LiveLeftoverState:
     )
     settings: Callable[[Path], dict[str, Any] | None] = field(default=lambda _path: None)
     settings_after: tuple[tuple[Path, dict[str, Any]], ...] = ()
+    os_env: Callable[[str], tuple[str, ...]] = field(default=lambda _name: ())
+    mcp: Callable[[str], Mapping[str, Any]] = field(default=lambda _name: {})
 
     def wiring(self, relative: str) -> str | None:
         """Say where a hook file is still wired, reading the settings files through the view this state holds."""
@@ -19966,8 +20227,9 @@ class LiveLeftoverState:
         *,
         settings_files: Sequence[Path] = (),
         dependents: Sequence['InstalledProfile'] = (),
+        isolated: bool = False,
     ) -> 'LiveLeftoverState':
-        """Read the live state of one profile from the file system and the installed manifests.
+        """Read the live state of one profile from the file system, the installed manifests and the OS.
 
         Args:
             profile_dir: The profile directory.
@@ -19976,10 +20238,12 @@ class LiveLeftoverState:
                 checked against (see leftover_settings_files()).
             dependents: The profiles that link content from this one; those
                 whose links hold hooks/ wire this profile's hook files too.
+            isolated: Whether the profile is isolated, whose MCP servers the
+                CLI keeps in the profile's own .claude.json.
 
         Returns:
-            The readers; the holders of a destination and the wiring of a
-            hook file are read as the files are at each call.
+            The readers; the holders of a destination, the wiring of a hook
+            file, a variable and a server are read as they are at each call.
         """
         def _holders(dest: str) -> list[str]:
             return _destinations_recorded_elsewhere(home_dir, profile_dir).get(_normalize_config_dir_key(dest), [])
@@ -19995,6 +20259,8 @@ class LiveLeftoverState:
             destination_holders=_holders,
             hook_references=_references,
             settings=_read_settings_object,
+            os_env=read_os_env_variable,
+            mcp=lambda name: _live_mcp_registrations(name, profile_dir if isolated else None),
         )
 
 
@@ -20272,6 +20538,14 @@ class LeftoverReport:
             if entry.item.kind == LEFTOVER_DESTINATION and entry.state == LEFTOVER_REMOVABLE
         ]
 
+    def removable_project_mcp_servers(self) -> list[str]:
+        """Return the listed project-scope MCP servers, registered in the working directory, still as registered."""
+        return [
+            entry.item.path for entry in self.listed()
+            if entry.item.kind == LEFTOVER_MCP_SERVER and entry.item.scope == 'project'
+            and entry.state == LEFTOVER_REMOVABLE
+        ]
+
     def refined(
         self,
         *,
@@ -20310,7 +20584,7 @@ class LeftoverReport:
             for entry in entries
         ))
 
-    def with_switch_removals(self, removed: Iterable[Path], settings: Iterable[LeftoverItem] = ()) -> 'LeftoverReport':
+    def with_switch_removals(self, removed: Iterable[Path], items: Iterable[LeftoverItem] = ()) -> 'LeftoverReport':
         """Mark the leftovers an accepted configuration switch removes in Step 23.
 
         The switch guard lists them, so the leftovers block does not; they
@@ -20320,19 +20594,20 @@ class LeftoverReport:
         Args:
             removed: The absolute paths of the files and destinations the
                 accepted switch removes.
-            settings: The settings.json items the accepted switch removes.
+            items: The settings.json items, OS environment variables and MCP
+                server registrations the accepted switch removes.
 
         Returns:
             The report with those leftovers marked.
         """
         removed_keys = {_destination_key(str(path)) for path in removed}
-        settings_keys = {item.key() for item in settings}
-        if not removed_keys and not settings_keys:
+        item_keys = {item.key() for item in items}
+        if not removed_keys and not item_keys:
             return self
         return replace(self, switch_keys=frozenset(
             entry.item.key() for entry in self.entries
-            if entry.item.key() in settings_keys or (
-                not entry.item.is_setting()
+            if entry.item.key() in item_keys or (
+                entry.item.has_path()
                 and _destination_key(str(entry.item.location(self.profile_dir))) in removed_keys
             )
         ))
@@ -20444,9 +20719,10 @@ def _recorded_leftover_candidates(manifest: dict[str, Any], claude_dir: Path) ->
 
     Returns:
         The items of files_written, machine_wide_destinations,
-        settings_written and the leftovers field's items, each read only in
-        its current shape; a machine-wide binary control in the settings
-        env object is never one.
+        settings_written, os_env_written, mcp_servers and the leftovers
+        field's items, each read only in its current shape; a machine-wide
+        binary control, in the settings env object or in the OS
+        environment, is never one.
     """
     records: list[object] = [
         {'kind': LEFTOVER_FILE, 'path': cast(dict[str, Any], record).get('path'),
@@ -20461,11 +20737,100 @@ def _recorded_leftover_candidates(manifest: dict[str, Any], claude_dir: Path) ->
         if isinstance(record, dict)
     )
     records.extend(cast(list[object], manifest.get(SETTINGS_WRITTEN_KEY) or []))
+    records.extend(_os_env_record_items(manifest))
+    records.extend(_mcp_server_record_items(manifest))
     leftovers = manifest.get(LEFTOVERS_MANIFEST_KEY)
     if isinstance(leftovers, dict):
         records.extend(cast(list[object], cast(dict[str, Any], leftovers).get('items') or []))
     items = (LeftoverItem.from_record(record, claude_dir=claude_dir) for record in records)
-    return [item for item in items if item is not None and not _is_machine_wide_setting(item.keys)]
+    return [item for item in items if item is not None and not _is_machine_wide_item(item)]
+
+
+def _is_machine_wide_item(item: LeftoverItem) -> bool:
+    """Report whether an item is a machine-wide binary control, in the settings env object or the OS environment."""
+    return _is_machine_wide_setting(item.keys) or (
+        item.kind == LEFTOVER_OS_ENV and _is_machine_wide_control_record(item.path.upper())
+    )
+
+
+def _dict_records(manifest: dict[str, Any], field_name: str) -> list[dict[str, Any]]:
+    """Return the object records of a manifest field, leaving out anything else."""
+    return [
+        cast(dict[str, Any], record) for record in cast(list[object], manifest.get(field_name) or [])
+        if isinstance(record, dict)
+    ]
+
+
+def _os_env_record_items(manifest: dict[str, Any]) -> list[object]:
+    """Read the os_env_written records as leftover records, one per variable."""
+    return [
+        {'kind': LEFTOVER_OS_ENV, 'name': record.get('name'), 'sha256': record.get('sha256')}
+        for record in _dict_records(manifest, 'os_env_written')
+    ]
+
+
+def _mcp_server_record_items(manifest: dict[str, Any]) -> list[object]:
+    """Read the mcp_servers records as leftover records, one per server and CLI scope with a recorded entry."""
+    items: list[object] = []
+    for record in _dict_records(manifest, 'mcp_servers'):
+        digests = record.get('sha256')
+        if isinstance(digests, dict):
+            items.extend(
+                {'kind': LEFTOVER_MCP_SERVER, 'name': record.get('name'), 'scope': scope, 'sha256': digest}
+                for scope, digest in cast(dict[str, Any], digests).items()
+            )
+    return items
+
+
+def _machine_leftover_entry(item: LeftoverItem, live: LiveLeftoverState) -> LeftoverEntry:
+    """Find what an OS environment variable or an MCP server registration holds now.
+
+    Args:
+        item: The variable or the registration.
+        live: The live readers.
+
+    Returns:
+        Removable while the variable holds exactly the value the setup
+        wrote, or the scope holds exactly the entry the setup registered;
+        changed for another value or entry, and for shell files that
+        disagree; gone when absent; unreadable when its state cannot be
+        read.
+    """
+    try:
+        if item.kind == LEFTOVER_OS_ENV:
+            found = [leftover_digest(value) for value in live.os_env(item.path)]
+        else:
+            entry = live.mcp(item.path).get(item.scope)
+            found = [] if entry is None else [leftover_digest(entry)]
+    except LeftoverReadError as e:
+        return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+    if not found:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    return LeftoverEntry(item, LEFTOVER_REMOVABLE if found == [item.sha256] else LEFTOVER_CHANGED)
+
+
+def _machine_residue(
+    records: list[object],
+    declared: PlannedRecords,
+    live: LiveLeftoverState,
+) -> list[LeftoverEntry]:
+    """List the recorded variables or server registrations a switch removes: undeclared and still as written.
+
+    Args:
+        records: The leftover records of what the previous run wrote.
+        declared: What the new configuration declares.
+        live: The live readers.
+
+    Returns:
+        The removable entries.
+    """
+    items = (LeftoverItem.from_record(record, claude_dir=Path()) for record in records)
+    entries = (
+        _machine_leftover_entry(item, live) for item in items
+        if item is not None and item.sha256 is not None and not _is_machine_wide_item(item)
+        and not declared.writes(item)
+    )
+    return [entry for entry in entries if entry.state == LEFTOVER_REMOVABLE]
 
 
 def _leftover_entry(
@@ -20485,8 +20850,10 @@ def _leftover_entry(
             group leftover is never matched in; None when it writes none.
 
     Returns:
-        The entry: for a settings item what settings_item_state() finds,
-        unreadable when settings.json cannot be read; for a file or a
+        The entry: for a variable or a server what
+        _machine_leftover_entry() finds; for a settings item what
+        settings_item_state() finds, unreadable when settings.json cannot be
+        read; for a file or a
         destination linked for a profile file reached through a directory
         link, unreadable, gone, changed for other bytes or another kind of
         entry, held for an unchanged destination another profile records,
@@ -20499,6 +20866,8 @@ def _leftover_entry(
         except LeftoverReadError as e:
             return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
         return settings_item_state(item, content, written=written or PlannedRecords())
+    if not item.has_path():
+        return _machine_leftover_entry(item, live)
     if item.kind == LEFTOVER_FILE and live.under_link(item.path):
         return LeftoverEntry(item, LEFTOVER_LINKED, 'now reached through a directory link')
     try:
@@ -20574,8 +20943,8 @@ def _hold_with_wired_hook_files(entries: list[LeftoverEntry], live: LiveLeftover
 
 
 def _leftover_order(entry: LeftoverEntry) -> tuple[int, str]:
-    """Order leftovers for the summary: profile files, destinations, then settings.json items, each by identity."""
-    kinds = {LEFTOVER_FILE: 0, LEFTOVER_DESTINATION: 1}
+    """Order leftovers for the summary: files, destinations, settings.json items, variables, servers, each by identity."""
+    kinds = {LEFTOVER_FILE: 0, LEFTOVER_DESTINATION: 1, LEFTOVER_OS_ENV: 3, LEFTOVER_MCP_SERVER: 4}
     return kinds.get(entry.item.kind, 2), entry.item.key()[1]
 
 
@@ -20631,8 +21000,9 @@ def compute_profile_leftovers(
 ) -> LeftoverReport:
     """List what a profile's earlier runs wrote and its configuration no longer installs.
 
-    The candidates are the files, destinations and settings.json items the
-    previous run recorded and the leftovers it carried, one per identity,
+    The candidates are the files, destinations, settings.json items, OS
+    environment variables and MCP server registrations the previous run
+    recorded and the leftovers it carried, one per identity,
     the written record first. A record without a digest is never a
     leftover, and neither is anything the configuration installs again.
 
@@ -20775,7 +21145,8 @@ def _residue_to_remove(residue: ProfileResidue, profile_dir: Path, written: Plan
         written: What this run's own steps wrote.
 
     Returns:
-        The residue without those files, destinations and settings items.
+        The residue without those files, destinations, settings items,
+        variables and server registrations.
     """
     def _kept(path: Path) -> bool:
         relative = _relative_inside(path, profile_dir)
@@ -20792,6 +21163,8 @@ def _residue_to_remove(residue: ProfileResidue, profile_dir: Path, written: Plan
             if not written.writes(LeftoverItem(LEFTOVER_DESTINATION, str(path), None))
         ],
         settings=[entry for entry in residue.settings if not written.writes(entry.item)],
+        os_env=[entry for entry in residue.os_env if not written.writes(entry.item)],
+        mcp_servers=[entry for entry in residue.mcp_servers if not written.writes(entry.item)],
     )
 
 
@@ -20874,6 +21247,116 @@ def _leftover_step_decision(
     return None
 
 
+def _not_removable_outcome(fresh: LeftoverEntry) -> LeftoverOutcome | None:
+    """Say what becomes of a leftover found anything but removable an instant before its removal.
+
+    Args:
+        fresh: The leftover with the state just read.
+
+    Returns:
+        None for a removable leftover; kept for one that stays recorded,
+        such as one that cannot be read; dropped, with the reason, for one
+        changed or gone.
+    """
+    if fresh.state in _REMOVABLE_LEFTOVER_STATES:
+        return None
+    if fresh.state in _CARRIED_LEFTOVER_STATES:
+        return LeftoverOutcome(fresh, LEFTOVER_KEPT, fresh.detail)
+    return LeftoverOutcome(fresh, LEFTOVER_DROPPED, _DROPPED_LEFTOVER_REASONS[fresh.state])
+
+
+def _removal_outcome(entry: LeftoverEntry, failure: str | None) -> LeftoverOutcome:
+    """Report one removal of a variable or a server registration: removed, or failed with why."""
+    if failure is not None:
+        warning(f'Cannot remove {entry.item.label()}: {failure}')
+        return LeftoverOutcome(entry, LEFTOVER_FAILED, failure)
+    success(f'Removed leftover {entry.item.label()}')
+    return LeftoverOutcome(entry, LEFTOVER_REMOVED)
+
+
+def remove_os_env_leftovers(entries: Sequence[LeftoverEntry], live: LiveLeftoverState) -> list[LeftoverOutcome]:
+    """Remove OS environment variable leftovers with one call of the OS environment writer.
+
+    Each variable is looked at again first and handed to
+    set_all_os_env_variables() for deletion only while it still holds the
+    value the setup wrote. Afterwards each one is read again, so the outcome
+    says whether it is gone, whatever the writer reported.
+
+    Args:
+        entries: The variables.
+        live: The live readers.
+
+    Returns:
+        One outcome per entry, in order: removed; failed when the variable
+        is still set or cannot be read after the deletion; kept when it
+        cannot be read before; dropped as changed or gone.
+    """
+    fresh = [_machine_leftover_entry(entry.item, live) for entry in entries]
+    decided = [_not_removable_outcome(entry) for entry in fresh]
+    names = [entry.item.path for entry, outcome in zip(fresh, decided, strict=True) if outcome is None]
+    if names:
+        set_all_os_env_variables(dict.fromkeys(names))
+    outcomes: list[LeftoverOutcome] = []
+    for entry, outcome in zip(fresh, decided, strict=True):
+        if outcome is not None:
+            outcomes.append(outcome)
+            continue
+        try:
+            failure = LEFTOVER_VARIABLE_STILL_SET if live.os_env(entry.item.path) else None
+        except LeftoverReadError as e:
+            failure = str(e)
+        outcomes.append(_removal_outcome(entry, failure))
+    return outcomes
+
+
+def remove_mcp_leftovers(
+    entries: Sequence[LeftoverEntry],
+    live: LiveLeftoverState,
+    *,
+    config_dir: Path | None,
+) -> list[LeftoverOutcome]:
+    """Remove MCP server leftovers through the claude command, one CLI scope each.
+
+    Each registration is looked at again first and removed only while its
+    scope still holds the entry the setup registered. Afterwards the scope
+    is read again, so the outcome says whether the registration is gone;
+    the command's exit code cannot, because it fails for a scope that lacks
+    the name.
+
+    Args:
+        entries: The server registrations.
+        live: The live readers.
+        config_dir: The isolated profile directory whose .claude.json holds
+            the profile's registrations (the command runs with it as
+            CLAUDE_CONFIG_DIR), or None for the base profile.
+
+    Returns:
+        One outcome per entry, in order: removed; failed when the scope
+        still holds the server, cannot be read after the removal, or no
+        claude command is found; kept when it cannot be read before;
+        dropped as changed or gone.
+    """
+    claude_cmd = find_command('claude') if entries else None
+    outcomes: list[LeftoverOutcome] = []
+    for entry in entries:
+        fresh = _machine_leftover_entry(entry.item, live)
+        decided = _not_removable_outcome(fresh)
+        if decided is not None:
+            outcomes.append(decided)
+            continue
+        if claude_cmd is None:
+            outcomes.append(_removal_outcome(fresh, LEFTOVER_NO_CLAUDE_COMMAND))
+            continue
+        name, scope = fresh.item.path, fresh.item.scope
+        _remove_mcp_server_from_cli_scopes(claude_cmd, name, [scope], None, config_dir)
+        try:
+            failure = LEFTOVER_SERVER_STILL_REGISTERED if live.mcp(name).get(scope) is not None else None
+        except LeftoverReadError as e:
+            failure = str(e)
+        outcomes.append(_removal_outcome(fresh, failure))
+    return outcomes
+
+
 def _leftover_step_outcome(
     entry: LeftoverEntry,
     *,
@@ -20910,25 +21393,28 @@ def _leftover_step_outcome(
     return LeftoverOutcome(entry, LEFTOVER_REMOVED)
 
 
-def _settings_step_outcomes(
+def _batched_step_outcomes(
     entries: Sequence[LeftoverEntry],
     *,
     remove: bool,
     switch_ran: bool,
     switch_keys: frozenset[tuple[str, str]],
     written: PlannedRecords,
-    settings_file: Path,
+    remover: Callable[[list[LeftoverEntry]], list[LeftoverOutcome]],
 ) -> list[LeftoverOutcome]:
-    """Decide and carry out what Step 23 does with the settings.json leftovers, with one write for all.
+    """Decide what Step 23 does with leftovers of one kind and remove the removable ones in one batch.
 
     Args:
-        entries: The settings leftovers with the states Step 23 found.
+        entries: The leftovers with the states Step 23 found.
         remove: Whether the run removes leftovers (--remove-leftovers).
         switch_ran: Whether an accepted configuration switch removed its
             residue in this step.
         switch_keys: The identities the switch's removal covered.
         written: What this run's own steps wrote.
-        settings_file: The base settings.json.
+        remover: Removes the leftovers Step 23 decided to remove and returns
+            one outcome for each, in order: the settings.json remover (one
+            write for all), the OS environment remover (one writer call for
+            all) or the MCP remover.
 
     Returns:
         One outcome per entry, in order.
@@ -20940,7 +21426,7 @@ def _settings_step_outcomes(
         for entry in entries
     ]
     to_remove = [entry for entry, outcome in zip(entries, decided, strict=True) if outcome is None]
-    removed = iter(remove_settings_leftovers(settings_file, to_remove, written=written) if to_remove else [])
+    removed = iter(remover(to_remove) if to_remove else [])
     return [outcome if outcome is not None else next(removed) for outcome in decided]
 
 
@@ -20948,16 +21434,20 @@ def written_leftover_records(records: dict[str, Any]) -> PlannedRecords:
     """Read what Step 20 recorded as written, for the leftovers Step 23 drops as written again.
 
     Args:
-        records: The files_written, machine_wide_destinations and
-            settings_written records written_profile_records() built.
+        records: The files_written, machine_wide_destinations,
+            settings_written, os_env_written and mcp_servers records Step 20
+            wrote.
 
     Returns:
-        The written paths, destinations and settings.json items.
+        The written paths, destinations, settings.json items, variables and
+        servers.
     """
     return PlannedRecords(
         files=frozenset(str(record['path']) for record in records['files_written']),
         destinations=frozenset(str(record['dest']) for record in records['machine_wide_destinations']),
         settings=tuple(_settings_items_of(records.get(SETTINGS_WRITTEN_KEY) or [])),
+        os_env=frozenset(str(record.get('name')) for record in _dict_records(records, 'os_env_written')),
+        mcp_servers=frozenset(str(record.get('name')) for record in _dict_records(records, 'mcp_servers')),
     )
 
 
@@ -20996,7 +21486,8 @@ def run_leftovers_step(
     through a link left out. The settings.json leftovers go before the
     files, so a hook file is checked against settings.json as their
     removal leaves it: a hook file and the hook group wiring it leave
-    together.
+    together. The OS environment variables follow, with one call of the
+    OS environment writer for all, and the MCP server registrations last.
 
     Args:
         report: The leftovers the run found before consent, or None for a
@@ -21029,36 +21520,49 @@ def run_leftovers_step(
             info(f'Removing what the previous configuration of "{report.profile_name}" left behind...')
             remove_profile_residue(
                 _residue_to_remove(switch_residue, profile_dir, written),
-                profile_dir=profile_dir, claude_dir=claude_dir, written=written,
+                profile_dir=profile_dir, claude_dir=claude_dir, written=written, live=live,
             )
         looked_at = [
             entry for entry in report.entries
             if entry.state in _CARRIED_LEFTOVER_STATES or entry.item.key() in report.switch_keys
         ]
-        settings_outcomes = _settings_step_outcomes(
-            [_leftover_entry(entry.item, profile_dir, live, written=written) for entry in looked_at
-             if entry.item.is_setting()],
-            remove=remove, switch_ran=switch_residue is not None, switch_keys=report.switch_keys,
-            written=written, settings_file=profile_dir / SETTINGS_FILE_NAME,
+        switch_ran = switch_residue is not None
+        config_dir = profile_dir if profile_dir != claude_dir else None
+
+        def _batch(
+            kinds: frozenset[str], remover: Callable[[list[LeftoverEntry]], list[LeftoverOutcome]],
+        ) -> list[LeftoverOutcome]:
+            return _batched_step_outcomes(
+                [
+                    _leftover_entry(entry.item, profile_dir, live, written=written)
+                    for entry in looked_at if entry.item.kind in kinds
+                ],
+                remove=remove, switch_ran=switch_ran, switch_keys=report.switch_keys, written=written,
+                remover=remover,
+            )
+
+        settings_outcomes = _batch(
+            LEFTOVER_SETTINGS_KINDS,
+            lambda entries: remove_settings_leftovers(profile_dir / SETTINGS_FILE_NAME, entries, written=written),
         )
-        file_entries = [
-            _leftover_entry(entry.item, profile_dir, live) for entry in looked_at if not entry.item.is_setting()
-        ]
-        outcomes = (*settings_outcomes, *(
+        path_entries = [_leftover_entry(entry.item, profile_dir, live) for entry in looked_at if entry.item.has_path()]
+        path_outcomes = [
             _leftover_step_outcome(
-                entry, remove=remove, switch_ran=switch_residue is not None,
+                entry, remove=remove, switch_ran=switch_ran,
                 in_switch=entry.item.key() in report.switch_keys, written=written, profile_dir=profile_dir,
             )
-            for entry in _hold_with_wired_hook_files(file_entries, live)
-        ))
+            for entry in _hold_with_wired_hook_files(path_entries, live)
+        ]
         _prune_emptied_skill_directories(
-            [
-                o.entry.item.location(profile_dir) for o in outcomes
-                if o.result == LEFTOVER_REMOVED and not o.entry.item.is_setting()
-            ],
+            [o.entry.item.location(profile_dir) for o in path_outcomes if o.result == LEFTOVER_REMOVED],
             profile_dir / 'skills',
         )
-        removal = LeftoverRemoval(outcomes=outcomes)
+        os_env_outcomes = _batch(frozenset({LEFTOVER_OS_ENV}), lambda entries: remove_os_env_leftovers(entries, live))
+        mcp_outcomes = _batch(
+            frozenset({LEFTOVER_MCP_SERVER}),
+            lambda entries: remove_mcp_leftovers(entries, live, config_dir=config_dir),
+        )
+        removal = LeftoverRemoval(outcomes=(*settings_outcomes, *path_outcomes, *os_env_outcomes, *mcp_outcomes))
     _record_manifest_leftovers(manifest_path, leftovers_manifest_record(report, run_at=run_at, removal=removal))
     return removal
 
@@ -21236,7 +21740,7 @@ def write_manifest(
     components: dict[str, str | None] | None = None,
     yaml_values: dict[str, Any] | None = None,
     machine_wide_destinations: list[dict[str, str | None]] | None = None,
-    os_env_written: list[str] | None = None,
+    os_env_written: list[dict[str, str]] | None = None,
     settings_written: list[dict[str, Any]] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     files_written: list[dict[str, str | None]] | None = None,
@@ -21252,9 +21756,11 @@ def write_manifest(
     and the component delta with their origins, the configuration's own
     values at install time, the Claude Code version the profile pins, what
     the run wrote (destinations outside ~/.claude with their source and
-    content hash, OS environment variables, the values, list elements and
-    hook groups of the base settings.json with the hash of each, MCP
-    servers, and the profile files with their content hash), and the
+    content hash, the OS environment variables of a base run with the hash
+    of each value, the values, list elements and hook groups of the base
+    settings.json with the hash of each, MCP servers with the hash of the
+    entry each CLI scope holds, and the profile files with their content
+    hash), and the
     leftovers of earlier runs it carries. A re-run reads the names, the delta and the identity,
     and lists as leftovers what the written records and the carried
     leftovers hold and its configuration no longer installs; the switch
@@ -21286,12 +21792,16 @@ def write_manifest(
             component names at install time
         machine_wide_destinations: files-to-download destinations outside
             ~/.claude, each with its source and sha256
-        os_env_written: OS environment variables this run set
+        os_env_written: The OS environment variables a base run set, each a
+            {name, sha256} record of its name and the digest of its value
+            (os_env_records()); empty for an isolated profile
         settings_written: What Steps 14 and 18 wrote into the base
             settings.json, one record per value, list element and hook
             group (written_settings_records()); empty for an isolated
             profile, whose config.json is rebuilt each run
-        mcp_servers: MCP servers this run registered, with their scopes
+        mcp_servers: MCP servers this run registered, with their scopes and
+            the digest of the entry each CLI scope holds
+            (mcp_server_records())
         files_written: The files this run installs, each a {path, sha256}
             record of its profile-relative path and content hash
         link: The profile's links as LinkSpec.record() renders them (the
@@ -26612,6 +27122,18 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 for line in dependents_remedy(dependents):
                     info(line)
                 sys.exit(1)
+        # What the leftovers and the switch residue are read against before
+        # consent: the settings files a session reads (the ones Step 18
+        # rebuilds left out), the dependents that link hooks/ from this
+        # profile, the OS environment and the MCP registrations
+        pre_consent_live = LiveLeftoverState.for_profile(
+            target_config_dir, home_dir,
+            settings_files=leftover_settings_files(
+                target_config_dir, isolated=bool(primary_command_name), before_consent=True,
+            ),
+            dependents=dependents,
+            isolated=bool(primary_command_name),
+        )
         residue_to_remove: ProfileResidue | None = None
         if target_manifest is not None:
             recorded_identity = manifest_config_identity(target_manifest)
@@ -26628,6 +27150,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     base_url=config.get('base-url'),
                     claude_dir=get_real_user_home() / '.claude',
                     reroot=reroot,
+                    live=pre_consent_live,
                 )
                 if guard_configuration_switch(
                     args,
@@ -26658,20 +27181,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     config, target_config_dir, claude_dir=home_dir / '.claude', reroot=reroot,
                     base=not primary_command_name,
                 ),
-                live=LiveLeftoverState.for_profile(
-                    target_config_dir, home_dir,
-                    settings_files=leftover_settings_files(
-                        target_config_dir, isolated=bool(primary_command_name), before_consent=True,
-                    ),
-                    dependents=dependents,
-                ),
+                live=pre_consent_live,
                 claude_dir=home_dir / '.claude',
                 remove=bool(args.remove_leftovers),
             )
             if residue_to_remove is not None:
                 leftover_report = leftover_report.with_switch_removals(
                     [*residue_to_remove.files, *residue_to_remove.destinations],
-                    [entry.item for entry in residue_to_remove.settings],
+                    [
+                        entry.item for entry in
+                        [*residue_to_remove.settings, *residue_to_remove.os_env, *residue_to_remove.mcp_servers]
+                    ],
                 )
 
         # Guard the run against a CLAUDE_CONFIG_DIR inherited from the
@@ -27189,6 +27709,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     leftover_report.removable_destinations()
                     if args.remove_leftovers and leftover_report is not None else []
                 ),
+                leftover_mcp_servers=(
+                    leftover_report.removable_project_mcp_servers()
+                    if args.remove_leftovers and leftover_report is not None else []
+                ),
             )
         plan.destination_warnings = shared_destination_warnings(
             plan.files_to_download, config_source, base_url,
@@ -27659,8 +28183,15 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 **configured_link_values,
             },
             'link': link_spec.record() if primary_command_name else None,
-            'os_env_written': [key for key, value in os_level_env_variables.items() if value is not None],
-            'mcp_servers': mcp_server_records(mcp_servers),
+            'os_env_written': os_env_records(os_level_env_variables, isolated=bool(primary_command_name)),
+            # The entry each registered server holds after Step 13, read where
+            # the CLI keeps it: the profile's own .claude.json when isolated
+            'mcp_servers': mcp_server_records(
+                mcp_servers,
+                live_entries=lambda name: _read_live_mcp_entries(
+                    name, artifact_base_dir if primary_command_name else None,
+                ),
+            ),
             'auto_update': auto_update_manifest_record(
                 scheduled_update_plan.spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
             ),
@@ -27825,11 +28356,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 remove=bool(args.remove_leftovers),
                 switch_residue=residue_to_remove,
                 download_failed=bool(download_failures),
-                written=written_leftover_records(profile_records),
+                written=written_leftover_records({**manifest_records, **profile_records}),
                 live=LiveLeftoverState.for_profile(
                     artifact_base_dir, get_real_user_home(),
                     settings_files=leftover_settings_files(artifact_base_dir, isolated=True, before_consent=False),
                     dependents=dependents,
+                    isolated=True,
                 ),
                 profile_dir=artifact_base_dir,
                 claude_dir=claude_user_dir,
@@ -28003,11 +28535,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 remove=bool(args.remove_leftovers),
                 switch_residue=residue_to_remove,
                 download_failed=bool(download_failures),
-                written=written_leftover_records(profile_records),
+                written=written_leftover_records({**manifest_records, **profile_records}),
                 live=LiveLeftoverState.for_profile(
                     claude_user_dir, get_real_user_home(),
                     settings_files=leftover_settings_files(claude_user_dir, isolated=False, before_consent=False),
                     dependents=dependents,
+                    isolated=False,
                 ),
                 profile_dir=claude_user_dir,
                 claude_dir=claude_user_dir,
