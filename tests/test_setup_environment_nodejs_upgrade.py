@@ -630,7 +630,7 @@ class TestElevationReasons:
 
     def test_source_refresh_lists_the_reason_of_the_source_run(self, tmp_path: Path) -> None:
         refresh = setup_environment.SourceRefresh(
-            'team-1', tmp_path / 'team-1', 'differs', 'digest', [], True, False, {'install-nodejs': True},
+            'team-1', tmp_path / 'team-1', 'differs', 'digest', [], True, False, False, {'install-nodejs': True},
         )
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
             assert refresh.elevation_reasons(tmp_path, ['team-1'], node_upgrade=self.WINDOWS_PLAN) == [self.REASON]

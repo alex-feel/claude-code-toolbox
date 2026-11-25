@@ -1296,11 +1296,13 @@ class InstallationPlan:
 
     # What the profile's earlier runs wrote and this configuration no longer
     # installs; None when the profile has no manifest yet. Whether Step 23
-    # removes them (--remove-leftovers), and whether the run is a dry run,
-    # decide how each row is marked
+    # removes them (--remove-leftovers), whether the run is a dry run, and
+    # whether it is a scheduled run, which only lists them, decide how each
+    # row is marked and which note follows
     leftovers: 'LeftoverReport | None' = None
     remove_leftovers: bool = False
     dry_run: bool = False
+    scheduled_run: bool = False
 
     # Destinations outside ~/.claude that a profile of another configuration
     # recorded from a different source
@@ -10458,7 +10460,11 @@ def display_installation_summary(
     if plan.dependents:
         _print()
         _print(f'{Colors.BOLD}Dependents (profiles linking content from this one, refreshed after this run):{Colors.NC}')
-        child_flags = f'--yes --skip-install --no-admin{" " + RUN_ALL_COMMANDS_FLAG if plan.run_all_commands else ""}'
+        child_flags = ' '.join([
+            '--yes', '--skip-install', '--no-admin',
+            *([RUN_ALL_COMMANDS_FLAG] if plan.run_all_commands else []),
+            *([REMOVE_LEFTOVERS_FLAG] if plan.remove_leftovers else []),
+        ])
         for name in plan.dependents:
             _print(f'  * {name} (--profile {name} {child_flags})')
 
@@ -10539,7 +10545,9 @@ def display_installation_summary(
     if plan.leftovers is not None and plan.leftovers.has_content():
         _print()
         _print(f'{Colors.YELLOW}{Colors.BOLD}{LEFTOVERS_HEADING}{Colors.NC}')
-        for line in plan.leftovers.lines(remove=plan.remove_leftovers, dry_run=plan.dry_run):
+        for line in plan.leftovers.lines(
+            remove=plan.remove_leftovers, dry_run=plan.dry_run, scheduled=plan.scheduled_run,
+        ):
             _print(f'  {line}')
 
     # The profile's daily update job: what Step 25 registers, re-registers,
@@ -18217,6 +18225,7 @@ def refresh_dependents(
     *,
     source_commands: frozenset[str] = frozenset(),
     run_all_commands: bool = False,
+    remove_leftovers: bool = False,
 ) -> list[DependentResult]:
     """Re-run every profile that links content from this one, each in its own child run.
 
@@ -18229,8 +18238,9 @@ def refresh_dependents(
     profile, so the child lists none as unrefreshed; ``--skip-install``
     because the source just installed the one binary; ``--no-admin`` so no
     child relaunches through UAC and exits 0 unobserved; ``--run-all-commands``
-    when this run was given it, because the child's environment lost the
-    twin. Every dependent runs whatever the others returned.
+    and ``--remove-leftovers`` when this run was given them, because the
+    child's environment lost their twins. Every dependent runs whatever the
+    others returned.
 
     Args:
         dependents: The profiles to refresh, from content_dependents().
@@ -18239,6 +18249,8 @@ def refresh_dependents(
             leaves out unless the flag is given; a failed dependent's
             elevation remedy is judged on the commands it runs itself.
         run_all_commands: Whether this run was given --run-all-commands.
+        remove_leftovers: Whether this run was given --remove-leftovers,
+            so each dependent removes its own leftovers in its Step 23.
 
     Returns:
         One result per dependent, in order.
@@ -18247,6 +18259,8 @@ def refresh_dependents(
     child_flags = ['--yes', CHILD_RUN_FLAG, '--skip-install', '--no-admin']
     if run_all_commands:
         child_flags.append(RUN_ALL_COMMANDS_FLAG)
+    if remove_leftovers:
+        child_flags.append(REMOVE_LEFTOVERS_FLAG)
     env = child_run_environment()
     results: list[DependentResult] = []
     for profile in dependents:
@@ -19066,6 +19080,18 @@ LEFTOVERS_FLAG_FOOTER = (
 )
 
 
+def scheduled_leftovers_note(profile_name: str) -> str:
+    """Name the manual run that removes a profile's leftovers, which a scheduled run only lists.
+
+    Args:
+        profile_name: The profile's display name.
+
+    Returns:
+        The note.
+    """
+    return f'A scheduled run only lists leftovers; remove them with --profile {profile_name} {REMOVE_LEFTOVERS_FLAG}.'
+
+
 def leftover_digest(value: object) -> str:
     """Digest a recorded value in one canonical JSON form.
 
@@ -19545,18 +19571,24 @@ def _leftover_marker(entry: LeftoverEntry, *, remove: bool = False, dry_run: boo
     return markers[entry.state]
 
 
+def _leftover_note(entry: LeftoverEntry) -> str:
+    """Say why a leftover is not simply one the flag removes, empty for a plain leftover."""
+    notes = {
+        LEFTOVER_REMOVABLE: '',
+        LEFTOVER_HELD: f'kept: {entry.detail}',
+        LEFTOVER_REFERENCED: f'kept: {entry.detail}',
+        LEFTOVER_UNREADABLE: f'cannot check: {entry.detail}',
+        LEFTOVER_CHANGED: 'changed since written',
+        LEFTOVER_GONE: 'already gone',
+        LEFTOVER_LINKED: entry.detail,
+    }
+    return notes[entry.state]
+
+
 def _leftover_completion_detail(entry: LeftoverEntry) -> str:
     """Render the parenthesized note of a leftover in the completion summary, empty for a plain leftover."""
-    details = {
-        LEFTOVER_REMOVABLE: '',
-        LEFTOVER_HELD: f' (kept: {entry.detail})',
-        LEFTOVER_REFERENCED: f' (kept: {entry.detail})',
-        LEFTOVER_UNREADABLE: f' (cannot check: {entry.detail})',
-        LEFTOVER_CHANGED: ' (changed since written)',
-        LEFTOVER_GONE: ' (already gone)',
-        LEFTOVER_LINKED: f' ({entry.detail})',
-    }
-    return details[entry.state]
+    note = _leftover_note(entry)
+    return f' ({note})' if note else ''
 
 
 class LeftoverOutcome(NamedTuple):
@@ -19683,12 +19715,14 @@ class LeftoverReport:
         """Return the leftovers reported once and dropped from the record."""
         return [entry for entry in self.entries if entry.state not in _CARRIED_LEFTOVER_STATES]
 
-    def lines(self, *, remove: bool = False, dry_run: bool = False) -> list[str]:
+    def lines(self, *, remove: bool = False, dry_run: bool = False, scheduled: bool = False) -> list[str]:
         """Render the rows of the installation summary's leftovers block, with its notes.
 
         Args:
             remove: Whether Step 23 removes the leftovers (--remove-leftovers).
             dry_run: Whether the run is a dry run, which removes nothing.
+            scheduled: Whether the run is a scheduled run, which only lists
+                leftovers: the note names the manual run that removes them.
 
         Returns:
             One row per listed leftover, then the notes on what stays, what
@@ -19710,7 +19744,9 @@ class LeftoverReport:
             )
         elif carried:
             rendered.append(LEFTOVERS_FOOTER)
-            if removable:
+            if removable and scheduled:
+                rendered.append(scheduled_leftovers_note(self.profile_name))
+            elif removable:
                 rendered.append(LEFTOVERS_FLAG_FOOTER)
         if self.untracked_note:
             rendered.append(
@@ -19945,11 +19981,15 @@ def leftovers_manifest_record(
 
     Returns:
         The record: the items carried to the next run, the removed and
-        failed labels, the labels dropped with their reasons, and why the
-        run skipped removal, if it did.
+        failed labels, the labels dropped with their reasons, the labels
+        kept for a reason with that reason (so a report that reads the
+        manifest, such as the --profile all report, can say why each stays),
+        and why the run skipped removal, if it did.
     """
     if report is None:
-        return {'run_at': run_at, 'items': [], 'removed': [], 'dropped': [], 'skipped': None, 'failed': []}
+        return {
+            'run_at': run_at, 'items': [], 'removed': [], 'dropped': [], 'skipped': None, 'failed': [], 'kept': [],
+        }
     outcomes = removal.outcomes if removal is not None else ()
     looked_at = {outcome.entry.item.key() for outcome in outcomes}
     dropped = [
@@ -19960,10 +20000,15 @@ def leftovers_manifest_record(
         {'label': outcome.entry.item.label(), 'reason': outcome.detail}
         for outcome in outcomes if outcome.result == LEFTOVER_DROPPED
     )
-    items = [item for item in report.carried() if item.key() not in looked_at]
+    carried = [
+        entry for entry in report.entries
+        if entry.state in _CARRIED_LEFTOVER_STATES and entry.item.key() not in looked_at
+    ]
+    items = [entry.item for entry in carried]
     items.extend(
         outcome.entry.item for outcome in outcomes if outcome.result in (LEFTOVER_KEPT, LEFTOVER_FAILED)
     )
+    carried.extend(outcome.entry for outcome in outcomes if outcome.result == LEFTOVER_KEPT)
     return {
         'run_at': run_at,
         'items': [item.to_record() for item in items],
@@ -19971,6 +20016,10 @@ def leftovers_manifest_record(
         'dropped': dropped,
         'skipped': removal.skipped if removal is not None else None,
         'failed': [outcome.entry.item.label() for outcome in outcomes if outcome.result == LEFTOVER_FAILED],
+        'kept': [
+            {'label': entry.item.label(), 'reason': _leftover_note(entry)}
+            for entry in carried if _leftover_note(entry)
+        ],
     }
 
 
@@ -21929,6 +21978,26 @@ def scheduled_custom_command(profile_name: str, home_dir: Path) -> str | None:
         return None
     command = cast(dict[str, Any], record).get('command')
     return str(command) if command else None
+
+
+def switch_off_scheduled_removal(args: argparse.Namespace) -> None:
+    """Keep a scheduled run from removing leftovers, whatever its environment sets.
+
+    The job runs unattended, so nobody reads its summary before Step 23
+    would remove anything: it lists the leftovers in its log, and a run
+    started by hand removes them. A CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS=1
+    in the environment the scheduler hands the job is switched off with a
+    warning naming that run.
+
+    Args:
+        args: Arguments after resolve_args(); changed in place.
+    """
+    if args.scheduled_run and args.remove_leftovers:
+        warning(
+            'Leftovers are only listed in a scheduled run; remove them with '
+            f'--profile {args.profile} {REMOVE_LEFTOVERS_FLAG}.',
+        )
+        args.remove_leftovers = False
 
 
 def run_scheduled_update(
@@ -24127,6 +24196,7 @@ def run_dependent_refresh_step(
     for_dependent: str | None = None,
     source_commands: frozenset[str] = frozenset(),
     run_all_commands: bool = False,
+    remove_leftovers: bool = False,
 ) -> list[DependentResult]:
     """Run Step 24: refresh every profile that links content from this one.
 
@@ -24144,6 +24214,8 @@ def run_dependent_refresh_step(
             platform (see refresh_dependents()).
         run_all_commands: Whether this run was given --run-all-commands,
             which every child receives in argv.
+        remove_leftovers: Whether this run was given --remove-leftovers,
+            which every child receives in argv.
 
     Returns:
         One result per dependent refreshed; empty when none ran.
@@ -24157,7 +24229,10 @@ def run_dependent_refresh_step(
             return []
         names = ', '.join(profile.name for profile in others)
         print(f'{Colors.CYAN}Step 24: Refreshing {len(others)} other dependent profile(s): {names} {note}...{Colors.NC}')
-        return refresh_dependents(others, source_commands=source_commands, run_all_commands=run_all_commands)
+        return refresh_dependents(
+            others, source_commands=source_commands, run_all_commands=run_all_commands,
+            remove_leftovers=remove_leftovers,
+        )
     if child_run:
         print(f'{Colors.CYAN}Step 24: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
         return []
@@ -24166,7 +24241,10 @@ def run_dependent_refresh_step(
         return []
     names = ', '.join(profile.name for profile in dependents)
     print(f'{Colors.CYAN}Step 24: Refreshing {len(dependents)} dependent profile(s): {names}...{Colors.NC}')
-    return refresh_dependents(dependents, source_commands=source_commands, run_all_commands=run_all_commands)
+    return refresh_dependents(
+        dependents, source_commands=source_commands, run_all_commands=run_all_commands,
+        remove_leftovers=remove_leftovers,
+    )
 
 
 def child_run_environment() -> dict[str, str]:
@@ -24586,6 +24664,9 @@ class SourceRefresh(NamedTuple):
         run_all_commands: Whether this run was given --run-all-commands,
             forwarded to the source's run, whose Step 24 hands it to every
             other dependent.
+        remove_leftovers: Whether this run was given --remove-leftovers,
+            forwarded to the source's run, which removes the source's
+            leftovers and whose Step 24 hands it to every other dependent.
         snapshot: The resolved-config.yaml the source's run records for the
             configuration this run was given (replay_source_snapshot()), the
             snapshot whose digest is ``digest``; the commands this run leaves
@@ -24600,6 +24681,7 @@ class SourceRefresh(NamedTuple):
     dependents: list[str]
     skip_install: bool
     run_all_commands: bool
+    remove_leftovers: bool
     snapshot: dict[str, Any]
 
     def covered_profiles(self) -> list[str]:
@@ -24622,12 +24704,14 @@ class SourceRefresh(NamedTuple):
         Returns:
             ``--profile SOURCE --yes --child-run --for-dependent THIS``, the
             parent's ``--skip-install`` when it has one, ``--no-admin``, and
-            the parent's ``--run-all-commands`` when it has one.
+            the parent's ``--run-all-commands`` and ``--remove-leftovers``
+            when it has them.
         """
         return [
             '--profile', self.source, '--yes', CHILD_RUN_FLAG, FOR_DEPENDENT_FLAG, this_profile,
             *(['--skip-install'] if self.skip_install else []), '--no-admin',
             *([RUN_ALL_COMMANDS_FLAG] if self.run_all_commands else []),
+            *([REMOVE_LEFTOVERS_FLAG] if self.remove_leftovers else []),
         ]
 
     def elevation_reasons(
@@ -24663,6 +24747,7 @@ class SourceRefresh(NamedTuple):
         command = (
             f'--profile {self.source} --yes' + (' --skip-install' if self.skip_install else '') + ' --no-admin'
             + (f' {RUN_ALL_COMMANDS_FLAG}' if self.run_all_commands else '')
+            + (f' {REMOVE_LEFTOVERS_FLAG}' if self.remove_leftovers else '')
         )
         others = (
             f'other profiles its run refreshes: {", ".join(self.dependents)}' if self.dependents
@@ -24751,6 +24836,7 @@ def resolve_dependent_configuration(
         [profile.name for profile in dependents_except(content_dependents(home_dir, source.name), profile_name)],
         bool(args.skip_install),
         bool(args.run_all_commands),
+        bool(args.remove_leftovers),
         candidate,
     )
     warning(f'Profile "{source.name}" is stale: {refresh.reason_text()}; it is refreshed before this profile installs')
@@ -24766,17 +24852,19 @@ def refresh_source_profile(refresh: SourceRefresh, this_profile: str) -> int:
     """Re-run a stale source in its own child run and return its exit code.
 
     The child runs ``--profile SOURCE --yes --child-run --for-dependent
-    THIS [--skip-install] --no-admin [--run-all-commands]`` through the same
-    program this run started from, with the environment
-    child_run_environment() builds: ``--child-run`` because this run reports
-    on the profiles the refresh covers, ``--for-dependent`` so the source's
-    Step 24 refreshes its other dependents and leaves this profile to
-    install itself, the parent's ``--skip-install`` so the binary is
-    installed where the parent would install it, ``--no-admin`` because the
-    parent decided elevation for both runs (SourceRefresh.elevation_reasons()),
-    and the parent's ``--run-all-commands``, which the child's environment
-    lost with its twin, so the other dependents the source's Step 24
-    refreshes receive it too.
+    THIS [--skip-install] --no-admin [--run-all-commands]
+    [--remove-leftovers]`` through the same program this run started from,
+    with the environment child_run_environment() builds: ``--child-run``
+    because this run reports on the profiles the refresh covers,
+    ``--for-dependent`` so the source's Step 24 refreshes its other
+    dependents and leaves this profile to install itself, the parent's
+    ``--skip-install`` so the binary is installed where the parent would
+    install it, ``--no-admin`` because the parent decided elevation for
+    both runs (SourceRefresh.elevation_reasons()), and the parent's
+    ``--run-all-commands`` and ``--remove-leftovers``, which the child's
+    environment lost with their twins, so the source removes its own
+    leftovers and the other dependents the source's Step 24 refreshes
+    receive both too.
 
     Args:
         refresh: The refresh to perform.
@@ -25011,6 +25099,96 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     return reasons
 
 
+def _recorded_since(run_at: object, since: datetime) -> bool:
+    """Report whether a leftovers record was written at or after a moment.
+
+    Args:
+        run_at: The record's run_at value.
+        since: An aware moment.
+
+    Returns:
+        True for an aware ISO time at or after ``since``; False for an
+        earlier one and for any value that cannot be placed against it.
+    """
+    if not isinstance(run_at, str):
+        return False
+    try:
+        recorded = datetime.fromisoformat(run_at)
+    except ValueError:
+        return False
+    return recorded.tzinfo is not None and recorded >= since
+
+
+def profile_leftovers_lines(
+    profile: InstalledProfile, *, since: datetime, remove: bool, claude_dir: Path,
+) -> list[str]:
+    """Render what a profile's manifest records about its leftovers, for the --profile all report.
+
+    The child run of each profile writes the leftovers field in Step 20 and
+    replaces it after Step 23, so the parent reads the outcome from the
+    manifest once the child has exited. A record written before the parent
+    started (the child stopped before Step 20) speaks for an earlier run: it
+    counts only as the list of leftovers still recorded, never as removals.
+
+    Args:
+        profile: The profile, as the parent listed it.
+        since: When the parent started its first child.
+        remove: Whether the run was given --remove-leftovers.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        With the flag, what the run removed and what is left with why each
+        stays; without it, one line naming how many leftovers are left and
+        the command that removes them. Empty when the manifest records none
+        or cannot be read.
+    """
+    try:
+        manifest = read_profile_manifest(profile.manifest_path)
+    except ValueError:
+        return []
+    record = manifest.get(LEFTOVERS_MANIFEST_KEY) if manifest is not None else None
+    if not isinstance(record, dict):
+        return []
+    record_dict = cast(dict[str, Any], record)
+
+    def _entries(key: str) -> list[object]:
+        value = record_dict.get(key)
+        return cast(list[object], value) if isinstance(value, list) else []
+
+    left = [
+        item.label() for item in (LeftoverItem.from_record(entry, claude_dir=claude_dir) for entry in _entries('items'))
+        if item is not None
+    ]
+    if not left and not remove:
+        return []
+    if not remove:
+        return [f'- {len(left)} leftover(s); remove them with --profile {profile.name} {REMOVE_LEFTOVERS_FLAG}']
+    if not _recorded_since(record_dict.get('run_at'), since):
+        if not left:
+            return []
+        return [f'- leftovers left ({len(left)}; recorded by an earlier run):', *(f'    {label}' for label in left)]
+    removed = [label for label in _entries('removed') if isinstance(label, str)]
+    failed = {label for label in _entries('failed') if isinstance(label, str)}
+    reasons: dict[str, str] = {}
+    for entry in _entries('kept'):
+        if isinstance(entry, dict):
+            label, reason = cast(dict[str, Any], entry).get('label'), cast(dict[str, Any], entry).get('reason')
+            if isinstance(label, str) and isinstance(reason, str):
+                reasons[label] = reason
+    lines: list[str] = []
+    if removed:
+        lines.append(f'- leftovers removed ({len(removed)}):')
+        lines.extend(f'    {label}' for label in removed)
+    if left:
+        skipped = record_dict.get('skipped')
+        why = f'; not removed: {skipped}' if isinstance(skipped, str) and skipped else ''
+        lines.append(f'- leftovers left ({len(left)}{why}):')
+        for label in left:
+            note = 'could not be removed' if label in failed else reasons.get(label, '')
+            lines.append(f'    {label} ({note})' if note else f'    {label}')
+    return lines
+
+
 def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = False) -> int:
     """Re-run every installed profile, the base first, each in its own child run.
 
@@ -25018,14 +25196,19 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
     administrator rights the parent lacks, it relaunches itself through UAC
     before asking for consent, so every child inherits the rights and none
     opens a window of its own. The parent then asks for consent once (or
-    takes --yes); every child runs with --yes, --child-run, the parent's
-    --dry-run and --skip-install, and --no-admin (a dry run
-    forwards the parent's --no-admin instead, so each child still prints
-    what a real run would elevate for). The report at the end names each
+    takes --yes), naming the removal of leftovers when the run was given
+    --remove-leftovers, because no child asks again; every child runs with
+    --yes, --child-run, the parent's --dry-run and --skip-install, and
+    --no-admin (a dry run forwards the parent's --no-admin instead, so each
+    child still prints what a real run would elevate for), then the
+    parent's --run-all-commands and --remove-leftovers, which the child's
+    environment lost with their twins. The report at the end names each
     profile with its result and the --profile command that retries a
-    failed one; a parent relaunched through UAC then holds its window
-    under the success or errors banner until Enter, because that window
-    closes when the process exits.
+    failed one, and, except after a dry run, what the profile's manifest
+    records about its leftovers (profile_leftovers_lines()); a parent
+    relaunched through UAC then holds its window under the success or
+    errors banner until Enter, because that window closes when the process
+    exits.
 
     Args:
         args: Arguments after resolve_args().
@@ -25103,7 +25286,16 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
                  'or --dry-run to preview each one.')
             return 1
         print()
-        if not _ask_yes_no(f'{Colors.YELLOW}Refresh these {len(profiles)} profile(s)? [y/N]: {Colors.NC}'):
+        question = f'Refresh these {len(profiles)} profile(s)? [y/N]: '
+        if args.remove_leftovers:
+            # Every child runs with --yes, so this is the one question
+            # before any profile's Step 23 removes its leftovers
+            info(
+                'Each profile removes its leftovers in Step 23 without asking again; '
+                f'--profile {ALL_PROFILES} {REMOVE_LEFTOVERS_FLAG} --dry-run previews what each one removes.',
+            )
+            question = f'Refresh these {len(profiles)} profile(s) and remove their leftovers? [y/N]: '
+        if not _ask_yes_no(f'{Colors.YELLOW}{question}{Colors.NC}'):
             info('Setup cancelled by user.')
             return 0
     # A child never decides elevation for itself: the parent did, so a
@@ -25114,12 +25306,16 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         ('--skip-install', args.skip_install),
         ('--no-admin', args.no_admin or not args.dry_run),
         (RUN_ALL_COMMANDS_FLAG, args.run_all_commands),
+        (REMOVE_LEFTOVERS_FLAG, args.remove_leftovers),
     ):
         if present:
             child_flags.append(flag)
     launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
     env = child_run_environment()
-    results: list[tuple[str, int]] = []
+    # A child's leftovers record counts as this run's only when written
+    # after this moment
+    started_at = datetime.now(UTC)
+    results: list[tuple[InstalledProfile, int]] = []
     for profile in profiles:
         print()
         print(f'{Colors.CYAN}=== Profile {profile.name} ==={Colors.NC}')
@@ -25128,16 +25324,24 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         except OSError as e:
             error(f'Cannot start the run of profile "{profile.name}": {e}')
             code = 1
-        results.append((profile.name, code))
+        results.append((profile, code))
     print()
     print(f'{Colors.YELLOW}Profiles refreshed:{Colors.NC}')
     failed = 0
-    for name, code in results:
+    retry_flags = f' {REMOVE_LEFTOVERS_FLAG}' if args.remove_leftovers else ''
+    for profile, code in results:
         if code == 0:
-            print(f'   * {name}: ok')
+            print(f'   * {profile.name}: ok')
         else:
             failed += 1
-            print(f'   * {name}: failed (exit code {code}); retry with --profile {name}')
+            print(f'   * {profile.name}: failed (exit code {code}); retry with --profile {profile.name}{retry_flags}')
+        # A dry run's children write nothing, so their manifests say
+        # nothing about this run
+        if not args.dry_run:
+            for line in profile_leftovers_lines(
+                profile, since=started_at, remove=bool(args.remove_leftovers), claude_dir=home_dir / '.claude',
+            ):
+                print(f'       {line}')
     print()
     if elevated_via_uac:
         if failed:
@@ -25253,7 +25457,9 @@ def main() -> None:
         '--remove-leftovers',
         action='store_true',
         help='Remove in Step 23 what earlier runs of the profile installed and the configuration no longer '
-        'installs, each item only while it still holds what the setup wrote',
+        "installs, each item only while it still holds what the setup wrote; --profile all, a source's refresh "
+        'of its dependents and the refresh of a stale source hand it to every profile they run, and a scheduled '
+        'run only lists leftovers',
     )
     parser.add_argument(
         '--link-dirs',
@@ -25289,15 +25495,20 @@ def main() -> None:
     # program with --scheduled-run: the run takes the machine-wide update
     # lock, sends its output to a log in the toolbox state directory and
     # records its outcome, then runs the profile's setup (or the command the
-    # configuration names) in this process
+    # configuration names) in this process. The setup lists leftovers and
+    # removes none; the switch-off is announced once the output goes to the
+    # log, so the log says why
     if args.scheduled_run:
         if not args.profile or args.profile == ALL_PROFILES:
             error(f'{SCHEDULED_RUN_FLAG} runs the daily update of one installed profile and needs --profile NAME')
             sys.exit(1)
         custom_command = scheduled_custom_command(str(args.profile), get_real_user_home())
-        sys.exit(run_scheduled_update(
-            args, lambda: _run_setup(args, was_elevated_via_uac), custom_command=custom_command,
-        ))
+
+        def _scheduled_setup() -> None:
+            switch_off_scheduled_removal(args)
+            _run_setup(args, was_elevated_via_uac)
+
+        sys.exit(run_scheduled_update(args, _scheduled_setup, custom_command=custom_command))
     _run_setup(args, was_elevated_via_uac)
 
 
@@ -26178,6 +26389,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         plan.leftovers = leftover_report
         plan.remove_leftovers = bool(args.remove_leftovers)
         plan.dry_run = bool(args.dry_run)
+        plan.scheduled_run = bool(args.scheduled_run)
 
         auto_confirm = args.yes
         dry_run = args.dry_run
@@ -26813,6 +27025,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
+                remove_leftovers=bool(args.remove_leftovers),
             )
 
             # Step 25: The profile's daily update job (the auto-update key)
@@ -26980,6 +27193,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
+                remove_leftovers=bool(args.remove_leftovers),
             )
 
             # Step 25: The base profile's daily update job (the auto-update key)

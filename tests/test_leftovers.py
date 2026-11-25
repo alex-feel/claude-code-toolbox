@@ -530,6 +530,7 @@ class TestLeftoversManifestRecord:
             'dropped': [],
             'skipped': None,
             'failed': [],
+            'kept': [],
         }
 
     def test_carried_and_dropped(self, tmp_path: Path) -> None:
@@ -560,6 +561,10 @@ class TestLeftoversManifestRecord:
         ]
         assert record['removed'] == []
         assert record['failed'] == []
+        assert record['kept'] == [
+            {'label': 'file: rules/locked.md', 'reason': 'cannot check: Permission denied'},
+            {'label': f'file outside ~/.claude: {outside}', 'reason': 'kept: recorded by profile other'},
+        ]
         assert record['skipped'] is None
 
 
@@ -621,7 +626,7 @@ class TestWriteManifestLeftovers:
         assert _REAL_WRITE_MANIFEST(tmp_path / 'a', 'a', None, 'a.yaml', 'repo', None, ['a'], None)
         default = json.loads((tmp_path / 'a' / 'manifest.json').read_text(encoding='utf-8'))['leftovers']
         assert {key: value for key, value in default.items() if key != 'run_at'} == {
-            'items': [], 'removed': [], 'dropped': [], 'skipped': None, 'failed': [],
+            'items': [], 'removed': [], 'dropped': [], 'skipped': None, 'failed': [], 'kept': [],
         }
         assert isinstance(default['run_at'], str)
         assert default['run_at']

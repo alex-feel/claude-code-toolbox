@@ -49,6 +49,7 @@ def _args(
     link_dirs: str | None = None,
     link_from: str | None = None,
     run_all_commands: bool = False,
+    remove_leftovers: bool = False,
 ) -> argparse.Namespace:
     """Build resolved arguments the way main() does."""
     namespace = argparse.Namespace(
@@ -69,6 +70,7 @@ def _args(
         link_dirs=link_dirs,
         link_from=link_from,
         run_all_commands=run_all_commands,
+        remove_leftovers=remove_leftovers,
     )
     cleared = {
         twin.variable: '' for twin in setup_environment.ENV_TWINS
@@ -482,9 +484,11 @@ class TestRememberedComponentDelta:
         args = _args()
         errors = _apply_delta(args, manifest)
         assert errors == [
-            f"components: the remembered selection of profile p (recorded in {Path('/home/.claude/p/manifest.json')}) "
-            f"names 'gone' in {flag}, which the configuration no longer declares; pass {flag} explicitly to "
-            'replace the remembered selection, or --select all.',
+            (
+                f"components: the remembered selection of profile p (recorded in {Path('/home/.claude/p/manifest.json')}) "
+                f"names 'gone' in {flag}, which the configuration no longer declares; pass {flag} explicitly to "
+                'replace the remembered selection, or --select all.'
+            ),
         ]
         assert (args.select, args.with_, args.without) == (None, None, None)
         assert 'components' not in args.origins
@@ -1155,6 +1159,18 @@ class TestRefreshAllProfiles:
             (
                 _args(profile='all', yes=True, env={'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': 'true'}),
                 ['--yes', '--child-run', '--no-admin'],
+            ),
+            (
+                _args(profile='all', yes=True, remove_leftovers=True),
+                ['--yes', '--child-run', '--no-admin', '--remove-leftovers'],
+            ),
+            (
+                _args(profile='all', yes=True, env={'CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS': '1'}),
+                ['--yes', '--child-run', '--no-admin', '--remove-leftovers'],
+            ),
+            (
+                _args(profile='all', dry_run=True, run_all_commands=True, remove_leftovers=True),
+                ['--yes', '--child-run', '--dry-run', '--run-all-commands', '--remove-leftovers'],
             ),
         ],
     )

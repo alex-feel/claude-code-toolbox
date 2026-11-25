@@ -542,6 +542,7 @@ class TestRunLeftoversStep:
         assert manifest['name'] == 'p'
         assert manifest['leftovers'] == {
             'run_at': 't', 'items': [], 'removed': ['file: rules/old.md'], 'dropped': [], 'skipped': None, 'failed': [],
+            'kept': [],
         }
 
     def test_record_manifest_leftovers_needs_a_readable_manifest(self, tmp_path: Path) -> None:
@@ -752,6 +753,7 @@ class TestReportRendering:
             'dropped': [{'label': 'file: rules/gone.md', 'reason': 'written again'}],
             'skipped': None,
             'failed': ['file: hooks/h.py'],
+            'kept': [{'label': 'file: hooks/a.py', 'reason': 'kept: still wired in s.json hooks.Stop'}],
         }
 
 

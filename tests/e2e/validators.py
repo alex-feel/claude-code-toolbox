@@ -1520,7 +1520,7 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
 
 
 def _leftovers_record_errors(leftovers: object) -> list[str]:
-    """Validate the manifest's leftovers field: its keys, its items and its dropped labels.
+    """Validate the manifest's leftovers field: its keys, its items, its dropped labels and its kept reasons.
 
     Args:
         leftovers: The manifest's leftovers value.
@@ -1528,7 +1528,7 @@ def _leftovers_record_errors(leftovers: object) -> list[str]:
     Returns:
         One error per deviation from the shape leftovers_manifest_record() writes.
     """
-    expected_keys = {'run_at', 'items', 'removed', 'dropped', 'skipped', 'failed'}
+    expected_keys = {'run_at', 'items', 'removed', 'dropped', 'skipped', 'failed', 'kept'}
     if not isinstance(leftovers, dict) or set(leftovers) != expected_keys:
         return [f'Manifest leftovers: expected an object with {sorted(expected_keys)}, got {leftovers!r}']
     errors: list[str] = []
@@ -1536,8 +1536,14 @@ def _leftovers_record_errors(leftovers: object) -> list[str]:
         errors.append(f"Manifest leftovers.run_at: expected an ISO time, got {leftovers['run_at']!r}")
     errors.extend(
         f'Manifest leftovers.{key}: expected a list, got {leftovers[key]!r}'
-        for key in ('items', 'removed', 'dropped', 'failed')
+        for key in ('items', 'removed', 'dropped', 'failed', 'kept')
         if not isinstance(leftovers[key], list)
+    )
+    errors.extend(
+        f'Manifest leftovers kept entry: expected a label and the reason it stays, got {entry!r}'
+        for entry in (leftovers['kept'] if isinstance(leftovers['kept'], list) else [])
+        if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
+        or not str(entry['label']).startswith('file') or not entry['reason']
     )
     errors.extend(
         f'Manifest leftovers item: expected kind, path and sha256 of a file or destination, got {item!r}'
