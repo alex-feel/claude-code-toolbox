@@ -252,6 +252,98 @@ class TestBaseSettingsLeftovers:
         assert leftover_rows(output) == rows
         assert 'already gone' not in output, 'the next run finds nothing it carried gone'
 
+    @staticmethod
+    def _switch_to_null_hooks_and_status_line(
+        e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> list[str]:
+        """Install a base profile whose hooks and status line run two hook files, then null both in its configuration.
+
+        Returns:
+            The rows naming the two hook files, as the leftovers block prints them after its marker.
+        """
+        claude_dir = e2e_isolated_home['claude_dir']
+        cfg = write_config(configs, 'base.yaml', {
+            'name': 'Null Hooks',
+            'rules': ['rules/rule.md'],
+            'hooks': {
+                'files': ['hooks/a.py', 'hooks/b.py'],
+                'events': [{'event': 'PreToolUse', 'matcher': '*', 'type': 'command', 'command': 'a.py'}],
+            },
+            'status-line': {'file': 'b.py', 'padding': 1, 'refresh-interval': 30},
+        })
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        installed = _settings(claude_dir)
+        assert _commands(installed['hooks']['PreToolUse']) == [_hook_command(claude_dir, 'a.py')]
+        assert installed['statusLine']['command'] == _hook_command(claude_dir, 'b.py')
+        assert installed['statusLine']['refreshInterval'] == 30
+        recorded = [record['path'][0] for record in read_manifest(claude_dir)['settings_written']]
+        assert recorded.count('statusLine') == 4
+        assert 'hooks' in recorded
+        write_config(configs, 'base.yaml', {
+            'name': 'Null Hooks', 'rules': ['rules/rule.md'], 'hooks': None, 'status-line': None,
+        })
+        capsys.readouterr()
+        return [f'file: {claude_dir / "hooks" / "a.py"}', f'file: {claude_dir / "hooks" / "b.py"}']
+
+    @staticmethod
+    def _assert_no_settings_row_and_both_deleted(output: str, claude_dir: Path) -> None:
+        settings_path = claude_dir / 'settings.json'
+        assert f'{settings_path}: statusLine' not in output, 'nothing the run deletes is listed anywhere'
+        assert f'{settings_path}: hooks.' not in output, 'nothing the run deletes is listed anywhere'
+        final = _settings(claude_dir)
+        assert 'hooks' not in final
+        assert 'statusLine' not in final
+
+    def test_null_hooks_and_status_line_leave_only_the_unwired_hook_files_as_leftovers(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A null hooks or status-line makes Step 18 delete it whole, so only the hook files it ran are listed."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        files = self._switch_to_null_hooks_and_status_line(e2e_isolated_home, configs, capsys)
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        output = printed(capsys)
+        assert leftover_rows(output) == [
+            *(f'  [leftover] {row}' for row in files),
+            '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ], 'no settings.json item is listed: Step 18 deletes them'
+        self._assert_no_settings_row_and_both_deleted(output, claude_dir)
+        assert (claude_dir / 'hooks' / 'a.py').is_file(), 'nothing leaves without the flag'
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert [item['path'] for item in leftovers['items']] == ['hooks/a.py', 'hooks/b.py'], 'nothing else is carried'
+        assert leftovers['dropped'] == []
+
+    def test_the_flagged_run_that_nulls_hooks_and_status_line_removes_the_hook_files_they_ran(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Before consent no group keeps the hook files Step 18 is about to unwire, so Step 23 of the same run removes them."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        files = self._switch_to_null_hooks_and_status_line(e2e_isolated_home, configs, capsys)
+
+        before = home_state(e2e_isolated_home['home'])
+        assert run_main(['--profile', 'base', *SKIP, '--remove-leftovers', '--dry-run']) == 0
+        marker = '[would be removed in Step 23]'
+        assert leftover_rows(printed(capsys)) == [
+            *(f'  {marker} {row}' for row in files),
+            f'  Step 23 removes each item marked {marker} only while it still holds what the setup wrote.',
+        ]
+        assert home_state(e2e_isolated_home['home']) == before, 'a dry run removes nothing'
+
+        assert run_main(['--profile', 'base', *SKIP, '--remove-leftovers', '--yes']) == 0
+
+        output = printed(capsys)
+        assert leftover_rows(output) == [*(f'  [remove] {row}' for row in files), f'  {REMOVES}']
+        self._assert_no_settings_row_and_both_deleted(output, claude_dir)
+        assert not (claude_dir / 'hooks' / 'a.py').exists()
+        assert not (claude_dir / 'hooks' / 'b.py').exists()
+        assert (claude_dir / 'rules' / 'rule.md').is_file()
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert leftovers['removed'] == ['file: hooks/a.py', 'file: hooks/b.py']
+        assert leftovers['items'] == []
+        assert leftovers['dropped'] == []
+
     def test_a_pin_writes_the_update_controls_in_place_of_a_null_env_so_its_variables_stay_leftovers(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:

@@ -414,6 +414,38 @@ class TestRemoval:
         assert settings.read_text(encoding='utf-8') == '{broken'
 
 
+# What an earlier run wrote through Step 14 (user-settings), as settings.json holds it, with its records by item.
+_STEP_14_CONTENT: dict[str, Any] = {
+    'env': {'FOO': 'x', 'FOO_BAR': 'y'},
+    'availableModels': ['opus', 'sonnet'],
+    'permissions': {'ask': ['Bash(git push)']},
+}
+_STEP_14_RECORDS: dict[str, list[dict[str, Any]]] = {
+    'env.FOO': [_record('setting', ['env', 'FOO'], 'x')],
+    'env.FOO_BAR': [_record('setting', ['env', 'FOO_BAR'], 'y')],
+    'availableModels': [
+        _record('setting-element', ['availableModels'], 'opus'),
+        _record('setting-element', ['availableModels'], 'sonnet'),
+    ],
+    'permissions.ask': [_record('setting-element', ['permissions', 'ask'], 'Bash(git push)')],
+}
+
+# What an earlier run wrote through Step 18 (status-line and hooks), as settings.json holds it, with its records.
+_STATUS_COMMAND = 'uv run --no-project --python 3.12 "/home/u/.claude/hooks/s.py"'
+_STOP_GROUP: dict[str, Any] = {'matcher': '', 'hooks': [_hook('echo stop')]}
+_STEP_18_CONTENT: dict[str, Any] = {
+    'statusLine': {'type': 'command', 'command': _STATUS_COMMAND, 'padding': 2, 'refreshInterval': 30},
+    'hooks': {'Stop': [_STOP_GROUP]},
+}
+_STEP_18_RECORDS: dict[str, list[dict[str, Any]]] = {
+    'statusLine.type': [_record('setting', ['statusLine', 'type'], 'command')],
+    'statusLine.command': [_record('setting', ['statusLine', 'command'], _STATUS_COMMAND)],
+    'statusLine.padding': [_record('setting', ['statusLine', 'padding'], 2)],
+    'statusLine.refreshInterval': [_record('setting', ['statusLine', 'refreshInterval'], 30)],
+    'hooks.Stop': [_group_record('Stop', _STOP_GROUP)],
+}
+
+
 def _manifest_with(records: list[dict[str, Any]], *, leftovers: bool = True) -> dict[str, Any]:
     manifest: dict[str, Any] = {'settings_written': records}
     if leftovers:
@@ -513,22 +545,37 @@ class TestComputation:
     def test_the_pin_is_read_as_the_run_reads_it(self, value: object, pinned: str | None) -> None:
         assert setup_environment.normalized_claude_code_version(value) == pinned
 
+    @pytest.mark.parametrize(
+        ('config', 'listed'),
+        [
+            ({}, ['statusLine.type', 'statusLine.command', 'statusLine.padding', 'statusLine.refreshInterval',
+                  'hooks.Stop']),
+            ({'status-line': None}, ['hooks.Stop']),
+            ({'hooks': None}, ['statusLine.type', 'statusLine.command', 'statusLine.padding',
+                               'statusLine.refreshInterval']),
+            ({'status-line': None, 'hooks': None}, []),
+            ({'hooks': {'files': ['hooks/s.py']}, 'status-line': {'file': 's.py', 'padding': None}},
+             ['statusLine.refreshInterval', 'hooks.Stop']),
+            ({'hooks': {'files': ['hooks/s.py']}, 'status-line': {'file': 's.py', 'refresh-interval': None}},
+             ['statusLine.padding', 'hooks.Stop']),
+        ],
+    )
+    def test_a_status_line_or_hooks_member_the_configuration_deletes_is_no_leftover(
+        self, claude_dir: Path, config: dict[str, Any], listed: list[str],
+    ) -> None:
+        """Step 18 deletes what a null in status-line or hooks names, so nothing at or below it is left behind."""
+        self._assert_listed_and_carried(claude_dir, config, listed, content=_STEP_18_CONTENT, records=_STEP_18_RECORDS)
+
     @staticmethod
-    def _assert_listed_and_carried(claude_dir: Path, config: dict[str, Any], listed: list[str]) -> None:
-        _settings(claude_dir, {
-            'env': {'FOO': 'x', 'FOO_BAR': 'y'},
-            'availableModels': ['opus', 'sonnet'],
-            'permissions': {'ask': ['Bash(git push)']},
-        })
-        records = {
-            'env.FOO': [_record('setting', ['env', 'FOO'], 'x')],
-            'env.FOO_BAR': [_record('setting', ['env', 'FOO_BAR'], 'y')],
-            'availableModels': [
-                _record('setting-element', ['availableModels'], 'opus'),
-                _record('setting-element', ['availableModels'], 'sonnet'),
-            ],
-            'permissions.ask': [_record('setting-element', ['permissions', 'ask'], 'Bash(git push)')],
-        }
+    def _assert_listed_and_carried(
+        claude_dir: Path,
+        config: dict[str, Any],
+        listed: list[str],
+        *,
+        content: dict[str, Any] = _STEP_14_CONTENT,
+        records: dict[str, list[dict[str, Any]]] = _STEP_14_RECORDS,
+    ) -> None:
+        _settings(claude_dir, content)
         planned = setup_environment.planned_records(config, claude_dir, claude_dir=claude_dir, base=True)
 
         report = _compute(_manifest_with([record for group in records.values() for record in group]), claude_dir,
@@ -536,7 +583,7 @@ class TestComputation:
 
         expected = sorted(_item(record).label() for path in listed for record in records[path])
         assert sorted(_states(report)) == expected
-        assert set(_states(report).values()) == {'removable'}
+        assert set(_states(report).values()) == ({'removable'} if listed else set())
         carried = setup_environment.leftovers_manifest_record(report, run_at='2026-11-25T00:00:00Z')['items']
         assert sorted(_item(record).label() for record in carried) == expected
 
