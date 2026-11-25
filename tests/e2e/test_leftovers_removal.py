@@ -292,7 +292,7 @@ class TestConfigurationSwitchAfterAFailedDownload:
         output = _output(capsys)
         assert code == 1, output
         assert 'Leftovers not removed: content downloads failed' in output
-        assert 'Removing what the previous configuration' not in output
+        assert 'Removed leftover' not in output
         assert (claude_dir / 'agents' / 'core.md').is_file()
         leftovers = read_manifest(claude_dir)['leftovers']
         assert leftovers['skipped'] == 'content downloads failed'

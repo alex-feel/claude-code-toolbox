@@ -30,7 +30,6 @@ from scripts.setup_environment import LeftoverRemoval
 from scripts.setup_environment import LeftoverReport
 from scripts.setup_environment import LiveLeftoverState
 from scripts.setup_environment import PlannedRecords
-from scripts.setup_environment import ProfileResidue
 
 digest = setup_environment.leftover_digest
 _REAL_READ_OS_ENV_VARIABLE = setup_environment.read_os_env_variable
@@ -117,7 +116,6 @@ def _step(
     removal = setup_environment.run_leftovers_step(
         report,
         remove=remove,
-        switch_residue=None,
         download_failed=False,
         written=written or PlannedRecords(),
         live=machine.live(),
@@ -669,7 +667,7 @@ class TestStep23:
 
         with patch.object(setup_environment, 'set_all_os_env_variables') as writer:
             removal = setup_environment.run_leftovers_step(
-                report, remove=False, switch_residue=None, download_failed=False, written=PlannedRecords(),
+                report, remove=False, download_failed=False, written=PlannedRecords(),
                 live=machine.live(), profile_dir=claude_dir, claude_dir=claude_dir,
                 manifest_path=claude_dir / 'manifest.json', run_at='t',
             )
@@ -713,7 +711,7 @@ class TestStep23:
             patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes', side_effect=_remove),
         ):
             removal = setup_environment.run_leftovers_step(
-                report, remove=True, switch_residue=None, download_failed=False, written=PlannedRecords(),
+                report, remove=True, download_failed=False, written=PlannedRecords(),
                 live=live, profile_dir=claude_dir, claude_dir=claude_dir,
                 manifest_path=claude_dir / 'manifest.json', run_at='t',
             )
@@ -724,74 +722,16 @@ class TestStep23:
         assert all(o.result == 'removed' for o in removal.outcomes)
 
 
-class TestSwitchResidue:
-    """A configuration switch lists and removes a variable or server only while it holds what the setup wrote."""
+class TestFailedDownload:
+    """A run whose content download failed removes no variable and no server; both stay recorded."""
 
-    def test_the_residue_lists_only_variables_and_servers_still_as_written(self, claude_dir: Path) -> None:
-        machine = Machine()
-        machine.env = {'OLD_VAR': ('v',), 'EDITED': ('edited',)}
-        machine.mcp = {'old-srv': {'user': _LIVE_ENTRY}}
-        manifest = {
-            'os_env_written': [
-                {'name': 'OLD_VAR', 'sha256': digest('v')}, {'name': 'EDITED', 'sha256': digest('v')},
-                {'name': 'KEPT_VAR', 'sha256': digest('k')},
-            ],
-            'mcp_servers': [{'name': 'old-srv', 'scopes': ['user'], 'sha256': {'user': digest(_LIVE_ENTRY)}}],
-        }
-
-        residue = setup_environment.profile_residue(
-            manifest, claude_dir, {'os-env-variables': {'KEPT_VAR': 'k'}}, isolated=False,
-            config_source='c.yaml', base_url=None, claude_dir=claude_dir, live=machine.live(),
-        )
-
-        assert [entry.item for entry in residue.os_env] == [_os_env_item('OLD_VAR', 'v')]
-        assert [entry.item for entry in residue.mcp_servers] == [_mcp_item('old-srv', 'user', _LIVE_ENTRY)]
-        assert residue.lines() == ['MCP server: old-srv (scope: user)', 'OS environment variable: OLD_VAR']
-
-    def test_an_isolated_switch_carries_no_variable(self, claude_dir: Path) -> None:
-        machine = Machine()
-        machine.env = {'OLD_VAR': ('v',)}
-
-        residue = setup_environment.profile_residue(
-            {'os_env_written': [{'name': 'OLD_VAR', 'sha256': digest('v')}]}, claude_dir / 'p', {}, isolated=True,
-            config_source='c.yaml', base_url=None, claude_dir=claude_dir, live=machine.live(),
-        )
-
-        assert not residue
-
-    def test_the_switch_removes_them_value_checked(self, claude_dir: Path) -> None:
-        machine = Machine()
-        machine.env = {'OLD_VAR': ('v',), 'EDITED': ('edited',)}
-        machine.mcp = {'old-srv': {'user': _LIVE_ENTRY}}
-        residue = ProfileResidue(
-            [], [LeftoverEntry(_mcp_item('old-srv', 'user', _LIVE_ENTRY), 'removable')],
-            [LeftoverEntry(_os_env_item('OLD_VAR', 'v'), 'removable'),
-             LeftoverEntry(_os_env_item('EDITED', 'v'), 'removable')],
-            [], [], [],
-        )
-
-        with (
-            patch.object(setup_environment, 'find_command', return_value='/usr/bin/claude'),
-            patch.object(setup_environment, 'set_all_os_env_variables', side_effect=machine.writer()) as writer,
-            patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes', side_effect=machine.mcp_remover()),
-        ):
-            setup_environment.remove_profile_residue(
-                residue, profile_dir=claude_dir, claude_dir=claude_dir, live=machine.live(),
-            )
-
-        writer.assert_called_once_with({'OLD_VAR': None})
-        assert machine.env == {'EDITED': ('edited',)}, 'a value changed since written stays'
-        assert machine.mcp == {'old-srv': {}}
-
-    def test_a_failed_download_keeps_the_residue_recorded(self, claude_dir: Path) -> None:
-        """A switch whose content download failed removes no variable and no server; both stay recorded."""
+    def test_a_failed_download_keeps_them_recorded(self, claude_dir: Path) -> None:
         machine = Machine()
         machine.env = {'OLD_VAR': ('v',)}
         machine.mcp = {'old-srv': {'user': _LIVE_ENTRY}}
         variable = LeftoverEntry(_os_env_item('OLD_VAR', 'v'), 'removable')
         server = LeftoverEntry(_mcp_item('old-srv', 'user', _LIVE_ENTRY), 'removable')
-        residue = ProfileResidue([], [server], [variable], [], [], [])
-        report = _report(claude_dir, variable, server).with_switch_removals([], [variable.item, server.item])
+        report = _report(claude_dir, variable, server)
         manifest_path = claude_dir / 'manifest.json'
         manifest_path.write_text('{}', encoding='utf-8')
 
@@ -802,7 +742,7 @@ class TestSwitchResidue:
             patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes') as remover,
         ):
             removal = setup_environment.run_leftovers_step(
-                report, remove=False, switch_residue=residue, download_failed=True, written=PlannedRecords(),
+                report, remove=True, download_failed=True, written=PlannedRecords(),
                 live=machine.live(), profile_dir=claude_dir, claude_dir=claude_dir,
                 manifest_path=manifest_path, run_at='t',
             )
@@ -810,7 +750,7 @@ class TestSwitchResidue:
         assert removal == LeftoverRemoval(skipped='content downloads failed')
         writer.assert_not_called()
         remover.assert_not_called()
-        assert report.listed() == [], 'the switch guard lists them, the leftovers block does not'
+        assert machine.env == {'OLD_VAR': ('v',)}
         assert json.loads(manifest_path.read_text(encoding='utf-8'))['leftovers']['items'] == [
             variable.item.to_record(), server.item.to_record(),
         ]

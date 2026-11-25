@@ -280,29 +280,6 @@ class TestComputeProfileLeftovers:
             (str(outside), 'removable', ''),
         ]
 
-    def test_switch_removals_are_left_out_of_the_listing(self, layout: tuple[Path, Path]) -> None:
-        """The residue an accepted switch removes in Step 23 is listed by the switch guard, not as left in place."""
-        claude_dir, profile_dir = layout
-        rule = _write(profile_dir / 'rules' / 'old.md', b'old')
-        agent = _write(profile_dir / 'agents' / 'old.md', b'agent')
-        outside = profile_dir.parent.parent / 'tool.txt'
-        tool = _write(outside, b'tool')
-        manifest: dict[str, object] = {
-            'files_written': [{'path': 'rules/old.md', 'sha256': rule}, {'path': 'agents/old.md', 'sha256': agent}],
-            'machine_wide_destinations': [{'dest': str(outside), 'source': 's', 'sha256': tool}],
-        }
-
-        report = _compute(manifest, profile_dir, claude_dir).with_switch_removals(
-            [profile_dir / 'Rules' / 'old.md', outside],
-        )
-
-        assert [entry.item.path for entry in report.listed()] == ['agents/old.md']
-        assert len(report.carried()) == 3, 'they stay recorded until Step 23 removes them'
-        assert [line for line in report.lines() if line.startswith('[')] == [
-            f'[leftover] file: {profile_dir / "agents" / "old.md"}',
-        ]
-        assert report.with_switch_removals([]) is report
-
     def test_destinations(self, layout: tuple[Path, Path]) -> None:
         claude_dir, profile_dir = layout
         root = claude_dir.parent
@@ -639,27 +616,3 @@ class TestWriteManifestLeftovers:
         data = json.loads((tmp_path / 'b' / 'manifest.json').read_text(encoding='utf-8'))
         assert data['leftovers'] == given
         assert data['files_written'] == files
-
-
-class TestProfileResidueReadsRecords:
-    """The switch guard reads the digest records the manifest keeps."""
-
-    def test_files_come_from_the_records_and_a_null_digest_never_matches(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / '.claude'
-        profile_dir = claude_dir / 'p'
-        _write(profile_dir / 'agents' / 'old.md', b'old')
-        unreadable = tmp_path / 'unverified.txt'
-        manifest: dict[str, object] = {
-            'files_written': [{'path': 'agents/old.md', 'sha256': None}, 'agents/legacy.md'],
-            'machine_wide_destinations': [{'dest': str(unreadable), 'source': 's', 'sha256': None}],
-        }
-        _write(profile_dir / 'agents' / 'legacy.md', b'legacy')
-        unreadable.write_bytes(b'x')
-
-        with patch.object(setup_environment, '_sha256_of_file', return_value=None):
-            residue = setup_environment.profile_residue(
-                manifest, profile_dir, {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
-            )
-
-        assert residue.files == [profile_dir / 'agents' / 'old.md'], 'only a record of the current shape is read'
-        assert residue.destinations == [], 'a null digest matches no file'

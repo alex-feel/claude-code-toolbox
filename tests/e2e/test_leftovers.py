@@ -243,11 +243,20 @@ class TestDestinationAnotherProfileRecords:
         assert str(outside) in [item['path'] for item in _items(claude_dir)], 'a kept destination stays recorded'
 
 
+GUARD = 'The previous configuration leaves behind:'
+
+
+def _guard(output: str) -> str:
+    """The lines the switch guard lists, up to the line that accepts the switch."""
+    assert GUARD in output, output
+    return output.split(GUARD)[1].split('Accepted via')[0]
+
+
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestConfigurationSwitch:
-    """What an accepted configuration switch removes in Step 23 is listed by the switch guard, not as left in place."""
+    """An accepted configuration switch removes the leftovers in Step 23 exactly as --remove-leftovers does."""
 
-    def test_switch_lists_only_what_it_keeps(
+    def test_the_switch_removes_its_leftovers_and_keeps_what_another_profile_records(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
         own, held = tmp_path / 'shared' / 'own.txt', tmp_path / 'shared' / 'held.txt'
@@ -262,6 +271,7 @@ class TestConfigurationSwitch:
         })
         cfg_b = write_config(configs, 'b.yaml', {'name': 'B', 'rules': ['rules/rule.md']})
         claude_dir = e2e_isolated_home['claude_dir']
+        core = claude_dir / 'agents' / 'core.md'
         assert run_main([str(cfg_a), *SKIP, '--yes']) == 0
         assert run_main([str(other), *SKIP, '--yes', '--command-names', 'team-1']) == 0
         capsys.readouterr()
@@ -269,14 +279,22 @@ class TestConfigurationSwitch:
         assert run_main([str(cfg_b), *SKIP, '--yes', '--switch-config']) == 0
 
         output = _output(capsys)
-        assert _block(output).strip('\n').split('\n') == [
+        rows = [
+            f'  [remove] file: {core}',
             f'  [kept: recorded by profile team-1] file outside ~/.claude: {held}',
-            '  They stay in place.',
-        ], 'the files the switch removes are not listed as left in place'
-        assert output.index('Step 18:') < output.index('Removing what the previous configuration of "base"'), (
+            f'  [remove] file outside ~/.claude: {own}',
+            (
+                '  Step 23 removes each item marked [remove] only while it still holds what the setup wrote; '
+                'the others stay in place.'
+            ),
+        ]
+        guard = _guard(output)
+        assert all(row.strip() in guard for row in rows), guard
+        assert _block(output).strip('\n').split('\n') == rows, 'the summary lists what Step 23 removes'
+        assert output.index('Step 18:') < output.index(f'Removed leftover file outside ~/.claude: {own}'), (
             'the switch removes after the new configuration is in place'
         )
-        assert not (claude_dir / 'agents' / 'core.md').exists()
+        assert not core.exists()
         assert not own.exists()
         assert held.is_file()
         assert '   * Leftovers removed (2):' in output
@@ -285,6 +303,91 @@ class TestConfigurationSwitch:
             {'kind': 'destination', 'path': str(held), 'sha256': setup_environment._sha256_of_file(held)},
         ]
         assert sorted(leftovers['removed']) == sorted(['file: agents/core.md', f'file outside ~/.claude: {own}'])
+
+    def test_a_hand_edited_file_stays_and_a_carried_leftover_leaves_with_the_switch(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        outside = tmp_path / 'shared' / 'tool.txt'
+        cfg = write_config(configs, 'env.yaml', _full(outside))
+        cfg_b = write_config(configs, 'b.yaml', {'name': 'B', 'rules': ['rules/rule.md']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'env.yaml', _trimmed())
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+        assert len(_items(claude_dir)) == 3, 'the trimmed run carries three leftovers'
+        core = claude_dir / 'agents' / 'core.md'
+        core.write_text('# my own agent\n', encoding='utf-8')
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--yes', '--switch-config']) == 0
+
+        guard = _guard(_output(capsys))
+        assert f'[changed since written: left in place, no longer tracked] file: {core}' in guard
+        for path in (claude_dir / 'agents' / 'extra.md', claude_dir / 'rules' / 'other.md'):
+            assert f'[remove] file: {path}' in guard
+            assert not path.exists(), f'{path} was carried from an earlier run and leaves with the switch'
+        assert f'[remove] file outside ~/.claude: {outside}' in guard
+        assert not outside.exists()
+        assert core.read_text(encoding='utf-8') == '# my own agent\n', 'a file edited by hand stays'
+        assert (claude_dir / 'rules' / 'rule.md').is_file()
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert leftovers['items'] == []
+        assert {'label': 'file: agents/core.md', 'reason': 'changed'} in leftovers['dropped']
+
+    @pytest.mark.parametrize('how', ['flag', 'variable'])
+    def test_the_switch_flag_on_the_same_configuration_removes_nothing(
+        self, how: str, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--switch-config accepts a switch; without one it is no request to remove leftovers."""
+        cfg = write_config(configs, 'env.yaml', _full(tmp_path / 'shared' / 'tool.txt'))
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'env.yaml', _trimmed())
+        argv = ['--profile', 'base', *SKIP, '--yes']
+        if how == 'flag':
+            argv.append('--switch-config')
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG', '1')
+        capsys.readouterr()
+
+        assert run_main(argv) == 0
+
+        output = _output(capsys)
+        assert 'Accepted via' not in output
+        assert f'  [leftover] file: {claude_dir / "agents" / "extra.md"}' in _block(output)
+        assert 'Step 23: Removing leftovers' not in output
+        assert (claude_dir / 'agents' / 'extra.md').is_file()
+        assert (claude_dir / 'rules' / 'other.md').is_file()
+
+    def test_a_switch_dry_run_names_what_step_23_would_remove(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        outside = tmp_path / 'shared' / 'tool.txt'
+        cfg = write_config(configs, 'env.yaml', _full(outside))
+        cfg_b = write_config(configs, 'b.yaml', {'name': 'B', 'rules': ['rules/rule.md']})
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--dry-run', '--switch-config', '--command-names', 'prof-a']) == 0
+
+        output = _output(capsys)
+        assert home_state(e2e_isolated_home['home']) == before, 'a dry run removes nothing'
+        assert outside.is_file()
+        marker = '[would be removed in Step 23]'
+        guard = _guard(output)
+        block = _block(output)
+        for row in (
+            f'{marker} file: {profile_dir / "agents" / "core.md"}',
+            f'{marker} file: {profile_dir / "agents" / "extra.md"}',
+            f'{marker} file: {profile_dir / "rules" / "other.md"}',
+            f'{marker} file outside ~/.claude: {outside}',
+        ):
+            assert row in guard
+            assert f'  {row}' in block
+        assert f'remove leftover file: {outside}' in output, 'the removal outside ~/.claude is a machine-wide write'
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')

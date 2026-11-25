@@ -1027,7 +1027,7 @@ class TestConfigurationSwitch:
         for name in switches:
             for entry in CONTENT_ENTRIES:
                 assert f'file: {claude_dir / name / entry}' not in output, (name, entry)
-                assert f'Removed {claude_dir / name / entry}' not in output, (name, entry)
+                assert f'Removed leftover file: {claude_dir / name / entry}' not in output, (name, entry)
         assert home_state(source_dir) == source_before, 'the source lost nothing'
         assert (source_dir / 'agents' / 'core.md').is_file()
         assert (source_dir / 'skills' / 'tool-skill' / 'SKILL.md').is_file()
@@ -1047,7 +1047,7 @@ class TestConfigurationSwitch:
         assert re_pointed['link']['source'] == 'corp-1'
         assert re_pointed['config_identity'] == read_manifest(claude_dir / 'corp-1')['config_identity']
 
-    def test_a_link_made_outside_the_setup_shields_its_target_from_residue_removal(
+    def test_a_link_made_outside_the_setup_shields_its_target_from_leftover_removal(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A full profile whose agents/ was replaced by a link by hand switches without deleting through it."""
@@ -1066,12 +1066,13 @@ class TestConfigurationSwitch:
         assert run_main([str(other), *SKIP, '--yes', '--command-names', 'team-copy', '--switch-config']) == 0
 
         output = _output(capsys)
-        residue = output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
-        assert f'file: {copy / "rules" / "rule.md"}' in residue, 'a file in a real directory is residue'
-        assert f'file: {copy / "agents" / "core.md"}' not in residue, 'a file behind the link is not'
+        guard = output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
+        assert f'[remove] file: {copy / "rules" / "rule.md"}' in guard, 'a file in a real directory is removed'
+        assert f'[remove] file: {copy / "agents" / "core.md"}' not in guard, 'a file behind the link is not'
         assert (
             f'[now reached through a directory link: no longer tracked] file: {copy / "agents" / "core.md"}'
-        ) in output, 'the leftovers report names it once and stops tracking it'
+        ) in guard, 'the guard names it once and stops tracking it'
+        assert f'Removed leftover file: {copy / "agents" / "core.md"}' not in output
         assert not (copy / 'rules' / 'rule.md').exists()
         assert (claude_dir / 'team-1' / 'agents' / 'core.md').is_file(), 'the link target kept its file'
         assert '* agents: [on disk, not declared] the link is left alone' in output

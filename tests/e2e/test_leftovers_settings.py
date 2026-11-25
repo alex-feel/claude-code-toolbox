@@ -247,17 +247,52 @@ class TestBaseSettingsLeftovers:
         assert _settings(claude_dir) == {
             'theme': 'light', 'permissions': {'allow': ['Edit']}, 'includeCoAuthoredBy': False,
         }, 'a changed value and an element the user added stay; no whole key is deleted'
-        rows = leftover_rows(output)
-        assert rows[0] == f'  [changed since written: left in place, no longer tracked] {settings_path}: theme'
-        assert not any('cleanupPeriodDays' in row or 'permissions.allow' in row for row in rows), (
-            'the switch guard lists what the switch removes, so the leftovers block does not'
-        )
+        assert leftover_rows(output) == [
+            f'  [remove] {settings_path}: cleanupPeriodDays',
+            f'  [remove] {settings_path}: permissions.allow element "Read"',
+            f'  [changed since written: left in place, no longer tracked] {settings_path}: theme',
+            f'  {REMOVES}',
+        ], 'the summary lists what the switch removes as a run given --remove-leftovers does'
         leftovers = read_manifest(claude_dir)['leftovers']
         assert sorted(leftovers['removed']) == [
             'settings.json: cleanupPeriodDays',
             f'settings.json: permissions.allow element {setup_environment.leftover_digest("Read")[:12]}',
         ]
         assert leftovers['items'] == []
+
+    def test_a_switch_removes_a_hook_file_together_with_the_group_that_wires_it(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Before consent the switch reads settings.json as Step 23 leaves it, so the wired file shows [remove]."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        settings_path = claude_dir / 'settings.json'
+        first = write_config(configs, 'first.yaml', _hooked('a.py', helpers=['h.py'], allow=['Read']))
+        second = write_config(configs, 'second.yaml', {**_hooked('b.py', helpers=[], allow=['Read']), 'name': 'Second'})
+        assert run_main([str(first), *SKIP, '--yes']) == 0
+        installed = _settings(claude_dir)
+        installed['hooks']['Stop'] = [USER_GROUP]
+        _write_settings(claude_dir, installed)
+        capsys.readouterr()
+
+        assert run_main([str(second), *SKIP, '--yes', '--switch-config']) == 0
+
+        output = printed(capsys)
+        rows = [
+            f'  [remove] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [remove] file: {claude_dir / "hooks" / "h.py"}',
+            f'  [remove] {settings_path}: hooks.PreToolUse group matcher "*" (1 hook)',
+            f'  {REMOVES}',
+        ]
+        guard = output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
+        assert all(row.strip() in guard for row in rows), guard
+        assert 'still wired' not in guard
+        assert leftover_rows(output) == rows
+        assert not (claude_dir / 'hooks' / 'a.py').exists()
+        assert not (claude_dir / 'hooks' / 'h.py').exists()
+        assert (claude_dir / 'hooks' / 'b.py').is_file()
+        settings = _settings(claude_dir)
+        assert _commands(settings['hooks']['PreToolUse']) == [_hook_command(claude_dir, 'b.py')]
+        assert settings['hooks']['Stop'] == [USER_GROUP], 'a group the user added stays'
 
     def test_a_status_line_pointed_at_another_file_no_longer_keeps_the_old_one(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],

@@ -27,38 +27,11 @@ from scripts.setup_environment import CommandNames
 from scripts.setup_environment import ComponentSelection
 from scripts.setup_environment import LeftoverEntry
 from scripts.setup_environment import LeftoverItem
-from scripts.setup_environment import ProfileResidue
+from scripts.setup_environment import LeftoverReport
 from scripts.setup_environment import resolve_command_names
 
-_digest = setup_environment.leftover_digest
 _REAL_READ_TARGET_MANIFEST = setup_environment._read_target_manifest
 _REAL_INSTALLED_PROFILES = setup_environment.installed_profiles
-
-
-def _setting(keys: list[str], value: object) -> dict[str, Any]:
-    """A settings_written record of a value."""
-    return {'kind': 'setting', 'path': keys, 'sha256': setup_environment.leftover_digest(value)}
-
-
-def _setting_entry(keys: list[str], value: object) -> LeftoverEntry:
-    """A removable settings leftover of a value."""
-    item = LeftoverItem.from_record(_setting(keys, value), claude_dir=Path())
-    assert item is not None
-    return LeftoverEntry(item, 'removable')
-
-
-_LIVE_ENTRY: dict[str, Any] = {'type': 'http', 'url': 'https://mcp.example/mcp'}
-
-
-def _live_machine(env: dict[str, str], mcp: dict[str, dict[str, Any]]) -> setup_environment.LiveLeftoverState:
-    """Live readers over an in-memory OS environment and MCP registrations, the files read from disk."""
-    return setup_environment.LiveLeftoverState(
-        file_digest=setup_environment._live_file_digest,
-        under_link=lambda _relative: False,
-        destination_holders=lambda _dest: [],
-        os_env=lambda name: (env[name],) if name in env else (),
-        mcp=lambda name: dict(mcp.get(name, {})),
-    )
 
 
 def _args(
@@ -662,248 +635,6 @@ class TestInstallRecords:
         ]
 
 
-class TestProfileResidue:
-    """Residue is what the previous configuration wrote that the new one does not install."""
-
-    def test_residue_lists_only_what_exists_and_is_not_reinstalled(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / '.claude'
-        profile_dir = claude_dir / 'p'
-        (profile_dir / 'agents').mkdir(parents=True)
-        (profile_dir / 'agents' / 'old.md').write_text('x', encoding='utf-8')
-        (profile_dir / 'agents' / 'kept.md').write_text('x', encoding='utf-8')
-        outside = tmp_path / 'shared.txt'
-        outside.write_bytes(b'shared')
-        manifest = {
-            'files_written': [
-                {'path': path, 'sha256': None} for path in ('agents/old.md', 'agents/kept.md', 'agents/gone-already.md')
-            ],
-            'mcp_servers': [
-                {'name': 'old-srv', 'scopes': ['user', 'profile'], 'sha256': {'user': _digest(_LIVE_ENTRY)}},
-                {'name': 'kept-srv', 'scopes': ['user'], 'sha256': {'user': _digest(_LIVE_ENTRY)}},
-                {'name': 'profile-only', 'scopes': ['profile'], 'sha256': {}},
-            ],
-            'os_env_written': [{'name': 'OLD_VAR', 'sha256': _digest('1')}, {'name': 'KEPT_VAR', 'sha256': _digest('1')}],
-            'settings_written': [_setting(['theme'], 'dark'), _setting(['model'], 'm')],
-            'machine_wide_destinations': [
-                {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)},
-            ],
-        }
-        config = {
-            'agents': ['agents/kept.md'],
-            'mcp-servers': [{'name': 'kept-srv'}],
-            'os-env-variables': {'KEPT_VAR': '1'},
-            'user-settings': {'theme': 'light'},
-        }
-        (profile_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
-
-        live = _live_machine(
-            {'OLD_VAR': '1', 'KEPT_VAR': '1'},
-            {'old-srv': {'user': _LIVE_ENTRY}, 'kept-srv': {'user': _LIVE_ENTRY}},
-        )
-
-        residue = setup_environment.profile_residue(
-            manifest, profile_dir, config, isolated=False, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
-            live=live,
-        )
-
-        assert residue == ProfileResidue(
-            files=[profile_dir / 'agents' / 'old.md'],
-            mcp_servers=[LeftoverEntry(LeftoverItem.mcp_server('old-srv', 'user', _digest(_LIVE_ENTRY)), 'removable')],
-            os_env=[LeftoverEntry(LeftoverItem.os_env('OLD_VAR', _digest('1')), 'removable')],
-            settings=[_setting_entry(['model'], 'm')],
-            destinations=[outside],
-            kept_destinations=[],
-            settings_dir=profile_dir,
-        )
-        assert bool(residue)
-        assert residue.lines() == [
-            f'file: {profile_dir / "agents" / "old.md"}',
-            'MCP server: old-srv (scope: user)',
-            'OS environment variable: OLD_VAR',
-            f'{profile_dir / "settings.json"}: model',
-            f'file outside ~/.claude: {outside}',
-        ]
-
-    def test_files_under_a_link_on_disk_are_never_residue(self, tmp_path: Path) -> None:
-        """A recorded file reached through a directory link belongs to the link's target, not to the profile."""
-        claude_dir = tmp_path / '.claude'
-        source = claude_dir / 'src'
-        (source / 'agents').mkdir(parents=True)
-        (source / 'agents' / 'old.md').write_text('x', encoding='utf-8')
-        profile_dir = claude_dir / 'p'
-        (profile_dir / 'rules').mkdir(parents=True)
-        (profile_dir / 'rules' / 'old.md').write_text('x', encoding='utf-8')
-        setup_environment.link_profile_directory(profile_dir / 'agents', source / 'agents')
-        manifest = {'files_written': [{'path': 'agents/old.md', 'sha256': None}, {'path': 'rules/old.md', 'sha256': None}]}
-
-        residue = setup_environment.profile_residue(
-            manifest, profile_dir, {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
-        )
-
-        assert residue.files == [profile_dir / 'rules' / 'old.md']
-        assert (source / 'agents' / 'old.md').is_file()
-
-    def test_machine_wide_controls_are_never_residue(self, tmp_path: Path) -> None:
-        """The binary controls belong to the pin gate and the Step 16 sweep, not to a configuration switch."""
-        manifest = {
-            'os_env_written': [
-                {'name': name, 'sha256': _digest('1')}
-                for name in ('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO')
-            ],
-            'settings_written': [
-                _setting(['env', 'DISABLE_AUTOUPDATER'], '1'), _setting(['env', 'DISABLE_UPDATES'], '1'),
-                _setting(['env', 'FOO'], 'x'), _setting(['theme'], 'dark'),
-            ],
-        }
-        config = {'user-settings': {'theme': 'light'}}
-        (tmp_path / '.claude').mkdir()
-        (tmp_path / '.claude' / 'settings.json').write_text(json.dumps({'theme': 'dark', 'env': {
-            'DISABLE_AUTOUPDATER': '1', 'DISABLE_UPDATES': '1', 'FOO': 'x',
-        }}), encoding='utf-8')
-
-        live = _live_machine(
-            dict.fromkeys(('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO'), '1'),
-            {},
-        )
-
-        residue = setup_environment.profile_residue(
-            manifest, tmp_path / '.claude', config, isolated=False, config_source='c.yaml', base_url=None,
-            claude_dir=tmp_path / '.claude', live=live,
-        )
-
-        assert [entry.item.path for entry in residue.os_env] == ['FOO']
-        assert residue.settings == [_setting_entry(['env', 'FOO'], 'x')]
-        assert residue.lines() == [
-            'OS environment variable: FOO', f'{tmp_path / ".claude" / "settings.json"}: env.FOO',
-        ]
-
-    def test_destination_another_profile_records_is_kept(self, tmp_path: Path) -> None:
-        """A destination outside ~/.claude that another installed profile records is listed, never removed."""
-        claude_dir = tmp_path / '.claude'
-        profile_dir = claude_dir / 'p'
-        outside = tmp_path / 'shared.txt'
-        outside.write_bytes(b'shared')
-        record = {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)}
-        _manifest(profile_dir, 'p', ['p'], machine_wide_destinations=[record])
-        _manifest(claude_dir / 'other', 'other', ['other'], machine_wide_destinations=[record])
-
-        with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
-            residue = setup_environment.profile_residue(
-                {'machine_wide_destinations': [record]}, profile_dir, {}, isolated=True,
-                config_source='c.yaml', base_url=None, claude_dir=claude_dir,
-            )
-
-        assert residue.destinations == []
-        assert residue.kept_destinations == [(outside, ['other'])]
-        assert not residue, 'a kept destination is nothing to remove'
-        assert residue.lines() == [f'file outside ~/.claude kept: {outside} (recorded by profile other)']
-
-    def test_destination_only_this_profile_records_is_residue(self, tmp_path: Path) -> None:
-        """Without another profile recording it, the destination is removable residue."""
-        claude_dir = tmp_path / '.claude'
-        profile_dir = claude_dir / 'p'
-        outside = tmp_path / 'shared.txt'
-        outside.write_bytes(b'shared')
-        record = {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)}
-        _manifest(profile_dir, 'p', ['p'], machine_wide_destinations=[record])
-        _manifest(claude_dir / 'other', 'other', ['other'])
-
-        with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
-            residue = setup_environment.profile_residue(
-                {'machine_wide_destinations': [record]}, profile_dir, {}, isolated=True,
-                config_source='c.yaml', base_url=None, claude_dir=claude_dir,
-            )
-
-        assert residue.destinations == [outside]
-        assert residue.kept_destinations == []
-
-    def test_isolated_profile_carries_no_settings_or_os_residue(self, tmp_path: Path) -> None:
-        manifest = {'os_env_written': ['OLD_VAR'], 'settings_written': [_setting(['theme'], 'dark')]}
-        residue = setup_environment.profile_residue(
-            manifest, tmp_path / 'p', {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=tmp_path,
-        )
-        assert not residue
-
-    def test_changed_destination_is_not_residue(self, tmp_path: Path) -> None:
-        outside = tmp_path / 'shared.txt'
-        outside.write_bytes(b'edited by the user')
-        manifest = {'machine_wide_destinations': [{'dest': str(outside), 'source': 's', 'sha256': 'recorded'}]}
-        residue = setup_environment.profile_residue(
-            manifest, tmp_path / 'p', {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=tmp_path,
-        )
-        assert residue.destinations == []
-
-    def test_remove_residue(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / '.claude'
-        profile_dir = claude_dir / 'p'
-        skill_file = profile_dir / 'skills' / 'old' / 'SKILL.md'
-        skill_file.parent.mkdir(parents=True)
-        skill_file.write_text('x', encoding='utf-8')
-        outside = tmp_path / 'shared.txt'
-        outside.write_bytes(b'x')
-        kept = tmp_path / 'kept.txt'
-        kept.write_bytes(b'x')
-        (claude_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
-        residue = ProfileResidue(
-            [skill_file],
-            [LeftoverEntry(LeftoverItem.mcp_server('old-srv', 'user', _digest(_LIVE_ENTRY)), 'removable')],
-            [LeftoverEntry(LeftoverItem.os_env('OLD_VAR', _digest('1')), 'removable')],
-            [_setting_entry(['model'], 'm')], [outside],
-            [(kept, ['other'])],
-        )
-        env = {'OLD_VAR': '1'}
-        mcp: dict[str, dict[str, Any]] = {'old-srv': {'user': _LIVE_ENTRY}}
-
-        with (
-            patch.object(setup_environment, 'find_command', return_value='/usr/bin/claude'),
-            patch.object(setup_environment, '_remove_mcp_server_from_cli_scopes',
-                         side_effect=lambda *_args: mcp.pop('old-srv')) as remove_mcp,
-            patch.object(setup_environment, 'set_all_os_env_variables',
-                         side_effect=lambda _vars: env.pop('OLD_VAR') is not None) as set_env,
-        ):
-            setup_environment.remove_profile_residue(
-                residue, profile_dir=profile_dir, claude_dir=claude_dir, live=_live_machine(env, mcp),
-            )
-
-        assert not skill_file.exists()
-        assert not skill_file.parent.exists(), 'the emptied skill directory is pruned'
-        assert (profile_dir / 'skills').exists()
-        assert not outside.exists()
-        assert kept.read_bytes() == b'x', 'a destination another profile records is never removed'
-        remove_mcp.assert_called_once_with('/usr/bin/claude', 'old-srv', ['user'], None, profile_dir)
-        set_env.assert_called_once_with({'OLD_VAR': None})
-        assert env == {}
-        assert mcp == {}
-        assert json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8')) == {'theme': 'dark'}
-
-    def test_remove_residue_deletes_env_entries_one_by_one(self, tmp_path: Path) -> None:
-        """A settings residue leaves the other variables of the env object in place."""
-        claude_dir = tmp_path / '.claude'
-        claude_dir.mkdir()
-        settings = claude_dir / 'settings.json'
-        settings.write_text(
-            json.dumps({'theme': 'dark', 'env': {'FOO': 'x', 'DISABLE_UPDATES': '1'}}), encoding='utf-8',
-        )
-        residue = ProfileResidue([], [], [], [_setting_entry(['env', 'FOO'], 'x')], [], [])
-
-        setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
-
-        assert json.loads(settings.read_text(encoding='utf-8')) == {'theme': 'dark', 'env': {'DISABLE_UPDATES': '1'}}
-
-    def test_remove_residue_drops_an_emptied_env_object(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / '.claude'
-        claude_dir.mkdir()
-        settings = claude_dir / 'settings.json'
-        settings.write_text(json.dumps({'theme': 'dark', 'env': {'FOO': 'x'}, 'model': 'm'}), encoding='utf-8')
-        residue = ProfileResidue(
-            [], [], [], [_setting_entry(['env', 'FOO'], 'x'), _setting_entry(['model'], 'm')], [], [],
-        )
-
-        setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
-
-        assert json.loads(settings.read_text(encoding='utf-8')) == {'theme': 'dark'}
-
-
 class TestGuardDecision:
     """A guard proceeds only with consent, and never under --yes, --dry-run or without a terminal."""
 
@@ -984,14 +715,30 @@ class TestEnvironmentNameChangeGuard:
 
 
 class TestConfigurationSwitchGuard:
-    """A different configuration for an installed profile needs consent and lists the residue."""
+    """A different configuration for an installed profile needs consent and lists the leftovers it removes."""
 
-    def test_same_identity_is_no_switch(self) -> None:
+    PROFILE = Path('/p')
+
+    def _guard(
+        self,
+        args: argparse.Namespace,
+        *entries: LeftoverEntry,
+        untracked: bool = False,
+        dropped_job: str | None = None,
+        new_identity: str = 'b',
+    ) -> tuple[bool, MagicMock]:
+        leftovers = LeftoverReport(
+            profile_name='p', profile_dir=self.PROFILE, entries=tuple(entries), untracked_note=untracked,
+        )
         with patch.object(setup_environment, 'guard_decision') as decide:
             switched = setup_environment.guard_configuration_switch(
-                _args(), manifest={}, profile_name='p', old_identity='a', new_identity='a', new_source='a',
-                residue=ProfileResidue([], [], [], [], [], []),
+                args, manifest={'config_source': 'a.yaml'}, profile_name='p', old_identity='a',
+                new_identity=new_identity, new_source='b.yaml', leftovers=leftovers, dropped_job=dropped_job,
             )
+        return switched, decide
+
+    def test_same_identity_is_no_switch(self) -> None:
+        switched, decide = self._guard(_args(), new_identity='a')
         assert switched is False
         decide.assert_not_called()
 
@@ -1014,34 +761,79 @@ class TestConfigurationSwitchGuard:
              '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1', CLI_REMEDY),
         ],
     )
-    def test_switch_names_the_source_and_the_residue(
+    def test_switch_names_the_source_and_the_leftovers_step_23_removes(
         self, args: argparse.Namespace, expected_given: str, expected_accepted: str | None, expected_remedy: str,
     ) -> None:
-        residue = ProfileResidue([Path('/p/agents/old.md')], [], [], [], [], [])
-        with patch.object(setup_environment, 'guard_decision') as decide:
-            switched = setup_environment.guard_configuration_switch(
-                args, manifest={'config_source': 'a.yaml'}, profile_name='p', old_identity='a', new_identity='b',
-                new_source='b.yaml', residue=residue,
-            )
+        switched, decide = self._guard(args, LeftoverEntry(LeftoverItem('file', 'agents/old.md', 'a'), 'removable'))
         assert switched is True
         kwargs = decide.call_args.kwargs
         assert kwargs['title'] == (
             f'Profile "p" was installed from a.yaml; {expected_given} names a different configuration, b.yaml.'
         )
-        assert kwargs['lines'] == ['The previous configuration leaves behind:', f'  file: {Path("/p/agents/old.md")}']
+        assert kwargs['lines'] == [
+            'The previous configuration leaves behind:',
+            f'  [remove] file: {self.PROFILE / "agents" / "old.md"}',
+            '  Step 23 removes each item marked [remove] only while it still holds what the setup wrote.',
+        ], 'the switch removes its leftovers the way --remove-leftovers does'
         assert kwargs['accepted_by'] == expected_accepted
         assert kwargs['remedy'][1] == expected_remedy, 'the remedy undoes the source the configuration came from'
 
-    def test_kept_destinations_are_listed_even_without_residue(self) -> None:
-        residue = ProfileResidue([], [], [], [], [], [(Path('/opt/tool.txt'), ['other'])])
-        with patch.object(setup_environment, 'guard_decision') as decide:
-            setup_environment.guard_configuration_switch(
-                _args(config='b.yaml', yes=True), manifest={'config_source': 'a.yaml'}, profile_name='p',
-                old_identity='a', new_identity='b', new_source='b.yaml', residue=residue,
-            )
+    def test_a_dry_run_names_what_step_23_would_remove(self) -> None:
+        _switched, decide = self._guard(
+            _args(config='b.yaml', switch_config=True, dry_run=True),
+            LeftoverEntry(LeftoverItem('file', 'agents/old.md', 'a'), 'removable'),
+        )
+        marker = '[would be removed in Step 23]'
+        assert decide.call_args.kwargs['lines'] == [
+            'The previous configuration leaves behind:',
+            f'  {marker} file: {self.PROFILE / "agents" / "old.md"}',
+            f'  Step 23 removes each item marked {marker} only while it still holds what the setup wrote.',
+        ]
+
+    def test_kept_and_changed_leftovers_are_listed_with_why_they_stay(self) -> None:
+        outside = Path('/opt/tool.txt')
+        _switched, decide = self._guard(
+            _args(config='b.yaml', yes=True),
+            LeftoverEntry(LeftoverItem('file', 'agents/edited.md', 'a'), 'changed'),
+            LeftoverEntry(LeftoverItem('destination', str(outside), 'b'), 'held', 'recorded by profile other'),
+        )
+        assert decide.call_args.kwargs['lines'] == [
+            'The previous configuration leaves behind:',
+            (
+                '  [changed since written: left in place, no longer tracked] '
+                f'file: {self.PROFILE / "agents" / "edited.md"}'
+            ),
+            f'  [kept: recorded by profile other] file outside ~/.claude: {outside}',
+            '  They stay in place.',
+        ]
+
+    def test_the_dropped_job_is_named_apart_from_the_leftovers(self) -> None:
+        _switched, decide = self._guard(
+            _args(config='b.yaml', yes=True),
+            LeftoverEntry(LeftoverItem('file', 'agents/old.md', 'a'), 'removable'),
+            dropped_job='cc-toolbox-update-p',
+        )
+        assert decide.call_args.kwargs['lines'] == [
+            'The previous configuration leaves behind:',
+            f'  [remove] file: {self.PROFILE / "agents" / "old.md"}',
+            '  scheduled update job: cc-toolbox-update-p (removed in Step 25)',
+            '  Step 23 removes each item marked [remove] only while it still holds what the setup wrote.',
+        ]
+        _switched, decide = self._guard(_args(config='b.yaml', yes=True), dropped_job='cc-toolbox-update-p')
+        assert decide.call_args.kwargs['lines'] == [
+            'The previous configuration leaves behind:',
+            '  scheduled update job: cc-toolbox-update-p (removed in Step 25)',
+        ]
+
+    def test_nothing_left_behind(self) -> None:
+        _switched, decide = self._guard(_args(config='b.yaml', yes=True))
+        assert decide.call_args.kwargs['lines'] == ['The previous configuration leaves nothing behind.']
+
+    def test_a_manifest_that_recorded_no_leftovers_says_so(self) -> None:
+        _switched, decide = self._guard(_args(config='b.yaml', yes=True), untracked=True)
         assert decide.call_args.kwargs['lines'] == [
             'The previous configuration leaves nothing behind.',
-            f'  file outside ~/.claude kept: {Path("/opt/tool.txt")} (recorded by profile other)',
+            '  Profile "p" was installed by a release that recorded no leftovers; they are tracked from this run on.',
         ]
 
 

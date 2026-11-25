@@ -349,7 +349,7 @@ class TestEnvironmentChangeGuard:
 
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestConfigurationSwitchGuard:
-    """A different configuration for an installed profile needs consent and sheds the residue."""
+    """A different configuration for an installed profile needs consent and removes its leftovers."""
 
     def _install_a(self, configs: Path, *, names: list[str] | None = None) -> tuple[Path, Path]:
         cfg_a = write_config(configs, 'a.yaml', {'name': 'A', 'agents': ['agents/core.md']})
@@ -360,7 +360,7 @@ class TestConfigurationSwitchGuard:
         assert run_main(argv) == 0
         return cfg_a, cfg_b
 
-    def test_refused_under_yes_listing_the_residue(
+    def test_refused_under_yes_listing_the_leftovers(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """The refusal names both configurations and what the previous one leaves behind."""
@@ -376,7 +376,7 @@ class TestConfigurationSwitchGuard:
             f'Profile "team-1" was installed from {cfg_a.resolve()}; the configuration argument names a '
             f'different configuration, {cfg_b.resolve()}.'
         ) in output
-        assert f'file: {profile_dir / "agents" / "core.md"}' in output
+        assert f'[remove] file: {profile_dir / "agents" / "core.md"}' in output
         assert 'Pass --switch-config (or set CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1)' in output
         assert home_state(e2e_isolated_home['home']) == before
 
@@ -405,10 +405,10 @@ class TestConfigurationSwitchGuard:
         assert 'Dry run: a real run stops here.' in _output(capsys)
 
     @pytest.mark.parametrize(('answer', 'switched'), [('n', False), ('y', True)])
-    def test_interactive_prompt_lists_the_residue(
+    def test_interactive_prompt_lists_the_leftovers(
         self, answer: str, switched: bool, e2e_isolated_home: dict[str, Path], configs: Path,
     ) -> None:
-        """No keeps the profile as it is; yes switches it and removes the residue."""
+        """No keeps the profile as it is; yes switches it and removes its leftovers."""
         cfg_a, cfg_b = self._install_a(configs, names=['team-1'])
         profile_dir = e2e_isolated_home['claude_dir'] / 'team-1'
 
@@ -424,7 +424,7 @@ class TestConfigurationSwitchGuard:
             assert (profile_dir / 'agents' / 'core.md').is_file()
 
     @pytest.mark.parametrize('how', ['flag', 'variable'])
-    def test_switch_config_accepts_and_removes_the_residue(
+    def test_switch_config_accepts_and_removes_the_leftovers(
         self, how: str, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -442,7 +442,7 @@ class TestConfigurationSwitchGuard:
 
         output = _output(capsys)
         assert 'Accepted via --switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1.' in output
-        assert f'Removed {profile_dir / "agents" / "core.md"}' in output
+        assert f'Removed leftover file: {profile_dir / "agents" / "core.md"}' in output
         assert not (profile_dir / 'agents' / 'core.md').exists()
         assert (profile_dir / 'agents' / 'other.md').is_file()
         assert read_manifest(profile_dir)['config_identity'] == setup_environment.config_identity_of(str(cfg_b.resolve()))
@@ -1633,10 +1633,10 @@ class TestSwitchKeepsSharedDestinations:
         assert run_main([str(cfg_b), *SKIP, '--yes', '--switch-config']) == 0
 
         output = _output(capsys)
-        assert f'file outside ~/.claude kept: {shared} (recorded by profile team-1)' in output
-        assert f'Removed {shared}' not in output
+        assert f'[kept: recorded by profile team-1] file outside ~/.claude: {shared}' in output
+        assert f'Removed leftover file outside ~/.claude: {shared}' not in output
         assert shared.read_text(encoding='utf-8') == 'identical content\n'
-        assert not (claude_dir / 'agents' / 'core.md').exists(), 'the profile residue is still removed'
+        assert not (claude_dir / 'agents' / 'core.md').exists(), 'the profile leftover is still removed'
         assert (claude_dir / 'agents' / 'other.md').is_file()
 
     def test_destination_only_this_profile_records_is_removed(
@@ -1650,9 +1650,9 @@ class TestSwitchKeepsSharedDestinations:
         assert run_main([str(cfg_b), *SKIP, '--yes', '--switch-config']) == 0
 
         output = _output(capsys)
-        assert f'file outside ~/.claude: {shared}' in output
-        assert f'Removed {shared}' in output
-        assert output.index('Step 18:') < output.index(f'Removed {shared}'), (
+        assert f'[remove] file outside ~/.claude: {shared}' in output
+        assert f'Removed leftover file outside ~/.claude: {shared}' in output
+        assert output.index('Step 18:') < output.index(f'Removed leftover file outside ~/.claude: {shared}'), (
             'the switch removes in Step 23, once the new configuration is in place'
         )
         assert not shared.exists()

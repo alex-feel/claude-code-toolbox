@@ -383,7 +383,7 @@ class TestRemoval:
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The switch guard lists the job as residue and --switch-config lets Step 25 remove it."""
+        """The switch guard names the job apart from the leftovers and --switch-config lets Step 25 remove it."""
         home = e2e_isolated_home['home']
         cfg = write_config(configs, 'env.yaml', _scheduled())
         other = write_config(configs, 'other.yaml', {'name': 'Other Env', 'user-settings': {'theme': 'light'}})
@@ -398,8 +398,8 @@ class TestRemoval:
         assert _job_record(home, fake_scheduler, JOB) is None
         assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
         output = _output(capsys)
-        assert f'scheduled update job: {JOB}' in output, 'the guard lists the job among the residue'
-        assert f'The scheduled update job {JOB} is removed in Step 25' in output
+        assert f'scheduled update job: {JOB} (removed in Step 25)' in output, 'the guard names the job'
+        assert output.count(f'scheduled update job: {JOB}') == 1, 'the job is no leftover row'
         assert f'Step 25: Removing the scheduled update job {JOB}...' in output
         assert f'Removed the scheduled update job {JOB}' in output
 

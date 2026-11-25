@@ -592,7 +592,6 @@ def _step(
     removal = setup_environment.run_leftovers_step(
         report,
         remove=remove,
-        switch_residue=None,
         download_failed=False,
         written=written or PlannedRecords(),
         live=_base_live(claude_dir, before_consent=False),
@@ -645,7 +644,7 @@ class TestStep23:
         report, _group = self._wired(claude_dir)
 
         assert setup_environment.run_leftovers_step(
-            report, remove=False, switch_residue=None, download_failed=False, written=PlannedRecords(),
+            report, remove=False, download_failed=False, written=PlannedRecords(),
             live=_base_live(claude_dir, before_consent=False), profile_dir=claude_dir, claude_dir=claude_dir,
             manifest_path=claude_dir / 'manifest.json', run_at='t',
         ) is None
@@ -725,40 +724,8 @@ class TestItemRecords:
         assert record['items'] == [_record('setting', ['theme'], 'dark')]
 
 
-class TestConfigurationSwitch:
-    """A switch removes the settings the previous configuration wrote, each only while unchanged."""
-
-    def test_switch_lists_and_removes_value_checked_settings(self, claude_dir: Path) -> None:
-        settings = _settings(claude_dir, {
-            'theme': 'light-by-hand', 'model': 'opus', 'permissions': {'allow': ['A', 'User']},
-            'env': {'DISABLE_UPDATES': '1'},
-        })
-        manifest = {'settings_written': [
-            _record('setting', ['theme'], 'dark'),
-            _record('setting', ['model'], 'opus'),
-            _record('setting-element', ['permissions', 'allow'], 'A'),
-            _record('setting', ['env', 'DISABLE_UPDATES'], '1'),
-        ]}
-
-        residue = setup_environment.profile_residue(
-            manifest, claude_dir, {}, isolated=False, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
-        )
-
-        assert residue.lines() == [
-            f'{settings}: model',
-            f'{settings}: permissions.allow element "A"',
-        ]
-        setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
-        assert _read(settings) == {
-            'theme': 'light-by-hand', 'permissions': {'allow': ['User']}, 'env': {'DISABLE_UPDATES': '1'},
-        }
-
-    def test_isolated_profile_carries_no_settings_residue(self, tmp_path: Path) -> None:
-        manifest = {'settings_written': [_record('setting', ['theme'], 'dark')]}
-        residue = setup_environment.profile_residue(
-            manifest, tmp_path / 'p', {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=tmp_path,
-        )
-        assert not residue
+class TestWrittenRecords:
+    """Step 23 reads back the settings items Step 20 recorded as written."""
 
     def test_written_settings_records_are_read_back_for_step_23(self) -> None:
         record = _record('setting', ['theme'], 'dark')

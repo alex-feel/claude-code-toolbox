@@ -33,7 +33,6 @@ from scripts.setup_environment import LeftoverRemoval
 from scripts.setup_environment import LeftoverReport
 from scripts.setup_environment import LiveLeftoverState
 from scripts.setup_environment import PlannedRecords
-from scripts.setup_environment import ProfileResidue
 
 _REAL_RECORD_MANIFEST_LEFTOVERS = setup_environment._record_manifest_leftovers
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -102,12 +101,10 @@ def _step(
     remove: bool = True,
     download_failed: bool = False,
     written: PlannedRecords | None = None,
-    switch_residue: ProfileResidue | None = None,
 ) -> LeftoverRemoval | None:
     return setup_environment.run_leftovers_step(
         report,
         remove=remove,
-        switch_residue=switch_residue,
         download_failed=download_failed,
         written=written or PlannedRecords(),
         live=live,
@@ -384,7 +381,7 @@ class TestComputeWithHookReferences:
 class TestRunLeftoversStep:
     """Step 23 derives each state again, removes what still holds what the setup wrote, and records the outcome."""
 
-    def test_nothing_runs_without_the_flag_or_a_switch(self, layout: tuple[Path, Path]) -> None:
+    def test_nothing_runs_without_the_flag(self, layout: tuple[Path, Path]) -> None:
         claude_dir, profile_dir = layout
         digest = _write(profile_dir / 'rules' / 'old.md', b'old')
         report = _report(profile_dir, _removable('rules/old.md', digest))
@@ -393,12 +390,10 @@ class TestRunLeftoversStep:
         assert (profile_dir / 'rules' / 'old.md').is_file()
 
     def test_nothing_runs_without_anything_to_look_at(self, layout: tuple[Path, Path]) -> None:
-        """A flagged run with no carried leftover, or a switch with an empty residue, has no Step 23 part."""
+        """A flagged run with no carried leftover has no Step 23 part."""
         claude_dir, profile_dir = layout
         gone = _report(profile_dir, LeftoverEntry(LeftoverItem('file', 'rules/gone.md', 'a'), 'gone', ''))
-        empty_switch = ProfileResidue([], [], [], [], [], [(claude_dir.parent / 'held.txt', ['other'])])
-        assert not setup_environment.leftovers_step_runs(gone, remove=True, switch_residue=None)
-        assert not setup_environment.leftovers_step_runs(gone, remove=False, switch_residue=empty_switch)
+        assert not setup_environment.leftovers_step_runs(gone, remove=True)
         assert _step(
             gone, live=_live(profile_dir), claude_dir=claude_dir, profile_dir=profile_dir, download_failed=True,
         ) is None, 'a download failure records no skip when there is nothing to remove'
@@ -553,45 +548,23 @@ class TestRunLeftoversStep:
         assert not _REAL_RECORD_MANIFEST_LEFTOVERS(tmp_path / 'manifest.json', {'items': []})
 
 
-class TestConfigurationSwitchInStep23:
-    """An accepted switch removes what the previous configuration left in Step 23, behind the download check."""
+class TestStep23AfterTheSummary:
+    """Step 23 looks at the links and the files this run wrote as they are when it removes, not as the summary saw them."""
 
-    def _switch(self, claude_dir: Path, profile_dir: Path) -> tuple[LeftoverReport, ProfileResidue]:
+    def _report(self, claude_dir: Path, profile_dir: Path) -> LeftoverReport:
         rule = _write(profile_dir / 'rules' / 'old.md', b'old')
         agent = _write(profile_dir / 'agents' / 'old.md', b'agent')
         manifest: dict[str, object] = {'files_written': [
             {'path': 'rules/old.md', 'sha256': rule}, {'path': 'agents/old.md', 'sha256': agent},
         ]}
-        report = setup_environment.compute_profile_leftovers(
+        return setup_environment.compute_profile_leftovers(
             manifest, profile_dir, profile_name='p', planned=PlannedRecords(), live=_live(profile_dir),
             claude_dir=claude_dir,
-        ).with_switch_removals([profile_dir / 'rules' / 'old.md'])
-        residue = ProfileResidue([profile_dir / 'rules' / 'old.md'], [], [], [], [], [])
-        return report, residue
-
-    def test_switch_removals_are_not_listed_but_stay_recorded_until_step_23(self, layout: tuple[Path, Path]) -> None:
-        claude_dir, profile_dir = layout
-        report, _residue = self._switch(claude_dir, profile_dir)
-        assert [entry.item.path for entry in report.listed()] == ['agents/old.md']
-        assert [item.path for item in report.carried()] == ['agents/old.md', 'rules/old.md']
-        assert report.with_switch_removals([]) is report
-
-    def test_the_switch_removes_in_step_23_and_the_record_says_so(self, layout: tuple[Path, Path]) -> None:
-        claude_dir, profile_dir = layout
-        report, residue = self._switch(claude_dir, profile_dir)
-
-        removal = _step(
-            report, live=_live(profile_dir), claude_dir=claude_dir, profile_dir=profile_dir,
-            remove=False, switch_residue=residue,
         )
 
-        assert _results(removal) == {'agents/old.md': 'kept', 'rules/old.md': 'removed'}
-        assert not (profile_dir / 'rules' / 'old.md').exists()
-        assert (profile_dir / 'agents' / 'old.md').is_file(), 'without the flag only the switch removes'
-
-    def test_a_switch_file_under_a_link_this_run_made_is_dropped_not_failed(self, layout: tuple[Path, Path]) -> None:
+    def test_a_file_under_a_link_this_run_made_is_dropped_not_failed(self, layout: tuple[Path, Path]) -> None:
         claude_dir, profile_dir = layout
-        report, residue = self._switch(claude_dir, profile_dir)
+        report = self._report(claude_dir, profile_dir)
         source = claude_dir / 'src'
         _write(source / 'rules' / 'old.md', b'old')
         (profile_dir / 'rules' / 'old.md').unlink()
@@ -600,7 +573,7 @@ class TestConfigurationSwitchInStep23:
 
         removal = _step(
             report, live=LiveLeftoverState.for_profile(profile_dir, claude_dir.parent), claude_dir=claude_dir,
-            profile_dir=profile_dir, remove=False, switch_residue=residue,
+            profile_dir=profile_dir,
         )
 
         assert removal is not None
@@ -608,55 +581,21 @@ class TestConfigurationSwitchInStep23:
             (o.entry.item.path, o.result, o.detail) for o in removal.outcomes
         ]
         assert (source / 'rules' / 'old.md').is_file(), "the source's file of the same name stays"
+        assert not (profile_dir / 'agents' / 'old.md').exists()
         assert not removal.failed()
 
-    def test_a_switch_removal_that_fails_is_carried(self, layout: tuple[Path, Path]) -> None:
-        claude_dir, profile_dir = layout
-        report, residue = self._switch(claude_dir, profile_dir)
-
-        with patch.object(Path, 'unlink', side_effect=PermissionError(13, 'Permission denied')):
-            removal = _step(
-                report, live=_live(profile_dir), claude_dir=claude_dir, profile_dir=profile_dir,
-                remove=False, switch_residue=residue,
-            )
-
-        assert removal is not None
-        assert [(o.entry.item.path, o.result) for o in removal.failed()] == [('rules/old.md', 'failed')]
-
-    def test_the_switch_never_removes_what_this_run_wrote(self, layout: tuple[Path, Path]) -> None:
+    def test_a_path_this_run_wrote_in_another_letter_case_is_never_removed(self, layout: tuple[Path, Path]) -> None:
         """A recorded spelling that differs only in letter case names the file this run installed."""
         claude_dir, profile_dir = layout
-        report, _residue = self._switch(claude_dir, profile_dir)
-        outside = claude_dir.parent / 'out' / 'tool.txt'
-        _write(outside, b'tool')
-        residue = ProfileResidue([profile_dir / 'Rules' / 'Old.md', profile_dir / 'agents' / 'old.md'], [], [], [], [
-            outside,
-        ], [])
-
-        _step(
-            report, live=_live(profile_dir), claude_dir=claude_dir, profile_dir=profile_dir, remove=False,
-            switch_residue=residue,
-            written=PlannedRecords(files=frozenset({'rules/old.md'}), destinations=frozenset({str(outside)})),
-        )
-
-        assert (profile_dir / 'rules' / 'old.md').is_file()
-        assert outside.is_file()
-        assert not (profile_dir / 'agents' / 'old.md').exists()
-
-    def test_a_download_failure_skips_the_switch_removal_and_keeps_its_items(self, layout: tuple[Path, Path]) -> None:
-        claude_dir, profile_dir = layout
-        report, residue = self._switch(claude_dir, profile_dir)
+        report = self._report(claude_dir, profile_dir)
 
         removal = _step(
             report, live=_live(profile_dir), claude_dir=claude_dir, profile_dir=profile_dir,
-            remove=False, switch_residue=residue, download_failed=True,
+            written=PlannedRecords(files=frozenset({'Rules/Old.md'})),
         )
 
-        assert removal is not None
-        assert removal.skipped == 'content downloads failed'
+        assert _results(removal) == {'agents/old.md': 'removed', 'rules/old.md': 'dropped'}
         assert (profile_dir / 'rules' / 'old.md').is_file()
-        record = setup_environment.leftovers_manifest_record(report, run_at='t', removal=removal)
-        assert [item['path'] for item in record['items']] == ['agents/old.md', 'rules/old.md']
 
 
 class TestReportRendering:

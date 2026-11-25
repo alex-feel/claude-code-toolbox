@@ -1201,40 +1201,42 @@ class TestManifestRecord:
         assert data['auto_update'] == {'time': '03:30', 'command': None, 'job': 'cc-toolbox-update-team-1'}
 
 
-class TestResidue:
-    """Switching to a configuration without the key lists the job as residue; Step 25 removes it."""
+class TestDroppedJob:
+    """A switch to a configuration without the key names the job apart from the leftovers; Step 25 removes it."""
 
-    def test_residue_lists_the_job_and_leaves_its_removal_to_step_24(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    def test_the_job_is_named_only_when_the_new_configuration_declares_no_auto_update(self, tmp_path: Path) -> None:
+        scheduler = FakeScheduler()
+        plan, _platform_ = _registered(tmp_path, scheduler)
+        manifest: dict[str, Any] = {'auto_update': {'time': '03:30', 'command': None, 'job': plan.name}}
+
+        assert setup_environment.dropped_scheduled_job(manifest, {'name': 'x'}) == plan.name
+        assert setup_environment.dropped_scheduled_job(manifest, {'name': 'x', 'auto-update': {'time': '04:00'}}) is None
+        assert setup_environment.dropped_scheduled_job({'auto_update': None}, {'name': 'x'}) is None
+        assert setup_environment.dropped_scheduled_job({}, {'name': 'x'}) is None
+
+    def test_the_job_is_never_a_leftover_and_step_25_removes_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The recorded job is residue when the new configuration declares no auto-update."""
         scheduler = FakeScheduler()
         plan, platform = _registered(tmp_path, scheduler)
         monkeypatch.setattr(setup_environment, 'default_scheduler_platform', lambda: platform)
-        manifest = {
+        manifest: dict[str, Any] = {
             'auto_update': {'time': '03:30', 'command': None, 'job': plan.name},
             'files_written': [], 'mcp_servers': [], 'os_env_written': [], 'settings_written': [],
-            'machine_wide_destinations': [],
+            'machine_wide_destinations': [], 'leftovers': {'items': []},
         }
-        monkeypatch.setattr(setup_environment, 'installed_profiles', lambda *_a, **_kw: [])
-        profile_dir = tmp_path / 'home' / '.claude' / 'team-1'
         claude_dir = tmp_path / 'home' / '.claude'
-        residue = setup_environment.profile_residue(
-            manifest, profile_dir, {'name': 'x'},
-            isolated=True, config_source='x.yaml', base_url=None, claude_dir=claude_dir,
+        profile_dir = claude_dir / 'team-1'
+        live = setup_environment.LiveLeftoverState(
+            file_digest=lambda _path: None, under_link=lambda _relative: False, destination_holders=lambda _dest: [],
         )
-        assert residue.scheduled_job == plan.name
-        assert bool(residue)
-        assert f'scheduled update job: {plan.name}' in residue.lines()
-        kept = setup_environment.profile_residue(
-            manifest, profile_dir, {'name': 'x', 'auto-update': {'time': '04:00'}},
-            isolated=True, config_source='x.yaml', base_url=None, claude_dir=claude_dir,
+
+        report = setup_environment.compute_profile_leftovers(
+            manifest, profile_dir, profile_name='team-1', planned=setup_environment.PlannedRecords(), live=live,
+            claude_dir=claude_dir,
         )
-        assert kept.scheduled_job is None
-        setup_environment.remove_profile_residue(residue, profile_dir=profile_dir, claude_dir=claude_dir)
-        assert plan.name in scheduler.jobs, 'the residue removal leaves the job to Step 25'
-        assert setup_environment.read_job_record(platform, plan.name) is not None
-        assert f'The scheduled update job {plan.name} is removed in Step 25' in capsys.readouterr().out
+
+        assert report.entries == (), 'the scheduled job stays outside the leftovers report'
         removal, _ = _plan(tmp_path, scheduler, spec=None, manifest=manifest)
         assert removal.action == 'remove'
         assert setup_environment.apply_scheduled_update(platform, removal, now=NOW) is None

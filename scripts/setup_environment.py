@@ -18737,8 +18737,8 @@ def _is_machine_wide_control_record(key: str) -> bool:
 
     Returns:
         True for a MACHINE_WIDE_ENV_CONTROLS variable. Those controls belong
-        to the pin gate and the Step 16 sweep, never to the residue of a
-        configuration switch.
+        to the pin gate and the Step 16 sweep, never to the leftovers of
+        earlier runs.
     """
     return key in MACHINE_WIDE_ENV_CONTROLS
 
@@ -18821,74 +18821,13 @@ def _declared_os_env_names(config: dict[str, Any]) -> frozenset[str]:
     return frozenset(str(name) for name in cast(dict[str, Any], variables)) if isinstance(variables, dict) else frozenset()
 
 
-class ProfileResidue(NamedTuple):
-    """What a profile's previous configuration left that a new one does not install.
-
-    Attributes:
-        files: Absolute paths of recorded profile files the new
-            configuration does not install and that still exist.
-        mcp_servers: The MCP server registrations, one per CLI scope, the
-            previous run recorded and the new configuration does not
-            declare, each still holding what the setup wrote.
-        os_env: The OS environment variables the previous run of a base
-            profile set and the new configuration does not declare, each
-            still holding the value the setup wrote; the machine-wide binary
-            controls are never among them.
-        settings: The values, list elements and hook groups the previous
-            run wrote into a base profile's settings.json and the new
-            configuration does not write, each still holding what the
-            setup wrote (a hook group may hold it in part); the machine-wide
-            binary controls are never among them.
-        destinations: Recorded destinations outside ~/.claude the new
-            configuration does not install, whose file still holds the
-            recorded content and which no other installed profile records.
-        kept_destinations: (path, profile names) of recorded destinations
-            outside ~/.claude the new configuration does not install but
-            another installed profile still records; they are listed and
-            never removed.
-        scheduled_job: The daily update job the previous run registered
-            and the new configuration does not declare, or None.
-        settings_dir: The directory of the settings.json the settings
-            residue lies in, or None when there is none.
-    """
-
-    files: list[Path]
-    mcp_servers: list['LeftoverEntry']
-    os_env: list['LeftoverEntry']
-    settings: list['LeftoverEntry']
-    destinations: list[Path]
-    kept_destinations: list[tuple[Path, list[str]]]
-    scheduled_job: str | None = None
-    settings_dir: Path | None = None
-
-    def __bool__(self) -> bool:
-        return any((
-            self.files, self.mcp_servers, self.os_env, self.settings, self.destinations, self.scheduled_job,
-        ))
-
-    def lines(self) -> list[str]:
-        """Render the residue one item per line, for a guard message."""
-        rendered = [f'file: {path}' for path in self.files]
-        if self.scheduled_job:
-            rendered.append(f'scheduled update job: {self.scheduled_job}')
-        rendered.extend(entry.item.label() for entry in [*self.mcp_servers, *self.os_env])
-        if self.settings_dir is not None:
-            rendered.extend(entry.display(self.settings_dir) for entry in self.settings)
-        rendered.extend(f'file outside ~/.claude: {path}' for path in self.destinations)
-        rendered.extend(
-            f'file outside ~/.claude kept: {path} (recorded by profile {", ".join(names)})'
-            for path, names in self.kept_destinations
-        )
-        return rendered
-
-
 def _destinations_recorded_elsewhere(home_dir: Path, profile_dir: Path) -> dict[str, list[str]]:
     """Map each destination outside ~/.claude to the other installed profiles that record it.
 
     Args:
         home_dir: User home directory.
-        profile_dir: The directory of the profile being switched, whose own
-            manifest is left out.
+        profile_dir: The directory of the profile whose leftovers are read,
+            whose own manifest is left out.
 
     Returns:
         Normalized destination path to the display names of the profiles
@@ -18921,203 +18860,6 @@ def _under_directory_link(profile_dir: Path, relative: str) -> bool:
     """
     parts = [part for part in relative.split('/') if part]
     return any(_is_directory_link(profile_dir.joinpath(*parts[:depth])) for depth in range(1, len(parts)))
-
-
-def profile_residue(
-    manifest: dict[str, Any],
-    profile_dir: Path,
-    config: dict[str, Any],
-    *,
-    isolated: bool,
-    config_source: str,
-    base_url: str | None,
-    claude_dir: Path,
-    reroot: ConfigHomeReroot | None = None,
-    live: 'LiveLeftoverState | None' = None,
-) -> ProfileResidue:
-    """Compute what switching a profile to another configuration leaves behind.
-
-    Args:
-        manifest: The profile's current manifest.
-        profile_dir: The profile directory.
-        config: The new resolved, component-selected configuration.
-        isolated: Whether the profile is isolated; the base profile's
-            settings.json and OS environment carry residue, an isolated
-            profile's config.json and env loaders are rebuilt each run.
-        config_source: Where the new configuration was loaded from.
-        base_url: The new configuration's base-url, or None.
-        claude_dir: The base ~/.claude directory.
-        reroot: The isolated run's rerooter, so the files the new
-            configuration installs are compared at their re-rooted paths,
-            which is how the previous run recorded them; None for a base
-            run.
-        live: Reads the OS environment variables and the MCP registrations
-            as they are now; None reads the profile's own.
-
-    Returns:
-        The residue; empty when the new configuration covers everything the
-        previous run recorded. A recorded file that lies under a directory
-        link on disk is never residue: it belongs to the link's target, so
-        removing it would edit another directory.
-    """
-    planned = set(planned_profile_files(config, profile_dir, reroot=reroot))
-    recorded_files = [
-        str(cast(dict[str, Any], record)['path'])
-        for record in cast(list[object], manifest.get('files_written') or [])
-        if isinstance(record, dict) and isinstance(cast(dict[str, Any], record).get('path'), str)
-    ]
-    files = [
-        profile_dir / relative
-        for relative in recorded_files
-        if relative not in planned
-        and (profile_dir / relative).is_file()
-        and not _under_directory_link(profile_dir, relative)
-    ]
-
-    # An MCP registration or an OS environment variable is residue only
-    # while it holds what the setup wrote. The machine-wide binary controls
-    # are never residue: the pin gate and the Step 16 sweep decide their
-    # removal, and a run that drops a pin while another installed profile
-    # still pins must leave them in place
-    if live is None:
-        live = LiveLeftoverState.for_profile(profile_dir, claude_dir.parent, isolated=isolated)
-    declared = PlannedRecords(os_env=_declared_os_env_names(config), mcp_servers=_declared_mcp_server_names(config))
-    servers = _machine_residue(_mcp_server_record_items(manifest), declared, live)
-    os_env: list[LeftoverEntry] = []
-    settings: list[LeftoverEntry] = []
-    if not isolated:
-        os_env = _machine_residue(_os_env_record_items(manifest), declared, live)
-        settings = _settings_residue(manifest, profile_dir, config)
-
-    new_downloads = [
-        cast(dict[str, Any], entry)
-        for entry in cast(list[object], config.get('files-to-download') or [])
-        if isinstance(entry, dict)
-    ]
-    new_destinations = {
-        _normalize_config_dir_key(str(record['dest']))
-        for record in machine_wide_download_records(new_downloads, config_source, base_url, claude_dir)
-        if record['dest']
-    }
-    # A destination another installed profile records is that profile's
-    # file too, so a switch lists it as kept instead of removing it
-    recorded_elsewhere = _destinations_recorded_elsewhere(claude_dir.parent, profile_dir)
-    destinations: list[Path] = []
-    kept_destinations: list[tuple[Path, list[str]]] = []
-    for record in cast(list[object], manifest.get('machine_wide_destinations') or []):
-        if not isinstance(record, dict):
-            continue
-        record_dict = cast(dict[str, Any], record)
-        dest = record_dict.get('dest')
-        if not isinstance(dest, str) or _normalize_config_dir_key(dest) in new_destinations:
-            continue
-        path = Path(dest)
-        if not path.is_file():
-            continue
-        holders = recorded_elsewhere.get(_normalize_config_dir_key(dest))
-        recorded_digest = record_dict.get('sha256')
-        if holders:
-            kept_destinations.append((path, holders))
-        elif recorded_digest is not None and _sha256_of_file(path) == recorded_digest:
-            destinations.append(path)
-
-    # The daily update job of the previous configuration, when the new one
-    # declares no auto-update (a declared key re-registers the job instead)
-    scheduled_job: str | None = None
-    recorded_job = manifest.get('auto_update')
-    if isinstance(recorded_job, dict) and config.get(AUTO_UPDATE_SCHEDULE_KEY) is None:
-        job_name = cast(dict[str, Any], recorded_job).get('job')
-        scheduled_job = str(job_name) if job_name else None
-    return ProfileResidue(
-        files, servers, os_env, settings, destinations, kept_destinations, scheduled_job,
-        settings_dir=profile_dir if settings else None,
-    )
-
-
-def _settings_residue(manifest: dict[str, Any], profile_dir: Path, config: dict[str, Any]) -> list['LeftoverEntry']:
-    """List what a base profile's previous configuration wrote into settings.json and a new one does not.
-
-    Args:
-        manifest: The profile's current manifest.
-        profile_dir: The base profile directory, which holds settings.json.
-        config: The new configuration.
-
-    Returns:
-        The recorded values, list elements and hook groups the new
-        configuration does not write that still hold what the setup wrote,
-        whole or, for a hook group, in part; none when settings.json cannot
-        be read.
-    """
-    planned = PlannedRecords(settings=tuple(_settings_items_of(planned_settings_records(config, profile_dir))))
-    try:
-        content = _read_settings_object(profile_dir / SETTINGS_FILE_NAME)
-    except LeftoverReadError:
-        return []
-    entries = (
-        settings_item_state(item, content, written=planned)
-        for item in _settings_items_of(cast(list[object], manifest.get(SETTINGS_WRITTEN_KEY) or []))
-        if not planned.writes(item)
-    )
-    return [entry for entry in entries if entry.state in _REMOVABLE_LEFTOVER_STATES]
-
-
-def remove_profile_residue(
-    residue: ProfileResidue,
-    *,
-    profile_dir: Path,
-    claude_dir: Path,
-    written: 'PlannedRecords | None' = None,
-    live: 'LiveLeftoverState | None' = None,
-) -> None:
-    """Remove what a profile's previous configuration left behind.
-
-    Args:
-        residue: The residue profile_residue() computed.
-        profile_dir: The profile directory.
-        claude_dir: The base ~/.claude directory, whose settings.json holds
-            a base profile's settings residue.
-        written: What this run's own steps wrote, whose hook groups a
-            settings removal never touches; None when nothing was written.
-        live: Reads the OS environment variables and the MCP registrations,
-            each checked again right before its removal; None reads the
-            profile's own.
-    """
-    if residue.settings:
-        # Each value, element and hook group leaves only while it still
-        # holds what the setup wrote, checked again as the file is now
-        remove_settings_leftovers(
-            claude_dir / SETTINGS_FILE_NAME, residue.settings, written=written or PlannedRecords(),
-        )
-    for path in [*residue.files, *residue.destinations]:
-        try:
-            path.unlink()
-            success(f'Removed {path}')
-        except OSError as e:
-            warning(f'Cannot remove {path}: {e}')
-    skills_dir = profile_dir / 'skills'
-    for path in residue.files:
-        parent = path.parent
-        while _relative_inside(parent, skills_dir) is not None:
-            try:
-                if any(parent.iterdir()):
-                    break
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
-    if residue.os_env or residue.mcp_servers:
-        isolated = profile_dir != claude_dir
-        if live is None:
-            live = LiveLeftoverState.for_profile(profile_dir, claude_dir.parent, isolated=isolated)
-        # Each variable and registration leaves only while it still holds
-        # what the setup wrote, checked again as it is now
-        remove_os_env_leftovers(residue.os_env, live)
-        remove_mcp_leftovers(residue.mcp_servers, live, config_dir=profile_dir if isolated else None)
-    if residue.scheduled_job:
-        # The job is removed by Step 25, which checks the rights the removal
-        # needs, reports a refused removal and keeps the job recorded until
-        # it is gone; here the residue only names it
-        info(f'The scheduled update job {residue.scheduled_job} is removed in Step 25')
 
 
 # ---------------------------------------------------------------------------
@@ -20512,36 +20254,28 @@ class LeftoverReport:
             kind sorted by path.
         untracked_note: Whether the manifest has no leftovers field, so the
             run says once that tracking starts with it.
-        switch_keys: The identities of the leftovers an accepted
-            configuration switch removes in Step 23; the switch guard lists
-            them, so the leftovers block does not.
     """
 
     profile_name: str
     profile_dir: Path
     entries: tuple[LeftoverEntry, ...]
     untracked_note: bool
-    switch_keys: frozenset[tuple[str, str]] = frozenset()
 
     def has_content(self) -> bool:
         """Report whether the summary has anything to show."""
-        return bool(self.listed()) or self.untracked_note
-
-    def listed(self) -> list[LeftoverEntry]:
-        """Return the leftovers the summary lists: all but those an accepted switch removes."""
-        return [entry for entry in self.entries if entry.item.key() not in self.switch_keys]
+        return bool(self.entries) or self.untracked_note
 
     def removable_destinations(self) -> list[str]:
-        """Return the listed destinations outside ~/.claude that still hold what the setup wrote."""
+        """Return the destinations outside ~/.claude that still hold what the setup wrote."""
         return [
-            entry.item.path for entry in self.listed()
+            entry.item.path for entry in self.entries
             if entry.item.kind == LEFTOVER_DESTINATION and entry.state == LEFTOVER_REMOVABLE
         ]
 
     def removable_project_mcp_servers(self) -> list[str]:
-        """Return the listed project-scope MCP servers, registered in the working directory, still as registered."""
+        """Return the project-scope MCP servers, registered in the working directory, still as registered."""
         return [
-            entry.item.path for entry in self.listed()
+            entry.item.path for entry in self.entries
             if entry.item.kind == LEFTOVER_MCP_SERVER and entry.item.scope == 'project'
             and entry.state == LEFTOVER_REMOVABLE
         ]
@@ -20584,34 +20318,6 @@ class LeftoverReport:
             for entry in entries
         ))
 
-    def with_switch_removals(self, removed: Iterable[Path], items: Iterable[LeftoverItem] = ()) -> 'LeftoverReport':
-        """Mark the leftovers an accepted configuration switch removes in Step 23.
-
-        The switch guard lists them, so the leftovers block does not; they
-        stay recorded until Step 23 removes them, and stay recorded after
-        it when a failed content download skips the removal.
-
-        Args:
-            removed: The absolute paths of the files and destinations the
-                accepted switch removes.
-            items: The settings.json items, OS environment variables and MCP
-                server registrations the accepted switch removes.
-
-        Returns:
-            The report with those leftovers marked.
-        """
-        removed_keys = {_destination_key(str(path)) for path in removed}
-        item_keys = {item.key() for item in items}
-        if not removed_keys and not item_keys:
-            return self
-        return replace(self, switch_keys=frozenset(
-            entry.item.key() for entry in self.entries
-            if entry.item.key() in item_keys or (
-                entry.item.has_path()
-                and _destination_key(str(entry.item.location(self.profile_dir))) in removed_keys
-            )
-        ))
-
     def carried(self) -> list[LeftoverItem]:
         """Return the leftovers the manifest keeps recorded for the next run."""
         return [entry.item for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES]
@@ -20620,27 +20326,39 @@ class LeftoverReport:
         """Return the leftovers reported once and dropped from the record."""
         return [entry for entry in self.entries if entry.state not in _CARRIED_LEFTOVER_STATES]
 
-    def lines(self, *, remove: bool = False, dry_run: bool = False, scheduled: bool = False) -> list[str]:
-        """Render the rows of the installation summary's leftovers block, with its notes.
+    def rows(self, *, remove: bool = False, dry_run: bool = False) -> list[str]:
+        """Render one row per leftover, marked with what the run does with it.
 
         Args:
-            remove: Whether Step 23 removes the leftovers (--remove-leftovers).
+            remove: Whether Step 23 removes the leftovers: the run was given
+                --remove-leftovers, or an accepted configuration switch
+                removes them.
+            dry_run: Whether the run is a dry run, which removes nothing.
+
+        Returns:
+            The rows.
+        """
+        return [
+            f'[{_leftover_marker(entry, remove=remove, dry_run=dry_run)}] {entry.display(self.profile_dir)}'
+            for entry in self.entries
+        ]
+
+    def notes(self, *, remove: bool = False, dry_run: bool = False, scheduled: bool = False) -> list[str]:
+        """Render the notes below the rows: what stays, what Step 23 removes or how to have it removed.
+
+        Args:
+            remove: Whether Step 23 removes the leftovers (see rows()).
             dry_run: Whether the run is a dry run, which removes nothing.
             scheduled: Whether the run is a scheduled run, which only lists
                 leftovers: the note names the manual run that removes them.
 
         Returns:
-            One row per listed leftover, then the notes on what stays, what
-            Step 23 removes or how to have it removed, and the one-time note
-            of a manifest that recorded no leftovers.
+            The notes, then the one-time note of a manifest that recorded no
+            leftovers.
         """
-        listed = self.listed()
-        rendered = [
-            f'[{_leftover_marker(entry, remove=remove, dry_run=dry_run)}] {entry.display(self.profile_dir)}'
-            for entry in listed
-        ]
-        carried = [entry for entry in listed if entry.state in _CARRIED_LEFTOVER_STATES]
-        removable = [entry for entry in listed if entry.state in _REMOVABLE_LEFTOVER_STATES]
+        rendered: list[str] = []
+        carried = [entry for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES]
+        removable = [entry for entry in self.entries if entry.state in _REMOVABLE_LEFTOVER_STATES]
         if remove and removable:
             others = '; the others stay in place.' if len(carried) > len(removable) else '.'
             rendered.append(
@@ -20659,6 +20377,22 @@ class LeftoverReport:
                 'they are tracked from this run on.',
             )
         return rendered
+
+    def lines(self, *, remove: bool = False, dry_run: bool = False, scheduled: bool = False) -> list[str]:
+        """Render the installation summary's leftovers block: the rows, then the notes.
+
+        Args:
+            remove: Whether Step 23 removes the leftovers (see rows()).
+            dry_run: Whether the run is a dry run, which removes nothing.
+            scheduled: Whether the run is a scheduled run (see notes()).
+
+        Returns:
+            The block's lines.
+        """
+        return [
+            *self.rows(remove=remove, dry_run=dry_run),
+            *self.notes(remove=remove, dry_run=dry_run, scheduled=scheduled),
+        ]
 
     def completion_sections(self, removal: 'LeftoverRemoval | None' = None) -> list[tuple[str, list[str]]]:
         """Render the completion summary's leftovers headlines, each with its items.
@@ -20807,30 +20541,6 @@ def _machine_leftover_entry(item: LeftoverItem, live: LiveLeftoverState) -> Left
     if not found:
         return LeftoverEntry(item, LEFTOVER_GONE)
     return LeftoverEntry(item, LEFTOVER_REMOVABLE if found == [item.sha256] else LEFTOVER_CHANGED)
-
-
-def _machine_residue(
-    records: list[object],
-    declared: PlannedRecords,
-    live: LiveLeftoverState,
-) -> list[LeftoverEntry]:
-    """List the recorded variables or server registrations a switch removes: undeclared and still as written.
-
-    Args:
-        records: The leftover records of what the previous run wrote.
-        declared: What the new configuration declares.
-        live: The live readers.
-
-    Returns:
-        The removable entries.
-    """
-    items = (LeftoverItem.from_record(record, claude_dir=Path()) for record in records)
-    entries = (
-        _machine_leftover_entry(item, live) for item in items
-        if item is not None and item.sha256 is not None and not _is_machine_wide_item(item)
-        and not declared.writes(item)
-    )
-    return [entry for entry in entries if entry.state == LEFTOVER_REMOVABLE]
 
 
 def _leftover_entry(
@@ -21130,49 +20840,11 @@ def _record_manifest_leftovers(manifest_path: Path, record: dict[str, Any]) -> b
     return True
 
 
-def _residue_to_remove(residue: ProfileResidue, profile_dir: Path, written: PlannedRecords) -> ProfileResidue:
-    """Leave out of a switch's removal every file a link now reaches or this run wrote.
-
-    The switch's residue is computed before Step 3 creates the run's links,
-    so a file listed then may lie in another profile's directory by Step 23;
-    and a recorded path that differs from one the new configuration installs
-    only in letter case names the file this run just wrote on a
-    case-insensitive file system.
-
-    Args:
-        residue: The residue the switch guard listed.
-        profile_dir: The profile directory.
-        written: What this run's own steps wrote.
-
-    Returns:
-        The residue without those files, destinations, settings items,
-        variables and server registrations.
-    """
-    def _kept(path: Path) -> bool:
-        relative = _relative_inside(path, profile_dir)
-        if relative is None:
-            return False
-        return _under_directory_link(profile_dir, relative.as_posix()) or written.writes(
-            LeftoverItem(LEFTOVER_FILE, relative.as_posix(), None),
-        )
-
-    return residue._replace(
-        files=[path for path in residue.files if not _kept(path)],
-        destinations=[
-            path for path in residue.destinations
-            if not written.writes(LeftoverItem(LEFTOVER_DESTINATION, str(path), None))
-        ],
-        settings=[entry for entry in residue.settings if not written.writes(entry.item)],
-        os_env=[entry for entry in residue.os_env if not written.writes(entry.item)],
-        mcp_servers=[entry for entry in residue.mcp_servers if not written.writes(entry.item)],
-    )
-
-
-def leftovers_step_runs(report: LeftoverReport | None, *, remove: bool, switch_residue: ProfileResidue | None) -> bool:
-    """Report whether Step 23 has leftovers to look at: carried ones under the flag, or a switch's residue."""
+def leftovers_step_runs(report: LeftoverReport | None, *, remove: bool) -> bool:
+    """Report whether Step 23 has leftovers to look at: carried ones, in a run that removes leftovers."""
     if report is None:
         return False
-    return (remove and bool(report.carried())) or bool(switch_residue)
+    return remove and bool(report.carried())
 
 
 def _remove_leftover(entry: LeftoverEntry, profile_dir: Path) -> str | None:
@@ -21212,22 +20884,11 @@ def _prune_emptied_skill_directories(removed: list[Path], skills_dir: Path) -> N
             parent = parent.parent
 
 
-def _leftover_step_decision(
-    entry: LeftoverEntry,
-    *,
-    remove: bool,
-    switch_ran: bool,
-    in_switch: bool,
-    written: PlannedRecords,
-) -> LeftoverOutcome | None:
+def _leftover_step_decision(entry: LeftoverEntry, *, written: PlannedRecords) -> LeftoverOutcome | None:
     """Decide what Step 23 does with one leftover, as found an instant before.
 
     Args:
         entry: The leftover with the state Step 23 found.
-        remove: Whether the run removes leftovers (--remove-leftovers).
-        switch_ran: Whether an accepted configuration switch removed its
-            residue in this step.
-        in_switch: Whether the switch's removal covered this leftover.
         written: What this run's own steps wrote.
 
     Returns:
@@ -21235,14 +20896,9 @@ def _leftover_step_decision(
     """
     if written.writes(entry.item):
         return LeftoverOutcome(entry, LEFTOVER_DROPPED, LEFTOVER_WRITTEN_AGAIN)
-    if switch_ran and in_switch:
-        if entry.state == LEFTOVER_GONE:
-            return LeftoverOutcome(entry, LEFTOVER_REMOVED)
-        if entry.state in _CARRIED_LEFTOVER_STATES:
-            return LeftoverOutcome(entry, LEFTOVER_FAILED, 'the configuration switch could not remove it')
     if entry.state not in _CARRIED_LEFTOVER_STATES:
         return LeftoverOutcome(entry, LEFTOVER_DROPPED, _DROPPED_LEFTOVER_REASONS[entry.state])
-    if entry.state not in _REMOVABLE_LEFTOVER_STATES or not remove:
+    if entry.state not in _REMOVABLE_LEFTOVER_STATES:
         return LeftoverOutcome(entry, LEFTOVER_KEPT, entry.detail)
     return None
 
@@ -21360,9 +21016,6 @@ def remove_mcp_leftovers(
 def _leftover_step_outcome(
     entry: LeftoverEntry,
     *,
-    remove: bool,
-    switch_ran: bool,
-    in_switch: bool,
     written: PlannedRecords,
     profile_dir: Path,
 ) -> LeftoverOutcome:
@@ -21370,19 +21023,13 @@ def _leftover_step_outcome(
 
     Args:
         entry: The leftover with the state Step 23 found.
-        remove: Whether the run removes leftovers (--remove-leftovers).
-        switch_ran: Whether an accepted configuration switch removed its
-            residue in this step.
-        in_switch: Whether the switch's removal covered this leftover.
         written: What this run's own steps wrote.
         profile_dir: The profile directory.
 
     Returns:
         The outcome.
     """
-    decided = _leftover_step_decision(
-        entry, remove=remove, switch_ran=switch_ran, in_switch=in_switch, written=written,
-    )
+    decided = _leftover_step_decision(entry, written=written)
     if decided is not None:
         return decided
     failure = _remove_leftover(entry, profile_dir)
@@ -21396,9 +21043,6 @@ def _leftover_step_outcome(
 def _batched_step_outcomes(
     entries: Sequence[LeftoverEntry],
     *,
-    remove: bool,
-    switch_ran: bool,
-    switch_keys: frozenset[tuple[str, str]],
     written: PlannedRecords,
     remover: Callable[[list[LeftoverEntry]], list[LeftoverOutcome]],
 ) -> list[LeftoverOutcome]:
@@ -21406,10 +21050,6 @@ def _batched_step_outcomes(
 
     Args:
         entries: The leftovers with the states Step 23 found.
-        remove: Whether the run removes leftovers (--remove-leftovers).
-        switch_ran: Whether an accepted configuration switch removed its
-            residue in this step.
-        switch_keys: The identities the switch's removal covered.
         written: What this run's own steps wrote.
         remover: Removes the leftovers Step 23 decided to remove and returns
             one outcome for each, in order: the settings.json remover (one
@@ -21419,12 +21059,7 @@ def _batched_step_outcomes(
     Returns:
         One outcome per entry, in order.
     """
-    decided = [
-        _leftover_step_decision(
-            entry, remove=remove, switch_ran=switch_ran, in_switch=entry.item.key() in switch_keys, written=written,
-        )
-        for entry in entries
-    ]
+    decided = [_leftover_step_decision(entry, written=written) for entry in entries]
     to_remove = [entry for entry, outcome in zip(entries, decided, strict=True) if outcome is None]
     removed = iter(remover(to_remove) if to_remove else [])
     return [outcome if outcome is not None else next(removed) for outcome in decided]
@@ -21466,7 +21101,6 @@ def run_leftovers_step(
     report: LeftoverReport | None,
     *,
     remove: bool,
-    switch_residue: ProfileResidue | None,
     download_failed: bool,
     written: PlannedRecords,
     live: LiveLeftoverState,
@@ -21481,20 +21115,18 @@ def run_leftovers_step(
     files and manifests are now: a path a link reaches since the summary,
     a destination another profile records since, a hook file a settings
     file wires since, an edit, a removal. A leftover this run's own steps
-    wrote again is dropped before anything is removed. An accepted
-    configuration switch removes its residue first, its files reached
-    through a link left out. The settings.json leftovers go before the
-    files, so a hook file is checked against settings.json as their
-    removal leaves it: a hook file and the hook group wiring it leave
-    together. The OS environment variables follow, with one call of the
-    OS environment writer for all, and the MCP server registrations last.
+    wrote again is dropped before anything is removed. The settings.json
+    leftovers go before the files, so a hook file is checked against
+    settings.json as their removal leaves it: a hook file and the hook group
+    wiring it leave together. The OS environment variables follow, with one
+    call of the OS environment writer for all, and the MCP server
+    registrations last.
 
     Args:
         report: The leftovers the run found before consent, or None for a
             first install.
-        remove: Whether the run was given --remove-leftovers.
-        switch_residue: What an accepted configuration switch removes, or
-            None.
+        remove: Whether the run removes leftovers: it was given
+            --remove-leftovers, or it accepted a configuration switch.
         download_failed: Whether a content download of this run failed;
             then nothing is removed, because the files the configuration
             installs in place of the leftovers may be missing.
@@ -21510,23 +21142,13 @@ def run_leftovers_step(
         The outcome, or None when Step 23 has nothing to look at (see
         leftovers_step_runs()).
     """
-    if report is None or not leftovers_step_runs(report, remove=remove, switch_residue=switch_residue):
+    if report is None or not leftovers_step_runs(report, remove=remove):
         return None
     if download_failed:
         warning(f'Leftovers not removed: {LEFTOVERS_SKIPPED_DOWNLOADS}; they stay recorded')
         removal = LeftoverRemoval(skipped=LEFTOVERS_SKIPPED_DOWNLOADS)
     else:
-        if switch_residue:
-            info(f'Removing what the previous configuration of "{report.profile_name}" left behind...')
-            remove_profile_residue(
-                _residue_to_remove(switch_residue, profile_dir, written),
-                profile_dir=profile_dir, claude_dir=claude_dir, written=written, live=live,
-            )
-        looked_at = [
-            entry for entry in report.entries
-            if entry.state in _CARRIED_LEFTOVER_STATES or entry.item.key() in report.switch_keys
-        ]
-        switch_ran = switch_residue is not None
+        looked_at = [entry for entry in report.entries if entry.state in _CARRIED_LEFTOVER_STATES]
         config_dir = profile_dir if profile_dir != claude_dir else None
 
         def _batch(
@@ -21537,7 +21159,7 @@ def run_leftovers_step(
                     _leftover_entry(entry.item, profile_dir, live, written=written)
                     for entry in looked_at if entry.item.kind in kinds
                 ],
-                remove=remove, switch_ran=switch_ran, switch_keys=report.switch_keys, written=written,
+                written=written,
                 remover=remover,
             )
 
@@ -21547,10 +21169,7 @@ def run_leftovers_step(
         )
         path_entries = [_leftover_entry(entry.item, profile_dir, live) for entry in looked_at if entry.item.has_path()]
         path_outcomes = [
-            _leftover_step_outcome(
-                entry, remove=remove, switch_ran=switch_ran,
-                in_switch=entry.item.key() in report.switch_keys, written=written, profile_dir=profile_dir,
-            )
+            _leftover_step_outcome(entry, written=written, profile_dir=profile_dir)
             for entry in _hold_with_wired_hook_files(path_entries, live)
         ]
         _prune_emptied_skill_directories(
@@ -21763,9 +21382,8 @@ def write_manifest(
     hash), and the
     leftovers of earlier runs it carries. A re-run reads the names, the delta and the identity,
     and lists as leftovers what the written records and the carried
-    leftovers hold and its configuration no longer installs; the switch
-    guard reads the written records to list the residue another
-    configuration would leave; _other_profile_pins() reads the pin to decide
+    leftovers hold and its configuration no longer installs, which the
+    switch guard lists too; _other_profile_pins() reads the pin to decide
     whether the machine-global update controls are still needed. When
     resolved_config is given, resolved-config.yaml is written beside the
     manifest and config_digest is its sha256.
@@ -25281,6 +24899,28 @@ def guard_environment_name_change(
     )
 
 
+def dropped_scheduled_job(manifest: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """Name the daily update job a profile keeps that a configuration no longer declares.
+
+    The job is no leftover: Step 25 removes it, with the rights check the
+    removal needs and the job record kept until it is gone.
+
+    Args:
+        manifest: The profile's manifest.
+        config: The configuration this run installs.
+
+    Returns:
+        The job the manifest records when the configuration declares no
+        auto-update (a declared key registers the job again instead), else
+        None.
+    """
+    recorded = manifest.get('auto_update')
+    if not isinstance(recorded, dict) or config.get(AUTO_UPDATE_SCHEDULE_KEY) is not None:
+        return None
+    job = cast(dict[str, Any], recorded).get('job')
+    return str(job) if job else None
+
+
 def guard_configuration_switch(
     args: argparse.Namespace,
     *,
@@ -25289,9 +24929,13 @@ def guard_configuration_switch(
     old_identity: str,
     new_identity: str,
     new_source: str,
-    residue: ProfileResidue,
+    leftovers: LeftoverReport,
+    dropped_job: str | None,
 ) -> bool:
     """Hold a run back when a different configuration would re-provision a profile.
+
+    An accepted switch removes the leftovers in Step 23 the way
+    --remove-leftovers does, so the guard lists them as that run would.
 
     Args:
         args: Arguments after resolve_args().
@@ -25300,10 +24944,13 @@ def guard_configuration_switch(
         old_identity: The configuration identity the manifest records.
         new_identity: The identity of the configuration this run was given.
         new_source: The resolved source of that configuration.
-        residue: What the previous configuration leaves behind.
+        leftovers: What the profile's earlier runs wrote and the new
+            configuration does not install.
+        dropped_job: The daily update job the new configuration drops
+            (see dropped_scheduled_job()), which Step 25 removes, or None.
 
     Returns:
-        True when the run switches the profile (and removes the residue
+        True when the run switches the profile (and removes its leftovers
         after consent); False when both identities match.
     """
     if old_identity == new_identity:
@@ -25311,11 +24958,14 @@ def guard_configuration_switch(
     from_environment = args.origins.get('config') == 'env'
     given = 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if from_environment else 'the configuration argument'
     old_source = manifest.get('config_source')
-    rendered = [f'  {line}' for line in residue.lines()]
-    lines = (
-        ['The previous configuration leaves behind:', *rendered] if residue
-        else ['The previous configuration leaves nothing behind.', *rendered]
+    rows = leftovers.rows(remove=True, dry_run=bool(args.dry_run))
+    job = [f'scheduled update job: {dropped_job} (removed in Step 25)'] if dropped_job else []
+    notes = leftovers.notes(remove=True, dry_run=bool(args.dry_run))
+    heading = (
+        'The previous configuration leaves behind:' if rows or job
+        else 'The previous configuration leaves nothing behind.'
     )
+    lines = [heading, *(f'  {line}' for line in [*rows, *job, *notes])]
     accepted = '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1' if args.switch_config else None
     # The remedy undoes the source the configuration came from
     if from_environment:
@@ -26765,8 +26415,8 @@ def main() -> None:
     parser.add_argument(
         '--switch-config',
         action='store_true',
-        help='Accept a different configuration for an existing profile and remove what the '
-        'previous configuration left behind',
+        help='Accept a different configuration for an existing profile and remove its leftovers in Step 23 '
+        'as --remove-leftovers does',
     )
     parser.add_argument(
         '--remove-leftovers',
@@ -27082,11 +26732,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
 
         # An isolated run keeps every path that names the base config home
         # inside its own profile. The rerooter is built as soon as the
-        # target directory is known, because the switch guard below
-        # compares the previous run's records with the files this
-        # configuration installs at their re-rooted paths; the
-        # configuration itself is rewritten after the snapshot records it
-        # as authored
+        # target directory is known, because the leftovers below compare the
+        # previous run's records with the files this configuration installs
+        # at their re-rooted paths; the configuration itself is rewritten
+        # after the snapshot records it as authored
         installed = installed_profiles(get_real_user_home())
         reroot: ConfigHomeReroot | None = None
         if primary_command_name:
@@ -27097,10 +26746,9 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             )
 
         # Hold the run back, before any write, when the environment would
-        # change the names an installed profile remembers, or when a
-        # different configuration would re-provision it; the switch guard
-        # lists what the previous configuration leaves behind, and the run
-        # removes it after consent
+        # change the names an installed profile remembers or its links; the
+        # switch guard below holds it back when a different configuration
+        # would re-provision it
         guard_environment_name_change(args, effective_command_names, target_manifest, profile_name)
         guard_environment_link_change(args, link_spec, target_manifest, profile_name)
         dependents = content_dependents(home_dir, profile_name)
@@ -27122,10 +26770,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 for line in dependents_remedy(dependents):
                     info(line)
                 sys.exit(1)
-        # What the leftovers and the switch residue are read against before
-        # consent: the settings files a session reads (the ones Step 18
-        # rebuilds left out), the dependents that link hooks/ from this
-        # profile, the OS environment and the MCP registrations
+        # What the leftovers are read against before consent: the settings
+        # files a session reads (the ones Step 18 rebuilds left out), the
+        # dependents that link hooks/ from this profile, the OS environment
+        # and the MCP registrations
         pre_consent_live = LiveLeftoverState.for_profile(
             target_config_dir, home_dir,
             settings_files=leftover_settings_files(
@@ -27134,7 +26782,22 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             dependents=dependents,
             isolated=bool(primary_command_name),
         )
-        residue_to_remove: ProfileResidue | None = None
+
+        # What the profile's earlier runs wrote and this configuration no
+        # longer installs, compared with the configuration before component
+        # selection (a deselected component's files are rows of the removal
+        # plan instead); computed for every profile with a manifest, also one
+        # whose recorded configuration cannot be resolved from here. A
+        # different configuration is a switch: the switch guard lists these
+        # leftovers, and an accepted switch removes them in Step 23 the way
+        # --remove-leftovers does, so they are read as that run reads them
+        # (the guard either accepts the switch or stops the run). A hook file
+        # is checked against the settings files a session reads, the ones
+        # Step 18 rebuilds left out and, in a run that removes leftovers, the
+        # base settings.json as Step 23 leaves it once its own leftovers are
+        # gone, and against the dependents that link hooks/ from this profile.
+        leftover_report: LeftoverReport | None = None
+        switch_accepted = False
         if target_manifest is not None:
             recorded_identity = manifest_config_identity(target_manifest)
             if recorded_identity is None:
@@ -27142,38 +26805,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'Recording {config_source} as the configuration of profile "{profile_name}": its manifest '
                     'records a configuration that cannot be resolved from this directory.',
                 )
-            else:
-                residue = profile_residue(
-                    target_manifest, target_config_dir, config,
-                    isolated=bool(primary_command_name),
-                    config_source=config_source,
-                    base_url=config.get('base-url'),
-                    claude_dir=get_real_user_home() / '.claude',
-                    reroot=reroot,
-                    live=pre_consent_live,
-                )
-                if guard_configuration_switch(
-                    args,
-                    manifest=target_manifest,
-                    profile_name=profile_name,
-                    old_identity=recorded_identity,
-                    new_identity=this_identity,
-                    new_source=config_source,
-                    residue=residue,
-                ):
-                    residue_to_remove = residue
-
-        # What the profile's earlier runs wrote and this configuration no
-        # longer installs, compared with the configuration before component
-        # selection (a deselected component's files are rows of the removal
-        # plan instead); computed for every profile with a manifest, also one
-        # whose recorded configuration cannot be resolved from here. A hook
-        # file is checked against the settings files a session reads, the
-        # ones Step 18 rebuilds left out and, under --remove-leftovers, the
-        # base settings.json as Step 23 leaves it once its own leftovers are
-        # gone, and against the dependents that link hooks/ from this profile.
-        leftover_report: LeftoverReport | None = None
-        if target_manifest is not None:
+            switching = recorded_identity is not None and recorded_identity != this_identity
             leftover_report = compute_profile_leftovers(
                 target_manifest, target_config_dir,
                 profile_name=profile_name,
@@ -27183,16 +26815,23 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 ),
                 live=pre_consent_live,
                 claude_dir=home_dir / '.claude',
-                remove=bool(args.remove_leftovers),
+                remove=bool(args.remove_leftovers) or switching,
             )
-            if residue_to_remove is not None:
-                leftover_report = leftover_report.with_switch_removals(
-                    [*residue_to_remove.files, *residue_to_remove.destinations],
-                    [
-                        entry.item for entry in
-                        [*residue_to_remove.settings, *residue_to_remove.os_env, *residue_to_remove.mcp_servers]
-                    ],
+            if recorded_identity is not None:
+                switch_accepted = guard_configuration_switch(
+                    args,
+                    manifest=target_manifest,
+                    profile_name=profile_name,
+                    old_identity=recorded_identity,
+                    new_identity=this_identity,
+                    new_source=config_source,
+                    leftovers=leftover_report,
+                    dropped_job=dropped_scheduled_job(target_manifest, config),
                 )
+        # Step 23 removes the leftovers in a run given --remove-leftovers and
+        # in an accepted configuration switch; the flag alone travels to the
+        # runs this one starts
+        remove_leftovers = bool(args.remove_leftovers) or switch_accepted
 
         # Guard the run against a CLAUDE_CONFIG_DIR inherited from the
         # environment. Runs as soon as the target directory is known, so no
@@ -27707,11 +27346,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 node_upgrade=plan.node_upgrade,
                 leftover_destinations=(
                     leftover_report.removable_destinations()
-                    if args.remove_leftovers and leftover_report is not None else []
+                    if remove_leftovers and leftover_report is not None else []
                 ),
                 leftover_mcp_servers=(
                     leftover_report.removable_project_mcp_servers()
-                    if args.remove_leftovers and leftover_report is not None else []
+                    if remove_leftovers and leftover_report is not None else []
                 ),
             )
         plan.destination_warnings = shared_destination_warnings(
@@ -27730,7 +27369,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             user_declared_keys=user_declared_control_keys,
         )
         plan.leftovers = leftover_report
-        plan.remove_leftovers = bool(args.remove_leftovers)
+        plan.remove_leftovers = remove_leftovers
         plan.dry_run = bool(args.dry_run)
         plan.scheduled_run = bool(args.scheduled_run)
 
@@ -28165,9 +27804,9 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         )
 
         # What this run wrote and chose, as Step 20 records it: a later
-        # re-run reads the names and the component delta, the switch guard
-        # reads the written records to list the residue, and every re-run
-        # compares them and the carried leftovers with its configuration.
+        # re-run reads the names and the component delta and compares the
+        # written records and the carried leftovers with its configuration,
+        # which the switch guard lists too.
         # The files, destinations and base settings are recorded in each
         # branch right before Step 20, after the last write of the run.
         manifest_records: dict[str, Any] = {
@@ -28327,14 +27966,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # components (the removal plan derives from the unfiltered
             # config, so no on-disk state is needed); a linked entry belongs
             # to another profile and is left alone. Then the leftovers of
-            # earlier runs, with --remove-leftovers, and what an accepted
-            # configuration switch removes, each checked against config.json
-            # as Step 18 rebuilt it
+            # earlier runs, with --remove-leftovers or after an accepted
+            # configuration switch, each checked against config.json as Step
+            # 18 rebuilt it
             step_23 = step_23_heading(
                 deselection=has_deselected_items(deselected),
-                leftovers=leftovers_step_runs(
-                    leftover_report, remove=bool(args.remove_leftovers), switch_residue=residue_to_remove,
-                ),
+                leftovers=leftovers_step_runs(leftover_report, remove=remove_leftovers),
             )
             if step_23 is not None:
                 print()
@@ -28353,8 +27990,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 )
             leftover_removal = run_leftovers_step(
                 leftover_report,
-                remove=bool(args.remove_leftovers),
-                switch_residue=residue_to_remove,
+                remove=remove_leftovers,
                 download_failed=bool(download_failures),
                 written=written_leftover_records({**manifest_records, **profile_records}),
                 live=LiveLeftoverState.for_profile(
@@ -28507,14 +28143,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # components (the removal plan derives from the unfiltered
             # config, so no on-disk state is needed). Runs after the Step 18
             # settings merge so the union-written file is reconciled last.
-            # Then the leftovers of earlier runs, with --remove-leftovers, and
-            # what an accepted configuration switch removes, each hook file
-            # checked against settings.json as Step 18 left it
+            # Then the leftovers of earlier runs, with --remove-leftovers or
+            # after an accepted configuration switch, each hook file checked
+            # against settings.json as Step 18 left it
             step_23 = step_23_heading(
                 deselection=has_deselected_items(deselected),
-                leftovers=leftovers_step_runs(
-                    leftover_report, remove=bool(args.remove_leftovers), switch_residue=residue_to_remove,
-                ),
+                leftovers=leftovers_step_runs(leftover_report, remove=remove_leftovers),
             )
             if step_23 is not None:
                 print()
@@ -28532,8 +28166,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 )
             leftover_removal = run_leftovers_step(
                 leftover_report,
-                remove=bool(args.remove_leftovers),
-                switch_residue=residue_to_remove,
+                remove=remove_leftovers,
                 download_failed=bool(download_failures),
                 written=written_leftover_records({**manifest_records, **profile_records}),
                 live=LiveLeftoverState.for_profile(

@@ -596,7 +596,7 @@ class TestConfigurationSwitchSeesTheRerootedFiles:
     def test_switch_lists_only_the_file_the_new_configuration_drops(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A re-rooted file both configurations install is neither listed as residue nor removed."""
+        """A re-rooted file both configurations install is neither listed as a leftover nor removed."""
         profile_dir = e2e_isolated_home['claude_dir'] / PROFILE
         cfg_a = write_config(configs, 'a.yaml', {'name': 'A', 'files-to-download': [
             {'source': 'files/claude.md', 'dest': '~/.claude/CLAUDE.md'},
@@ -612,10 +612,10 @@ class TestConfigurationSwitchSeesTheRerootedFiles:
         assert run_main([str(cfg_b), *SKIP, '--yes', '--switch-config', '--command-names', PROFILE]) == 0
 
         output = _output(capsys)
-        assert f'file: {profile_dir / "only-a.txt"}' in output
-        assert f'Removed {profile_dir / "only-a.txt"}' in output
-        assert f'file: {profile_dir / "CLAUDE.md"}' not in output, 'a file the new configuration installs is not residue'
-        assert f'Removed {profile_dir / "CLAUDE.md"}' not in output
+        assert f'[remove] file: {profile_dir / "only-a.txt"}' in output
+        assert f'Removed leftover file: {profile_dir / "only-a.txt"}' in output
+        assert f'file: {profile_dir / "CLAUDE.md"}' not in output, 'a file the new configuration installs is no leftover'
+        assert f'Removed leftover file: {profile_dir / "CLAUDE.md"}' not in output
         assert not (profile_dir / 'only-a.txt').exists()
         assert (profile_dir / 'only-b.txt').read_text(encoding='utf-8') == 'b\n'
         assert (profile_dir / 'CLAUDE.md').read_text(encoding='utf-8') == 'override: true\n'
