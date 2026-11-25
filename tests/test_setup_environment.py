@@ -5474,7 +5474,7 @@ class TestWriteManifest:
             'config_source_url', 'config_source_type', 'config_identity', 'config_digest',
             'installed_at', 'command_names', 'components', 'link', 'origins', 'yaml_values',
             'machine_wide_destinations', 'os_env_written', 'settings_written',
-            'mcp_servers', 'files_written', 'auto_update', 'leftovers',
+            'mcp_servers', 'files_written', 'dependency_entries', 'auto_update', 'leftovers',
         }
         assert data['name'] == command_name
         assert data['auto_update'] is None

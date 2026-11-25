@@ -790,6 +790,33 @@ def _mock_hook_environment_preparation(request: pytest.FixtureRequest, monkeypat
 
 
 @pytest.fixture(autouse=True)
+def _mock_dependency_entry_observation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make main()-flow unit tests observe no content directory around the Step 6 dependency commands.
+
+    The real observer lists the content directories of the profile a run
+    installs, which in a main()-flow unit test is the real ~/.claude of the
+    machine running the suite, so the dependency entries a test records
+    would depend on that machine. The replacement observes no directory and
+    still runs every command. Both module objects are patched (see
+    _mock_npm_shadowing_check). E2E tests keep the real observer, which
+    watches the isolated home while the dependency commands run for real.
+    Tests of the observer itself call the reference they capture at import
+    time.
+    """
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(
+            module, 'dependency_entry_observer',
+            lambda profile_dir, _linked_entries, _module=module: _module.DependencyEntryObserver(profile_dir, ()),
+        )
+
+
+@pytest.fixture(autouse=True)
 def _mock_old_binary_cleanup(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace install_claude._cleanup_old_claude_files with a no-op in unit tests.
 

@@ -2532,7 +2532,7 @@ class TestDependentIntegrity:
         claude_dir = e2e_isolated_home['claude_dir']
         agents = claude_dir / 'team-2' / 'agents'
 
-        def _replace_link(_dependencies: object) -> list[str]:
+        def _replace_link(_dependencies: object, **_kwargs: object) -> list[str]:
             setup_environment._remove_directory_link(agents)
             agents.mkdir()
             return []

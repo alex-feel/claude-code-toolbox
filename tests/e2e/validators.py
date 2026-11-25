@@ -1520,7 +1520,7 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
 
 
 _SETTINGS_KINDS = ('setting', 'setting-element', 'hook-group')
-_LABEL_PREFIXES = ('file', 'settings.json: ', 'OS environment variable: ', 'MCP server: ')
+_LABEL_PREFIXES = ('file', 'settings.json: ', 'OS environment variable: ', 'MCP server: ', 'dependency entry: ')
 _MCP_CLI_SCOPES = ('user', 'local', 'project')
 
 
@@ -1551,8 +1551,24 @@ def _settings_record_shape_error(record: object) -> bool:
     )
 
 
+def _dependency_entry_shape_error(entry: object) -> bool:
+    """Report whether a dependency entry record is no {path, identity} pair naming one entry of a content directory."""
+    if not isinstance(entry, dict) or set(entry) != {'path', 'identity'}:
+        return True
+    path, identity = entry['path'], entry['identity']
+    return (
+        not isinstance(path, str) or len(path.split('/')) != 2 or '\\' in path
+        or not isinstance(identity, str) or not identity
+    )
+
+
 def _leftover_item_shape_error(item: object) -> bool:
-    """Report whether a leftovers item is no file, destination, settings, variable or server record."""
+    """Report whether a leftovers item is no file, destination, settings, variable, server or dependency entry record."""
+    if isinstance(item, dict) and item.get('kind') == 'dependency-entry':
+        return (
+            set(item) != {'kind', 'path', 'command', 'identity'} or not isinstance(item['command'], str)
+            or _dependency_entry_shape_error({'path': item['path'], 'identity': item['identity']})
+        )
     if isinstance(item, dict) and item.get('kind') in _SETTINGS_KINDS:
         return _settings_record_shape_error(item)
     if isinstance(item, dict) and item.get('kind') == 'os-env':
@@ -1603,7 +1619,7 @@ def _leftovers_record_errors(leftovers: object) -> list[str]:
         f'Manifest leftovers dropped entry: expected a label and a reason, got {entry!r}'
         for entry in (leftovers['dropped'] if isinstance(leftovers['dropped'], list) else [])
         if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
-        or entry['reason'] not in ('changed', 'gone', 'linked', 'written again')
+        or entry['reason'] not in ('changed', 'gone', 'linked', 'written again', 'recreated')
     )
     errors.extend(
         f'Manifest leftovers.{key} entry: expected a label, got {label!r}'
@@ -1796,7 +1812,10 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     if not isinstance(data['yaml_values'], dict):
         errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
     errors.extend(_link_record_errors(data['link'], data['yaml_values'], config))
-    record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_written', 'mcp_servers', 'files_written')
+    record_keys = (
+        'machine_wide_destinations', 'os_env_written', 'settings_written', 'mcp_servers', 'files_written',
+        'dependency_entries',
+    )
     errors.extend(
         f'Manifest {record_key}: expected a list, got {data[record_key]!r}'
         for record_key in record_keys
@@ -1840,6 +1859,14 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         for record in files
         if not isinstance(record, dict) or set(record) != {'path', 'sha256'}
         or not isinstance(record['path'], str) or not isinstance(record['sha256'], str | None)
+    )
+    dependency_entries = data['dependency_entries'] if isinstance(data['dependency_entries'], list) else []
+    errors.extend(
+        f'Manifest dependency_entries record: expected a command and its {{path, identity}} entries, got {record!r}'
+        for record in dependency_entries
+        if not isinstance(record, dict) or set(record) != {'command', 'entries'} or not isinstance(record['command'], str)
+        or not isinstance(record['entries'], list) or not record['entries']
+        or any(_dependency_entry_shape_error(entry) for entry in record['entries'])
     )
     errors.extend(_leftovers_record_errors(data['leftovers']))
 

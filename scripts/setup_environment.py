@@ -13163,8 +13163,17 @@ def report_shadowing_global_npm() -> ShadowingNpm | None:
     return shadow
 
 
-def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]:
+def install_dependencies(
+    dependencies: dict[str, list[str]] | None,
+    *,
+    observer: 'DependencyEntryObserver | None' = None,
+) -> list[str]:
     """Install dependencies from configuration.
+
+    Args:
+        dependencies: The dependencies section, keyed by platform and common.
+        observer: Watches the profile's content directories around each
+            command, or None to run the commands unwatched.
 
     Returns:
         List of dependency commands that failed to install.
@@ -13281,8 +13290,14 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]
             return False
         return True
 
+    def run_dependency(dep: str) -> bool:
+        """Run one dependency command, watched by the observer when there is one."""
+        if observer is None:
+            return execute_dependency(dep)
+        return observer.around(dep, lambda: execute_dependency(dep))
+
     # Phase 1: Execute platform-specific dependencies
-    failed_deps: list[str] = [dep for dep in platform_deps_list if not execute_dependency(dep)]
+    failed_deps: list[str] = [dep for dep in platform_deps_list if not run_dependency(dep)]
 
     # Phase 2: Refresh PATH from registry on Windows
     # This picks up any PATH changes from platform-specific installations (e.g., Node.js)
@@ -13290,7 +13305,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]
         refresh_path_from_registry()
 
     # Phase 3: Execute common dependencies
-    failed_deps.extend(dep for dep in common_deps_list if not execute_dependency(dep))
+    failed_deps.extend(dep for dep in common_deps_list if not run_dependency(dep))
 
     return failed_deps
 
@@ -18896,6 +18911,10 @@ LEFTOVER_SETTINGS_KINDS = frozenset({LEFTOVER_SETTING, LEFTOVER_SETTING_ELEMENT,
 # registration at one CLI scope
 LEFTOVER_OS_ENV = 'os-env'
 LEFTOVER_MCP_SERVER = 'mcp-server'
+# A top-level entry of a content directory that a Step 6 dependency command
+# created or recreated, and the manifest field that records them per command
+LEFTOVER_DEPENDENCY_ENTRY = 'dependency-entry'
+DEPENDENCY_ENTRIES_KEY = 'dependency_entries'
 # The kinds whose leftover lies at a path of its own
 LEFTOVER_PATH_KINDS = frozenset({LEFTOVER_FILE, LEFTOVER_DESTINATION})
 SETTINGS_FILE_NAME = 'settings.json'
@@ -18912,6 +18931,8 @@ LEFTOVER_UNREADABLE = 'unreadable'
 LEFTOVER_CHANGED = 'changed'
 LEFTOVER_GONE = 'gone'
 LEFTOVER_LINKED = 'linked'
+# A dependency entry a Step 6 command of this run installed again
+LEFTOVER_RECREATED = 'recreated'
 # The states that keep a leftover recorded for the next run; a leftover in
 # any other state is reported once and dropped from the record
 _CARRIED_LEFTOVER_STATES = frozenset({
@@ -18920,7 +18941,9 @@ _CARRIED_LEFTOVER_STATES = frozenset({
 # The states whose leftover --remove-leftovers removes, whole or in part
 _REMOVABLE_LEFTOVER_STATES = frozenset({LEFTOVER_REMOVABLE, LEFTOVER_PARTIAL})
 # The reason the manifest records for each dropped state
-_DROPPED_LEFTOVER_REASONS = {LEFTOVER_CHANGED: 'changed', LEFTOVER_GONE: 'gone', LEFTOVER_LINKED: 'linked'}
+_DROPPED_LEFTOVER_REASONS = {
+    LEFTOVER_CHANGED: 'changed', LEFTOVER_GONE: 'gone', LEFTOVER_LINKED: 'linked', LEFTOVER_RECREATED: 'recreated',
+}
 # A leftover this run's own steps wrote again is dropped before Step 23
 # removes anything
 LEFTOVER_WRITTEN_AGAIN = 'written again'
@@ -18945,6 +18968,12 @@ LEFTOVERS_FLAG_FOOTER = (
     f'Pass {REMOVE_LEFTOVERS_FLAG} (or set CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS=1) to remove the items marked '
     '[leftover]; each is removed only while it still holds what the setup wrote.'
 )
+# Why a dependency entry stays: its command failed, so it may not have
+# finished installing it again
+LEFTOVER_COMMAND_FAILED = 'its dependency command failed in this run'
+# Why a dependency entry Step 6 listed stays: the run that lists one never
+# removes it
+LEFTOVER_LISTED_NOW = f'listed after Step 6 of this run; a later run with {REMOVE_LEFTOVERS_FLAG} removes it'
 
 
 def scheduled_leftovers_note(profile_name: str) -> str:
@@ -19046,14 +19075,17 @@ class LeftoverItem:
             LEFTOVER_SETTING_ELEMENT (an element of a list) or
             LEFTOVER_HOOK_GROUP (a matcher group of a hook event),
             LEFTOVER_OS_ENV for an OS environment variable of the base
-            profile, and LEFTOVER_MCP_SERVER for an MCP server registered
-            at one CLI scope.
-        path: The profile-relative POSIX path of a file, the absolute path
-            of a destination, the keys of a settings item joined with dots,
-            the name of a variable or a server.
+            profile, LEFTOVER_MCP_SERVER for an MCP server registered at one
+            CLI scope, and LEFTOVER_DEPENDENCY_ENTRY for a top-level entry
+            of a content directory that a dependency command installed.
+        path: The profile-relative POSIX path of a file or a dependency
+            entry, the absolute path of a destination, the keys of a
+            settings item joined with dots, the name of a variable or a
+            server.
         sha256: The digest of the bytes the run wrote, or of the JSON of a
             settings item, a variable's value or a server's entry
-            (leftover_digest()); None when the run cannot vouch for what
+            (leftover_digest()), or a dependency entry's identity
+            (entry_identity()); None when the run cannot vouch for what
             sits there.
         keys: The keys from the top of settings.json to a settings item; a
             hook group's are 'hooks' and its event.
@@ -19061,6 +19093,8 @@ class LeftoverItem:
         entries: The digests of a hook group's hooks.
         scope: The CLI scope of an MCP server registration (user, local or
             project); empty for every other item.
+        command: The dependency command that installed a dependency entry,
+            as the configuration spells it; empty for every other item.
     """
 
     kind: str
@@ -19070,6 +19104,7 @@ class LeftoverItem:
     matcher: str | None = None
     entries: tuple[str, ...] = ()
     scope: str = ''
+    command: str = ''
 
     @classmethod
     def setting(
@@ -19094,6 +19129,11 @@ class LeftoverItem:
         """Build the item of an MCP server registered at one CLI scope."""
         return cls(LEFTOVER_MCP_SERVER, name, sha256, scope=scope)
 
+    @classmethod
+    def dependency_entry(cls, path: str, command: str, identity: str) -> 'LeftoverItem':
+        """Build the item of a content directory entry a dependency command installed."""
+        return cls(LEFTOVER_DEPENDENCY_ENTRY, path, identity, command=command)
+
     def is_setting(self) -> bool:
         """Report whether the item lives in the base settings.json."""
         return self.kind in LEFTOVER_SETTINGS_KINDS
@@ -19113,9 +19153,10 @@ class LeftoverItem:
             letter case folded as for a file, so a rename that changes only
             the case never removes the variable the run just set where
             names are case-insensitive (Windows); a server is one item per
-            name and scope.
+            name and scope; a dependency entry is one item per path, as a
+            file is.
         """
-        if self.kind == LEFTOVER_FILE:
+        if self.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY):
             return self.kind, _file_key(self.path)
         if self.kind == LEFTOVER_DESTINATION:
             return self.kind, _destination_key(self.path)
@@ -19132,16 +19173,17 @@ class LeftoverItem:
         """Return the absolute path of the item.
 
         Args:
-            profile_dir: The profile directory a file's path is joined onto.
+            profile_dir: The profile directory the path of a file or a
+                dependency entry is joined onto.
 
         Returns:
-            The path of a file or a destination.
+            The path of a file, a dependency entry or a destination.
 
         Raises:
             ValueError: For an item at no path of its own: a settings item,
                 a variable or a server.
         """
-        if self.kind == LEFTOVER_FILE:
+        if self.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY):
             return profile_dir.joinpath(*PurePosixPath(self.path).parts)
         if self.kind == LEFTOVER_DESTINATION:
             return Path(self.path)
@@ -19165,6 +19207,8 @@ class LeftoverItem:
             return f'OS environment variable: {self.path}'
         if self.kind == LEFTOVER_MCP_SERVER:
             return f'MCP server: {self.path} (scope: {self.scope})'
+        if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            return f'dependency entry: {self.path}'
         return f'{SETTINGS_FILE_NAME}: {self._settings_part("")}'
 
     def display(self, profile_dir: Path, shown: str = '') -> str:
@@ -19181,6 +19225,8 @@ class LeftoverItem:
         """
         if self.kind == LEFTOVER_FILE:
             return f'file: {self.location(profile_dir)}'
+        if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            return f'dependency entry: {self.location(profile_dir)} (from: {self.command})'
         if not self.is_setting():
             return self.label()
         return f'{profile_dir / SETTINGS_FILE_NAME}: {self._settings_part(shown)}'
@@ -19191,6 +19237,8 @@ class LeftoverItem:
             return {'kind': self.kind, 'name': self.path, 'sha256': self.sha256}
         if self.kind == LEFTOVER_MCP_SERVER:
             return {'kind': self.kind, 'name': self.path, 'scope': self.scope, 'sha256': self.sha256}
+        if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            return {'kind': self.kind, 'path': self.path, 'command': self.command, 'identity': self.sha256}
         if not self.is_setting():
             return {'kind': self.kind, 'path': self.path, 'sha256': self.sha256}
         record: dict[str, Any] = {'kind': self.kind, 'path': list(self.keys), 'sha256': self.sha256}
@@ -19215,12 +19263,16 @@ class LeftoverItem:
             settings path that is not a non-empty list of strings, a hook
             group whose path is not hooks and an event or that lacks its
             matcher digest and the list of its hook digests, a variable name
-            that is not one, or a server without a name, with whitespace in
-            it, or at a scope that is no CLI scope.
+            that is not one, a server without a name, with whitespace in
+            it, or at a scope that is no CLI scope, or a dependency entry
+            that is not one entry of a content directory, or lacks its
+            command or its identity.
         """
         if not isinstance(record, dict):
             return None
         record_dict = cast(dict[str, Any], record)
+        if record_dict.get('kind') == LEFTOVER_DEPENDENCY_ENTRY:
+            return cls._dependency_entry_from_record(record_dict)
         kind, path, digest = record_dict.get('kind'), record_dict.get('path'), record_dict.get('sha256')
         if 'sha256' not in record_dict or not (digest is None or isinstance(digest, str)):
             return None
@@ -19258,6 +19310,35 @@ class LeftoverItem:
         if not isinstance(name, str) or not name or any(char.isspace() for char in name) or scope not in MCP_CLI_SCOPES:
             return None
         return cls.mcp_server(name, str(scope), digest)
+
+    @classmethod
+    def _dependency_entry_from_record(cls, record: dict[str, Any]) -> 'LeftoverItem | None':
+        """Read a dependency entry from its record, or None for any other shape (see from_record())."""
+        path, command, identity = record.get('path'), record.get('command'), record.get('identity')
+        if not _is_dependency_entry_path(path) or not isinstance(command, str):
+            return None
+        if not isinstance(identity, str) or not identity:
+            return None
+        return cls.dependency_entry(str(path), command, identity)
+
+
+def _is_dependency_entry_path(path: object) -> bool:
+    """Report whether a recorded path names one top-level entry of a content directory.
+
+    Args:
+        path: A recorded path.
+
+    Returns:
+        True for '<content directory>/<name>' in both the POSIX and the
+        Windows reading, so the path never leaves the profile directory
+        and never reaches below the entry.
+    """
+    if not isinstance(path, str) or not _is_profile_relative(path):
+        return False
+    return all(
+        len(parts) == 2 and parts[0] in CONTENT_PROFILE_DIRS
+        for parts in (PurePosixPath(path).parts, PureWindowsPath(path).parts)
+    )
 
 
 class LeftoverEntry(NamedTuple):
@@ -19308,6 +19389,10 @@ class PlannedRecords:
             or deleted: Step 7 manages each of them.
         mcp_servers: The names of the MCP servers it declares, at any scope:
             Step 13 manages every CLI scope of each of them.
+        dependency_entries: The profile-relative paths of the content
+            directory entries its dependency commands installed. A
+            dependency entry that holds one of the files, or is one, counts
+            as installed too.
     """
 
     files: frozenset[str] = frozenset()
@@ -19316,10 +19401,15 @@ class PlannedRecords:
     settings_deltas: tuple[dict[str, Any], ...] = ()
     os_env: frozenset[str] = frozenset()
     mcp_servers: frozenset[str] = frozenset()
+    dependency_entries: frozenset[str] = frozenset()
     _keys: frozenset[tuple[str, str]] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         keys = {LeftoverItem(LEFTOVER_FILE, path, None).key() for path in self.files}
+        keys.update(
+            (LEFTOVER_DEPENDENCY_ENTRY, '/'.join(_file_key(path).split('/')[:2]))
+            for path in [*self.files, *self.dependency_entries]
+        )
         keys.update(LeftoverItem(LEFTOVER_DESTINATION, path, None).key() for path in self.destinations)
         keys.update(item.key() for item in self.settings)
         keys.update(LeftoverItem.os_env(name, None).key() for name in self.os_env)
@@ -19944,6 +20034,8 @@ class LiveLeftoverState:
             read_os_env_variable() does.
         mcp: Reads the entry each CLI scope holds for an MCP server name,
             as _live_mcp_registrations() does.
+        identity: Reads the identity of a dependency entry, as
+            entry_identity() does.
     """
 
     file_digest: Callable[[Path], str | None]
@@ -19956,6 +20048,7 @@ class LiveLeftoverState:
     settings_after: tuple[tuple[Path, dict[str, Any]], ...] = ()
     os_env: Callable[[str], tuple[str, ...]] = field(default=lambda _name: ())
     mcp: Callable[[str], Mapping[str, Any]] = field(default=lambda _name: {})
+    identity: Callable[[Path], str | None] = field(default=lambda _path: None)
 
     def wiring(self, relative: str) -> str | None:
         """Say where a hook file is still wired, reading the settings files through the view this state holds."""
@@ -20003,7 +20096,327 @@ class LiveLeftoverState:
             settings=_read_settings_object,
             os_env=read_os_env_variable,
             mcp=lambda name: _live_mcp_registrations(name, profile_dir if isolated else None),
+            identity=entry_identity,
         )
+
+
+def _stat_identity(status: os.stat_result) -> str:
+    """Digest the identity of a file system entry from its lstat result.
+
+    Args:
+        status: The entry's os.lstat() result.
+
+    Returns:
+        The digest of its device, its file ID and its birth time, or its
+        inode change time where the platform carries no birth time (Linux).
+        An entry deleted and created again under the same name gets a new
+        file ID while the old one still exists, and a new birth or change
+        time otherwise.
+    """
+    born = next(
+        (
+            value for value in (getattr(status, name, None) for name in ('st_birthtime_ns', 'st_birthtime', 'st_ctime_ns'))
+            if value is not None
+        ),
+        None,
+    )
+    return leftover_digest([status.st_dev, status.st_ino, born])
+
+
+def entry_identity(path: Path) -> str | None:
+    """Read the identity of a top-level entry of a content directory, without following a link.
+
+    Args:
+        path: The entry: a directory, a file, or a directory link (a
+            junction or symlink), which is read as itself.
+
+    Returns:
+        The identity _stat_identity() digests, or None when nothing is at
+        the path.
+
+    Raises:
+        LeftoverReadError: When the path cannot be examined.
+    """
+    try:
+        status = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise LeftoverReadError(e.strerror or str(e)) from e
+    return _stat_identity(status)
+
+
+def entry_fingerprint(path: Path) -> tuple[object, ...] | None:
+    """Fingerprint a top-level entry of a content directory, to tell whether one command touched it.
+
+    Args:
+        path: The entry.
+
+    Returns:
+        Its identity with, for a directory link, the target it names; for a
+        real directory, the name, file ID, modification time and size of
+        each direct child; for a file, its modification time and size. None
+        when nothing is at the path.
+
+    Raises:
+        LeftoverReadError: When the entry cannot be examined.
+    """
+    import stat as stat_module
+
+    try:
+        status = os.lstat(path)
+        identity = _stat_identity(status)
+        if _is_directory_link(path):
+            return identity, 'link', os.readlink(path)
+        if stat_module.S_ISDIR(status.st_mode):
+            children: list[tuple[str, int, int, int]] = []
+            with os.scandir(path) as listing:
+                for child in listing:
+                    child_status = child.stat(follow_symlinks=False)
+                    children.append((child.name, child.inode(), child_status.st_mtime_ns, child_status.st_size))
+            return identity, 'directory', tuple(sorted(children))
+        return identity, 'file', status.st_mtime_ns, status.st_size
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise LeftoverReadError(e.strerror or str(e)) from e
+
+
+class DependencyRun(NamedTuple):
+    """What one Step 6 dependency command did to the profile's content directories.
+
+    Attributes:
+        command: The command as the configuration spells it.
+        succeeded: Whether it exited with status 0.
+        created: The profile-relative paths of the top-level entries it
+            created, sorted.
+        touched: The paths of the entries that existed before it ran and
+            that it changed or replaced, sorted.
+    """
+
+    command: str
+    succeeded: bool
+    created: tuple[str, ...] = ()
+    touched: tuple[str, ...] = ()
+
+    def credited(self) -> tuple[str, ...]:
+        """Return the entries the command is credited with: the ones it created and the ones it touched."""
+        return (*self.created, *self.touched)
+
+
+class DependencyEntryObserver:
+    """Watch the top-level entries of a profile's content directories around each dependency command.
+
+    Attributes:
+        profile_dir: The profile directory.
+        names: The content directories it watches.
+        runs: What each command run so far did, in order.
+    """
+
+    def __init__(self, profile_dir: Path, names: Sequence[str]) -> None:
+        self.profile_dir = profile_dir
+        self.names = tuple(names)
+        self.runs: list[DependencyRun] = []
+
+    def _snapshot(self) -> dict[str, tuple[object, ...]]:
+        """Fingerprint every top-level entry of the watched directories, keyed by its profile-relative path."""
+        snapshot: dict[str, tuple[object, ...]] = {}
+        for name in self.names:
+            directory = self.profile_dir / name
+            try:
+                with os.scandir(directory) as listing:
+                    children = [child.name for child in listing]
+            except OSError:
+                continue
+            for child in children:
+                try:
+                    fingerprint = entry_fingerprint(directory / child)
+                except LeftoverReadError:
+                    continue
+                if fingerprint is not None:
+                    snapshot[f'{name}/{child}'] = fingerprint
+        return snapshot
+
+    def around(self, command: str, run: Callable[[], bool]) -> bool:
+        """Run one dependency command and record the entries it created and touched.
+
+        Args:
+            command: The command as the configuration spells it.
+            run: Runs the command and reports whether it succeeded.
+
+        Returns:
+            What run returned.
+        """
+        before = self._snapshot()
+        succeeded = run()
+        after = self._snapshot()
+        self.runs.append(DependencyRun(
+            command,
+            succeeded,
+            created=tuple(sorted(path for path in after if path not in before)),
+            touched=tuple(sorted(path for path in after if path in before and after[path] != before[path])),
+        ))
+        return succeeded
+
+
+def dependency_entry_observer(profile_dir: Path, linked_entries: frozenset[str]) -> DependencyEntryObserver:
+    """Build the observer of the Step 6 dependency commands for one profile.
+
+    Args:
+        profile_dir: The profile directory.
+        linked_entries: The entries this run's link plan made links.
+
+    Returns:
+        An observer of every content directory that is no link, in this
+        run's plan or on disk: what a command writes through a link belongs
+        to the link's target.
+    """
+    linked = {entry.casefold() for entry in linked_entries}
+    return DependencyEntryObserver(
+        profile_dir,
+        [
+            name for name in CONTENT_PROFILE_DIRS
+            if name.casefold() not in linked and not _is_directory_link(profile_dir / name)
+        ],
+    )
+
+
+def _dependency_entry_records(value: object) -> list[tuple[str, str, str]]:
+    """Read the dependency_entries records of a manifest.
+
+    Args:
+        value: The manifest's dependency_entries value.
+
+    Returns:
+        (command, path, identity) per entry, in record order, read only in
+        the current shape: a command string, a path naming one top-level
+        entry of a content directory, and a non-empty identity.
+    """
+    entries: list[tuple[str, str, str]] = []
+    for record in cast(list[object], value) if isinstance(value, list) else []:
+        if not isinstance(record, dict):
+            continue
+        command, listed = cast(dict[str, Any], record).get('command'), cast(dict[str, Any], record).get('entries')
+        if not isinstance(command, str) or not isinstance(listed, list):
+            continue
+        for entry in cast(list[object], listed):
+            item = LeftoverItem.from_record(
+                {**cast(dict[str, Any], entry), 'kind': LEFTOVER_DEPENDENCY_ENTRY, 'command': command}
+                if isinstance(entry, dict) else None,
+                claude_dir=Path(),
+            )
+            if item is not None and item.sha256 is not None:
+                entries.append((command, item.path, item.sha256))
+    return entries
+
+
+class DependencyAttribution(NamedTuple):
+    """The dependency entries of a run, as attribute_dependency_entries() credits them.
+
+    Attributes:
+        records: The manifest's dependency_entries records: one
+            {command, entries} record per command with entries, in run
+            order, each entry a {path, identity} record, sorted by path.
+        listed_now: The entries of earlier runs that no command installs
+            any more, still holding their recorded identity.
+        credited: The comparison keys (_file_key()) of the entries the
+            records hold.
+    """
+
+    records: list[dict[str, Any]]
+    listed_now: tuple[LeftoverItem, ...]
+    credited: frozenset[str]
+
+
+def attribute_dependency_entries(
+    previous: object,
+    runs: Sequence[DependencyRun],
+    *,
+    profile_dir: Path,
+    planned_files: Iterable[str],
+    linked_entries: frozenset[str],
+    identity: Callable[[Path], str | None] = entry_identity,
+) -> DependencyAttribution:
+    """Credit each dependency command of this run with its entries, and list the earlier entries none installs.
+
+    Every command that ran is credited with the entries it created or
+    touched; a later command wins an entry two of them touched. A command
+    that failed, or that touched no entry existing before it ran, keeps the
+    entries an earlier run recorded for it, by the command's text: it may
+    install only what is missing. A command that touched an existing entry
+    recreates what it installs, so its earlier entries it did not touch are
+    no longer its. An earlier entry no command credits, still holding its
+    recorded identity, is listed; one changed or gone is forgotten. An entry
+    under a linked entry, or holding a file the configuration installs, is
+    neither recorded nor listed.
+
+    Args:
+        previous: The previous manifest's dependency_entries value.
+        runs: What each command of this run did, in order.
+        profile_dir: The profile directory.
+        planned_files: The profile-relative paths of the files the
+            configuration installs.
+        linked_entries: The entries of the profile that are links.
+        identity: Reads an entry's identity now.
+
+    Returns:
+        The records, the entries listed now and the keys credited.
+    """
+    planned = PlannedRecords(files=frozenset(planned_files))
+    linked = {entry.casefold() for entry in linked_entries}
+
+    def _excluded(path: str) -> bool:
+        return _file_key(path).split('/')[0] in linked or planned.writes(LeftoverItem.dependency_entry(path, '', ''))
+
+    def _current(path: str) -> str | None:
+        try:
+            return identity(profile_dir.joinpath(*PurePosixPath(path).parts))
+        except LeftoverReadError:
+            return None
+
+    def _path_key(entry: dict[str, str]) -> str:
+        return _file_key(entry['path'])
+
+    owners: dict[str, tuple[str, str]] = {}
+    for run in runs:
+        for path in run.credited():
+            owners.pop(_file_key(path), None)
+            owners[_file_key(path)] = (run.command, path)
+    keeping = {
+        command for command in {run.command for run in runs}
+        if any(not run.succeeded for run in runs if run.command == command)
+        or not any(run.touched for run in runs if run.command == command)
+    }
+    previous_entries = _dependency_entry_records(previous)
+    kept: dict[str, tuple[str, str]] = {}
+    for command, path, _recorded in previous_entries:
+        if command in keeping and _file_key(path) not in owners:
+            kept.setdefault(_file_key(path), (command, path))
+
+    by_command: dict[str, list[dict[str, str]]] = {run.command: [] for run in runs}
+    credited: set[str] = set()
+    for key, (command, path) in [*kept.items(), *owners.items()]:
+        current = None if _excluded(path) else _current(path)
+        if current is not None:
+            by_command[command].append({'path': path, 'identity': current})
+            credited.add(key)
+    records: list[dict[str, Any]] = [
+        {'command': command, 'entries': sorted(entries, key=_path_key)}
+        for command, entries in by_command.items() if entries
+    ]
+
+    listed: dict[str, LeftoverItem] = {}
+    for command, path, recorded in previous_entries:
+        key = _file_key(path)
+        if key in owners or key in kept or key in listed or _excluded(path):
+            continue
+        if _current(path) == recorded:
+            listed[key] = LeftoverItem.dependency_entry(path, command, recorded)
+    return DependencyAttribution(
+        records=records,
+        listed_now=tuple(listed[key] for key in sorted(listed)),
+        credited=frozenset(credited),
+    )
 
 
 def leftover_settings_files(profile_dir: Path, *, isolated: bool, before_consent: bool) -> list[Path]:
@@ -20185,6 +20598,7 @@ def _leftover_marker(entry: LeftoverEntry, *, remove: bool = False, dry_run: boo
         LEFTOVER_CHANGED: 'changed since written: left in place, no longer tracked',
         LEFTOVER_GONE: 'already gone: no longer tracked',
         LEFTOVER_LINKED: f'{entry.detail}: no longer tracked',
+        LEFTOVER_RECREATED: 'installed again by a dependency command: no longer tracked',
     }
     return markers[entry.state]
 
@@ -20200,8 +20614,52 @@ def _leftover_note(entry: LeftoverEntry) -> str:
         LEFTOVER_CHANGED: 'changed since written',
         LEFTOVER_GONE: 'already gone',
         LEFTOVER_LINKED: entry.detail,
+        LEFTOVER_RECREATED: 'installed again by a dependency command',
     }
     return notes[entry.state]
+
+
+def _held_for_failed_command(entry: LeftoverEntry, failed_commands: frozenset[str]) -> LeftoverEntry:
+    """Keep a removable dependency entry whose command failed in this run.
+
+    Args:
+        entry: The leftover with its state.
+        failed_commands: The dependency commands that failed in this run.
+
+    Returns:
+        The entry held with the reason, or unchanged.
+    """
+    if (
+        entry.item.kind == LEFTOVER_DEPENDENCY_ENTRY and entry.state in _REMOVABLE_LEFTOVER_STATES
+        and entry.item.command in failed_commands
+    ):
+        return LeftoverEntry(entry.item, LEFTOVER_HELD, LEFTOVER_COMMAND_FAILED)
+    return entry
+
+
+def _after_dependency_commands(
+    entry: LeftoverEntry,
+    *,
+    credited: frozenset[str],
+    failed_commands: frozenset[str],
+) -> LeftoverEntry:
+    """Fold what the Step 6 dependency commands did into one carried leftover.
+
+    Args:
+        entry: The leftover with the state found before consent.
+        credited: The comparison keys of the entries this run's commands are
+            credited with.
+        failed_commands: The dependency commands that failed in this run.
+
+    Returns:
+        A carried dependency entry a command installed again as recreated,
+        one whose command failed as held, every other entry unchanged.
+    """
+    if entry.item.kind != LEFTOVER_DEPENDENCY_ENTRY or entry.state not in _CARRIED_LEFTOVER_STATES:
+        return entry
+    if _file_key(entry.item.path) in credited:
+        return LeftoverEntry(entry.item, LEFTOVER_RECREATED)
+    return _held_for_failed_command(entry, failed_commands)
 
 
 def _leftover_completion_detail(entry: LeftoverEntry) -> str:
@@ -20254,12 +20712,16 @@ class LeftoverReport:
             kind sorted by path.
         untracked_note: Whether the manifest has no leftovers field, so the
             run says once that tracking starts with it.
+        listed_now: The dependency entries Step 6 of this run found that no
+            command installs any more: recorded for the next run, which
+            removes them with --remove-leftovers, never removed by this one.
     """
 
     profile_name: str
     profile_dir: Path
     entries: tuple[LeftoverEntry, ...]
     untracked_note: bool
+    listed_now: tuple[LeftoverEntry, ...] = ()
 
     def has_content(self) -> bool:
         """Report whether the summary has anything to show."""
@@ -20287,7 +20749,7 @@ class LeftoverReport:
         link_source: str,
         selected: PlannedRecords | None = None,
     ) -> 'LeftoverReport':
-        """Mark the profile files under the entries this run links, and leave out the hook groups it writes.
+        """Mark the files and dependency entries under the entries this run links, and leave out its hook groups.
 
         From Step 3 on a path under a linked entry is reached through the
         link, so the file there belongs to the source profile: the leftover
@@ -20313,10 +20775,58 @@ class LeftoverReport:
         ]
         return replace(self, entries=tuple(
             LeftoverEntry(entry.item, LEFTOVER_LINKED, f'now linked from profile {link_source}')
-            if entry.item.kind == LEFTOVER_FILE and _file_key(entry.item.path).split('/')[0] in linked
+            if entry.item.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY)
+            and _file_key(entry.item.path).split('/')[0] in linked
             else entry
             for entry in entries
         ))
+
+    def after_dependency_commands(
+        self,
+        *,
+        credited: frozenset[str],
+        failed_commands: frozenset[str],
+        listed_now: Sequence[LeftoverItem],
+    ) -> 'LeftoverReport':
+        """Fold in what the Step 6 dependency commands of this run did.
+
+        A dependency entry an earlier run listed that a command of this run
+        installed again is no longer a leftover; one whose command failed
+        stays, because the command may not have finished installing it
+        again. The entries no command installs any more are listed now:
+        recorded for the next run and never removed by this one.
+
+        Args:
+            credited: The comparison keys of the entries this run's
+                commands are credited with (DependencyAttribution.credited).
+            failed_commands: The commands that failed.
+            listed_now: The entries listed now.
+
+        Returns:
+            The report with those states and the entries listed now.
+        """
+        known = {entry.item.key() for entry in self.entries}
+        return replace(
+            self,
+            entries=tuple(
+                _after_dependency_commands(entry, credited=credited, failed_commands=failed_commands)
+                for entry in self.entries
+            ),
+            listed_now=tuple(LeftoverEntry(item, LEFTOVER_REMOVABLE) for item in listed_now if item.key() not in known),
+        )
+
+    def listed_now_heading(self) -> str:
+        """Name the dependency entries Step 6 listed and the later run that removes them."""
+        return (
+            f'Dependency entries listed now ({len(self.listed_now)}; {REMOVE_LEFTOVERS_FLAG} removes them on a '
+            'later run):'
+        )
+
+    def listed_now_lines(self) -> list[str]:
+        """Render what Step 6 prints about the dependency entries it listed: the heading and one line each."""
+        if not self.listed_now:
+            return []
+        return [self.listed_now_heading(), *(f'  {entry.display(self.profile_dir)}' for entry in self.listed_now)]
 
     def carried(self) -> list[LeftoverItem]:
         """Return the leftovers the manifest keeps recorded for the next run."""
@@ -20439,6 +20949,8 @@ class LeftoverReport:
             else:
                 headline = f'Leftovers left in place ({len(left)}):'
             sections.append((headline, left))
+        if self.listed_now:
+            sections.append((self.listed_now_heading(), [entry.display(self.profile_dir) for entry in self.listed_now]))
         if dropped:
             sections.append(('No longer tracked:', dropped))
         return sections
@@ -20543,6 +21055,32 @@ def _machine_leftover_entry(item: LeftoverItem, live: LiveLeftoverState) -> Left
     return LeftoverEntry(item, LEFTOVER_REMOVABLE if found == [item.sha256] else LEFTOVER_CHANGED)
 
 
+def _dependency_leftover_entry(item: LeftoverItem, profile_dir: Path, live: LiveLeftoverState) -> LeftoverEntry:
+    """Find what sits at a dependency entry's path now.
+
+    Args:
+        item: The dependency entry.
+        profile_dir: The profile directory.
+        live: The live readers.
+
+    Returns:
+        Linked when a directory link reaches the path, which is checked
+        before anything is read there, so a source profile's entry of the
+        same name is never taken for this one; unreadable, gone, changed for
+        another identity; removable while the entry keeps the identity the
+        run that listed it recorded.
+    """
+    if live.under_link(item.path):
+        return LeftoverEntry(item, LEFTOVER_LINKED, 'now reached through a directory link')
+    try:
+        identity = live.identity(item.location(profile_dir))
+    except LeftoverReadError as e:
+        return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+    if identity is None:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    return LeftoverEntry(item, LEFTOVER_REMOVABLE if identity == item.sha256 else LEFTOVER_CHANGED)
+
+
 def _leftover_entry(
     item: LeftoverItem,
     profile_dir: Path,
@@ -20560,7 +21098,8 @@ def _leftover_entry(
             group leftover is never matched in; None when it writes none.
 
     Returns:
-        The entry: for a variable or a server what
+        The entry: for a dependency entry what
+        _dependency_leftover_entry() finds; for a variable or a server what
         _machine_leftover_entry() finds; for a settings item what
         settings_item_state() finds, unreadable when settings.json cannot be
         read; for a file or a
@@ -20576,6 +21115,8 @@ def _leftover_entry(
         except LeftoverReadError as e:
             return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
         return settings_item_state(item, content, written=written or PlannedRecords())
+    if item.kind == LEFTOVER_DEPENDENCY_ENTRY:
+        return _dependency_leftover_entry(item, profile_dir, live)
     if not item.has_path():
         return _machine_leftover_entry(item, live)
     if item.kind == LEFTOVER_FILE and live.under_link(item.path):
@@ -20653,8 +21194,10 @@ def _hold_with_wired_hook_files(entries: list[LeftoverEntry], live: LiveLeftover
 
 
 def _leftover_order(entry: LeftoverEntry) -> tuple[int, str]:
-    """Order leftovers for the summary: files, destinations, settings.json items, variables, servers, each by identity."""
-    kinds = {LEFTOVER_FILE: 0, LEFTOVER_DESTINATION: 1, LEFTOVER_OS_ENV: 3, LEFTOVER_MCP_SERVER: 4}
+    """Order leftovers for the summary: files, destinations, settings.json items, variables, servers, dependency entries."""
+    kinds = {
+        LEFTOVER_FILE: 0, LEFTOVER_DESTINATION: 1, LEFTOVER_OS_ENV: 3, LEFTOVER_MCP_SERVER: 4, LEFTOVER_DEPENDENCY_ENTRY: 5,
+    }
     return kinds.get(entry.item.kind, 2), entry.item.key()[1]
 
 
@@ -20779,7 +21322,8 @@ def leftovers_manifest_record(
         failed labels, the labels dropped with their reasons, the labels
         kept for a reason with that reason (so a report that reads the
         manifest, such as the --profile all report, can say why each stays),
-        and why the run skipped removal, if it did.
+        and why the run skipped removal, if it did. The dependency entries
+        Step 6 listed are carried with the reason they stay.
     """
     if report is None:
         return {
@@ -20804,6 +21348,9 @@ def leftovers_manifest_record(
         outcome.entry.item for outcome in outcomes if outcome.result in (LEFTOVER_KEPT, LEFTOVER_FAILED)
     )
     carried.extend(outcome.entry for outcome in outcomes if outcome.result == LEFTOVER_KEPT)
+    items.extend(entry.item for entry in report.listed_now)
+    kept = [{'label': entry.item.label(), 'reason': _leftover_note(entry)} for entry in carried if _leftover_note(entry)]
+    kept.extend({'label': entry.item.label(), 'reason': LEFTOVER_LISTED_NOW} for entry in report.listed_now)
     return {
         'run_at': run_at,
         'items': [item.to_record() for item in items],
@@ -20811,10 +21358,7 @@ def leftovers_manifest_record(
         'dropped': dropped,
         'skipped': removal.skipped if removal is not None else None,
         'failed': [outcome.entry.item.label() for outcome in outcomes if outcome.result == LEFTOVER_FAILED],
-        'kept': [
-            {'label': entry.item.label(), 'reason': _leftover_note(entry)}
-            for entry in carried if _leftover_note(entry)
-        ],
+        'kept': kept,
     }
 
 
@@ -20847,8 +21391,30 @@ def leftovers_step_runs(report: LeftoverReport | None, *, remove: bool) -> bool:
     return remove and bool(report.carried())
 
 
+def _remove_dependency_entry(path: Path) -> None:
+    """Remove a dependency entry: a link without its target, a directory with its content, or a file.
+
+    The link test comes first, because a junction is a directory too and
+    removing its content would delete the files of its target.
+
+    Args:
+        path: The entry.
+    """
+    import stat as stat_module
+
+    if _is_directory_link(path):
+        if getattr(os.lstat(path), 'st_file_attributes', 0) & stat_module.FILE_ATTRIBUTE_DIRECTORY:
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    elif path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
 def _remove_leftover(entry: LeftoverEntry, profile_dir: Path) -> str | None:
-    """Remove one leftover file or destination.
+    """Remove one leftover file, destination or dependency entry.
 
     Args:
         entry: The leftover, found removable an instant before.
@@ -20859,7 +21425,10 @@ def _remove_leftover(entry: LeftoverEntry, profile_dir: Path) -> str | None:
     """
     path = entry.item.location(profile_dir)
     try:
-        path.unlink()
+        if entry.item.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            _remove_dependency_entry(path)
+        else:
+            path.unlink()
     except OSError as e:
         return e.strerror or str(e)
     return None
@@ -21070,12 +21639,12 @@ def written_leftover_records(records: dict[str, Any]) -> PlannedRecords:
 
     Args:
         records: The files_written, machine_wide_destinations,
-            settings_written, os_env_written and mcp_servers records Step 20
-            wrote.
+            settings_written, os_env_written, mcp_servers and
+            dependency_entries records Step 20 wrote.
 
     Returns:
-        The written paths, destinations, settings.json items, variables and
-        servers.
+        The written paths, destinations, settings.json items, variables,
+        servers and dependency entries.
     """
     return PlannedRecords(
         files=frozenset(str(record['path']) for record in records['files_written']),
@@ -21083,6 +21652,9 @@ def written_leftover_records(records: dict[str, Any]) -> PlannedRecords:
         settings=tuple(_settings_items_of(records.get(SETTINGS_WRITTEN_KEY) or [])),
         os_env=frozenset(str(record.get('name')) for record in _dict_records(records, 'os_env_written')),
         mcp_servers=frozenset(str(record.get('name')) for record in _dict_records(records, 'mcp_servers')),
+        dependency_entries=frozenset(
+            path for _command, path, _identity in _dependency_entry_records(records.get(DEPENDENCY_ENTRIES_KEY))
+        ),
     )
 
 
@@ -21108,6 +21680,7 @@ def run_leftovers_step(
     claude_dir: Path,
     manifest_path: Path,
     run_at: str,
+    failed_commands: frozenset[str] = frozenset(),
 ) -> LeftoverRemoval | None:
     """Remove the leftovers of earlier runs in Step 23 and record the outcome in the manifest.
 
@@ -21119,8 +21692,10 @@ def run_leftovers_step(
     leftovers go before the files, so a hook file is checked against
     settings.json as their removal leaves it: a hook file and the hook group
     wiring it leave together. The OS environment variables follow, with one
-    call of the OS environment writer for all, and the MCP server
-    registrations last.
+    call of the OS environment writer for all, then the MCP server
+    registrations, and the dependency entries an earlier run listed last; a
+    dependency entry whose command failed in this run stays, and the ones
+    Step 6 of this run listed are never removed by it.
 
     Args:
         report: The leftovers the run found before consent, or None for a
@@ -21137,6 +21712,7 @@ def run_leftovers_step(
         claude_dir: The base ~/.claude directory.
         manifest_path: The manifest Step 20 wrote.
         run_at: The ISO time of the record.
+        failed_commands: The Step 6 dependency commands that failed.
 
     Returns:
         The outcome, or None when Step 23 has nothing to look at (see
@@ -21181,7 +21757,17 @@ def run_leftovers_step(
             frozenset({LEFTOVER_MCP_SERVER}),
             lambda entries: remove_mcp_leftovers(entries, live, config_dir=config_dir),
         )
-        removal = LeftoverRemoval(outcomes=(*settings_outcomes, *path_outcomes, *os_env_outcomes, *mcp_outcomes))
+        dependency_outcomes = [
+            _leftover_step_outcome(
+                _held_for_failed_command(_leftover_entry(entry.item, profile_dir, live), failed_commands),
+                written=written,
+                profile_dir=profile_dir,
+            )
+            for entry in looked_at if entry.item.kind == LEFTOVER_DEPENDENCY_ENTRY
+        ]
+        removal = LeftoverRemoval(
+            outcomes=(*settings_outcomes, *path_outcomes, *os_env_outcomes, *mcp_outcomes, *dependency_outcomes),
+        )
     _record_manifest_leftovers(manifest_path, leftovers_manifest_record(report, run_at=run_at, removal=removal))
     return removal
 
@@ -21363,6 +21949,7 @@ def write_manifest(
     settings_written: list[dict[str, Any]] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     files_written: list[dict[str, str | None]] | None = None,
+    dependency_entries: list[dict[str, Any]] | None = None,
     link: dict[str, Any] | None = None,
     auto_update: dict[str, Any] | None = None,
     leftovers: dict[str, Any] | None = None,
@@ -21422,6 +22009,10 @@ def write_manifest(
             (mcp_server_records())
         files_written: The files this run installs, each a {path, sha256}
             record of its profile-relative path and content hash
+        dependency_entries: The content directory entries this run's
+            dependency commands installed, one {command, entries} record per
+            command, each entry a {path, identity} record
+            (attribute_dependency_entries())
         link: The profile's links as LinkSpec.record() renders them (the
             linked entries, the source profile, and the origin of each; an
             empty entry list for a typed or environment none, which a re-run
@@ -21468,6 +22059,7 @@ def write_manifest(
         SETTINGS_WRITTEN_KEY: settings_written or [],
         'mcp_servers': mcp_servers or [],
         'files_written': files_written or [],
+        DEPENDENCY_ENTRIES_KEY: dependency_entries or [],
         'auto_update': auto_update,
         LEFTOVERS_MANIFEST_KEY: leftovers if leftovers is not None else leftovers_manifest_record(
             None, run_at=installed_at,
@@ -27615,7 +28207,28 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             for command in source_work.commands:
                 info(f'Left to source profile "{source_work.source}": {command}')
         dependencies = config.get('dependencies', {})
-        dependency_failures = install_dependencies(dependencies)
+        # Each command runs watched: the top-level entries it creates or
+        # touches in the profile's content directories (never through a
+        # link) are credited to it, and an entry an earlier run recorded
+        # that no command installs any more is listed as a leftover, which a
+        # later run given --remove-leftovers removes
+        dependency_observer = dependency_entry_observer(artifact_base_dir, linked_entries)
+        dependency_failures = install_dependencies(dependencies, observer=dependency_observer)
+        dependency_attribution = attribute_dependency_entries(
+            (target_manifest or {}).get(DEPENDENCY_ENTRIES_KEY),
+            dependency_observer.runs,
+            profile_dir=artifact_base_dir,
+            planned_files=planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
+            linked_entries=linked_entries,
+        )
+        if leftover_report is not None:
+            leftover_report = leftover_report.after_dependency_commands(
+                credited=dependency_attribution.credited,
+                failed_commands=frozenset(dependency_failures),
+                listed_now=dependency_attribution.listed_now,
+            )
+            for line in leftover_report.listed_now_lines():
+                info(line)
 
         # A dependency command may have replaced a linked entry with a real
         # directory; the profile would then diverge from its source silently
@@ -27834,6 +28447,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             'auto_update': auto_update_manifest_record(
                 scheduled_update_plan.spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
             ),
+            'dependency_entries': dependency_attribution.records,
         }
         config_source_type = classify_config_source(config_source)
         config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -28003,6 +28617,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 claude_dir=claude_user_dir,
                 manifest_path=artifact_base_dir / MANIFEST_FILENAME,
                 run_at=datetime.now(UTC).isoformat(),
+                failed_commands=frozenset(dependency_failures),
             )
 
             # Every linked entry must still be a link when the run ends
@@ -28179,6 +28794,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 claude_dir=claude_user_dir,
                 manifest_path=claude_user_dir / MANIFEST_FILENAME,
                 run_at=datetime.now(UTC).isoformat(),
+                failed_commands=frozenset(dependency_failures),
             )
 
             # Step 24: Refresh the profiles that link content from the base profile
