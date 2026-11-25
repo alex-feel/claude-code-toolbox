@@ -1647,6 +1647,9 @@ class TestSwitchKeepsSharedDestinations:
         output = _output(capsys)
         assert f'file outside ~/.claude: {shared}' in output
         assert f'Removed {shared}' in output
+        assert output.index('Step 18:') < output.index(f'Removed {shared}'), (
+            'the switch removes in Step 23, once the new configuration is in place'
+        )
         assert not shared.exists()
 
 

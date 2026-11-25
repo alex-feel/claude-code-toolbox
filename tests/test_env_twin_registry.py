@@ -145,6 +145,7 @@ class TestRegistryShape:
             'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'link_dirs',
             'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'link_from',
             'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': 'run_all_commands',
+            'CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS': 'remove_leftovers',
         }
 
 

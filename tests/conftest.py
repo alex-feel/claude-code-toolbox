@@ -608,6 +608,28 @@ def _mock_manifest_write(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
 
 
 @pytest.fixture(autouse=True)
+def _mock_manifest_leftovers_patch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent the Step 23 manifest patch from rewriting a manifest under the real ~/.claude/.
+
+    _record_manifest_leftovers() rewrites the manifest Step 20 wrote with
+    what Step 23 removed, kept and dropped, which in a main()-flow unit test
+    lies under the real home. Both module objects are patched, as the setup
+    script is imported as setup_environment and as scripts.setup_environment.
+    Tests that exercise it directly capture the real function at import time.
+    """
+    if request.node.get_closest_marker('allow_real_home'):
+        return
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, '_record_manifest_leftovers', lambda *_a, **_kw: True)
+
+
+@pytest.fixture(autouse=True)
 def _mock_command_name_conflicts(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace command_name_conflicts with a check that finds nothing in unit tests.
 

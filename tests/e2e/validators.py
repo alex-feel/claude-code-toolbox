@@ -1549,10 +1549,16 @@ def _leftovers_record_errors(leftovers: object) -> list[str]:
         f'Manifest leftovers dropped entry: expected a label and a reason, got {entry!r}'
         for entry in (leftovers['dropped'] if isinstance(leftovers['dropped'], list) else [])
         if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
-        or entry['reason'] not in ('changed', 'gone', 'linked')
+        or entry['reason'] not in ('changed', 'gone', 'linked', 'written again')
     )
-    if leftovers['skipped'] is not None:
-        errors.append(f"Manifest leftovers.skipped: expected None, got {leftovers['skipped']!r}")
+    errors.extend(
+        f'Manifest leftovers.{key} entry: expected a label, got {label!r}'
+        for key in ('removed', 'failed')
+        for label in (leftovers[key] if isinstance(leftovers[key], list) else [])
+        if not isinstance(label, str) or not label.startswith('file')
+    )
+    if leftovers['skipped'] not in (None, 'content downloads failed'):
+        errors.append(f"Manifest leftovers.skipped: expected None or the skip reason, got {leftovers['skipped']!r}")
     return errors
 
 

@@ -1,0 +1,417 @@
+"""E2E tests for --remove-leftovers: Step 23 removes what earlier runs installed and the configuration no longer installs.
+
+The tests install real local YAML files into an isolated home through main(),
+edit the configuration in place (its identity stays the same, as an update of
+a remote configuration does), and re-run the profile with the flag: the
+summary and --dry-run mark what Step 23 removes, Step 23 removes each leftover
+that still holds what the setup wrote, keeps a hook file a settings file still
+wires together with the other hook files, skips every removal after a failed
+content download, and the manifest records what was removed and what stays.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import re
+import stat
+import sys
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from scripts import setup_environment
+from tests.e2e.profile_support import home_state
+from tests.e2e.profile_support import read_manifest
+from tests.e2e.profile_support import run_main
+from tests.e2e.profile_support import write_child_runner
+from tests.e2e.profile_support import write_config
+from tests.e2e.validators import validate_manifest
+
+SKIP = ['--skip-install', '--no-admin']
+HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
+_ANSI = re.compile(r'\x1b\[[0-9;]*m')
+REMOVES = 'Step 23 removes each item marked [remove] only while it still holds what the setup wrote.'
+
+
+@pytest.fixture
+def configs(tmp_path: Path) -> Path:
+    """A directory of configurations with the resources they install beside them."""
+    directory = tmp_path / 'configs'
+    for relative, content in (
+        ('agents/core.md', '# core agent\n'),
+        ('agents/extra.md', '# extra agent\n'),
+        ('rules/rule.md', '# rule\n'),
+        ('rules/other.md', '# other rule\n'),
+        ('files/tool.txt', 'tool content\n'),
+        ('hooks/a.py', 'import h\n'),
+        ('hooks/b.py', 'print("b")\n'),
+        ('hooks/h.py', 'VALUE = 1\n'),
+    ):
+        path = directory / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8')
+    return directory
+
+
+def _output(capture: pytest.CaptureFixture[str]) -> str:
+    """Everything the run printed, with Windows line endings normalized and colors left out."""
+    captured = capture.readouterr()
+    return _ANSI.sub('', (captured.out + captured.err).replace('\r\n', '\n'))
+
+
+def _full(outside: Path) -> dict[str, Any]:
+    """The first version of a configuration: two agents, two rules and a destination outside ~/.claude."""
+    return {
+        'name': 'Leftovers Env',
+        'agents': ['agents/core.md', 'agents/extra.md'],
+        'rules': ['rules/rule.md', 'rules/other.md'],
+        'files-to-download': [{'source': 'files/tool.txt', 'dest': str(outside)}],
+    }
+
+
+def _trimmed() -> dict[str, Any]:
+    """The next version of the same configuration: it drops an agent, a rule and the destination."""
+    return {'name': 'Leftovers Env', 'agents': ['agents/core.md'], 'rules': ['rules/rule.md']}
+
+
+def _hooked(script: str, helpers: list[str]) -> dict[str, Any]:
+    """A configuration whose one Stop hook runs a hooks.files script, with helper modules beside it."""
+    return {
+        'name': 'Hooks Env',
+        'rules': ['rules/rule.md'],
+        'hooks': {
+            'files': [f'hooks/{script}'],
+            'helpers': [f'hooks/{name}' for name in helpers],
+            'events': [{'event': 'Stop', 'type': 'command', 'command': script}],
+        },
+    }
+
+
+def _block(output: str) -> list[str]:
+    """The rows of the installation summary's leftovers block, below its heading line."""
+    assert HEADING in output, output
+    return output.split(HEADING)[1].split('\n', 1)[1].split('\n\n')[0].strip('\n').split('\n')
+
+
+@contextlib.contextmanager
+def _undeletable(path: Path) -> Generator[None]:
+    """Make a file impossible to remove for as long as the block runs.
+
+    Windows refuses to delete a file another handle holds open; elsewhere a
+    file cannot be unlinked from a directory without write permission. The
+    file sits in a directory of its own, so no other step writes there.
+    """
+    if sys.platform == 'win32':
+        with path.open('rb'):
+            yield
+        return
+    mode = path.parent.stat().st_mode
+    path.parent.chmod(stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    try:
+        yield
+    finally:
+        path.parent.chmod(mode)
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestFlaggedRunRemovesLeftovers:
+    """A run given the flag removes the leftovers in Step 23 and records each removal."""
+
+    @pytest.mark.parametrize('profile', ['prof-a', None], ids=['isolated', 'base'])
+    def test_dry_run_previews_and_the_flagged_run_removes(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        configs: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        profile: str | None,
+    ) -> None:
+        outside = tmp_path / 'shared' / 'tool.txt'
+        cfg = write_config(configs, 'env.yaml', _full(outside))
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / profile if profile else claude_dir
+        names = ['--command-names', profile] if profile else []
+        rerun = ['--profile', profile or 'base', *SKIP, '--remove-leftovers']
+        assert run_main([str(cfg), *SKIP, '--yes', *names]) == 0
+        write_config(configs, 'env.yaml', _trimmed())
+        capsys.readouterr()
+
+        before = home_state(e2e_isolated_home['home'])
+        assert run_main([*rerun, '--dry-run']) == 0
+        dry = _output(capsys)
+        assert home_state(e2e_isolated_home['home']) == before, 'a dry run removes nothing'
+        assert _block(dry) == [
+            f'  [would be removed in Step 23] file: {profile_dir / "agents" / "extra.md"}',
+            f'  [would be removed in Step 23] file: {profile_dir / "rules" / "other.md"}',
+            f'  [would be removed in Step 23] file outside ~/.claude: {outside}',
+            (
+                '  Step 23 removes each item marked [would be removed in Step 23] only while it still holds what the '
+                'setup wrote.'
+            ),
+        ]
+        if profile:
+            assert f'[machine-wide] remove leftover file: {outside}' in dry
+        else:
+            assert 'remove leftover file' not in dry, 'a base run lists no machine-wide writes'
+
+        assert run_main([*rerun, '--yes']) == 0
+
+        output = _output(capsys)
+        assert _block(output) == [
+            f'  [remove] file: {profile_dir / "agents" / "extra.md"}',
+            f'  [remove] file: {profile_dir / "rules" / "other.md"}',
+            f'  [remove] file outside ~/.claude: {outside}',
+            f'  {REMOVES}',
+        ]
+        assert 'Step 23: Removing leftovers...' in output
+        assert output.index('Step 20:') < output.index('Step 23: Removing leftovers...')
+        assert f'Removed leftover file: {profile_dir / "rules" / "other.md"}' in output
+        assert '   * Leftovers removed (3):' in output
+        for path in (profile_dir / 'agents' / 'extra.md', profile_dir / 'rules' / 'other.md', outside):
+            assert not path.exists(), f'{path} was not removed'
+        assert (profile_dir / 'agents' / 'core.md').is_file()
+        assert (profile_dir / 'rules' / 'rule.md').is_file()
+        manifest = read_manifest(profile_dir)
+        assert manifest['leftovers']['items'] == []
+        assert manifest['leftovers']['removed'] == [
+            'file: agents/extra.md', 'file: rules/other.md', f'file outside ~/.claude: {outside}',
+        ]
+        config = {**_trimmed(), 'command-names': [profile]} if profile else _trimmed()
+        assert not validate_manifest(profile_dir / 'manifest.json', config)
+
+        assert run_main(['--profile', profile or 'base', *SKIP, '--yes']) == 0
+
+        assert HEADING not in _output(capsys), 'nothing is left to list'
+
+    def test_the_variable_turns_the_flag_on(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = write_config(configs, 'env.yaml', _full(tmp_path / 'shared' / 'tool.txt'))
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        write_config(configs, 'env.yaml', _trimmed())
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS', '1')
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'prof-a', *SKIP, '--yes']) == 0
+
+        assert f'  [remove] file: {profile_dir / "rules" / "other.md"}' in _block(_output(capsys))
+        assert not (profile_dir / 'rules' / 'other.md').exists()
+
+    def test_without_the_flag_the_summary_names_it(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = write_config(configs, 'env.yaml', _full(tmp_path / 'shared' / 'tool.txt'))
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        write_config(configs, 'env.yaml', _trimmed())
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'prof-a', *SKIP, '--yes']) == 0
+
+        output = _output(capsys)
+        assert f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}' in _block(output)
+        assert '   * Leftovers left in place (3; --remove-leftovers removes them):' in output
+        assert 'Step 23' not in output, 'without the flag Step 23 has nothing to do'
+        assert (profile_dir / 'rules' / 'other.md').is_file()
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestFailedRemoval:
+    """A leftover Step 23 cannot remove stays recorded, is named in the errors block and ends the run with exit 1."""
+
+    def test_failed_removal_is_carried_and_retried(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        outside = tmp_path / 'locked' / 'tool.txt'
+        cfg = write_config(configs, 'env.yaml', _full(outside))
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        write_config(configs, 'env.yaml', _trimmed())
+        digest = setup_environment._sha256_of_file(outside)
+        capsys.readouterr()
+
+        with _undeletable(outside):
+            code = run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers'])
+
+        output = _output(capsys)
+        assert code == 1, output
+        assert 'The following leftovers could not be removed (they stay recorded):' in output
+        assert f'file outside ~/.claude: {outside}: ' in output
+        assert 'Retry with --profile prof-a --remove-leftovers.' in output
+        assert outside.is_file()
+        assert not (profile_dir / 'rules' / 'other.md').exists(), 'the other leftovers are still removed'
+        leftovers = read_manifest(profile_dir)['leftovers']
+        assert leftovers['failed'] == [f'file outside ~/.claude: {outside}']
+        assert leftovers['items'] == [{'kind': 'destination', 'path': str(outside), 'sha256': digest}]
+
+        assert run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        output = _output(capsys)
+        assert f'  [remove] file outside ~/.claude: {outside}' in _block(output), 'the carried leftover is listed again'
+        assert not outside.exists()
+        assert read_manifest(profile_dir)['leftovers']['items'] == []
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestContentDownloadFailure:
+    """A run whose content download fails removes no leftover, because what replaces them may be missing."""
+
+    def test_removal_is_skipped_and_the_leftovers_stay_recorded(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = write_config(configs, 'env.yaml', _full(tmp_path / 'shared' / 'tool.txt'))
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        write_config(configs, 'env.yaml', {**_trimmed(), 'rules': ['rules/rule.md', 'rules/missing.md']})
+        capsys.readouterr()
+
+        code = run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers'])
+
+        output = _output(capsys)
+        assert code == 1, output
+        assert 'The following resources failed to download:' in output
+        assert 'Leftovers not removed: content downloads failed' in output
+        assert (profile_dir / 'rules' / 'other.md').is_file()
+        assert (profile_dir / 'agents' / 'extra.md').is_file()
+        leftovers = read_manifest(profile_dir)['leftovers']
+        assert leftovers['skipped'] == 'content downloads failed'
+        assert [item['path'] for item in leftovers['items']] == [
+            'agents/extra.md', 'rules/other.md', str(tmp_path / 'shared' / 'tool.txt'),
+        ]
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestConfigurationSwitchAfterAFailedDownload:
+    """A switch whose content download fails removes nothing in Step 23 and keeps the previous files recorded."""
+
+    def test_a_later_flagged_run_removes_what_the_switch_left(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg_a = write_config(configs, 'a.yaml', {'name': 'A', 'agents': ['agents/core.md'], 'rules': ['rules/rule.md']})
+        cfg_b = write_config(configs, 'b.yaml', {'name': 'B', 'rules': ['rules/rule.md', 'rules/missing.md']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg_a), *SKIP, '--yes']) == 0
+        digest = setup_environment._sha256_of_file(claude_dir / 'agents' / 'core.md')
+        capsys.readouterr()
+
+        code = run_main([str(cfg_b), *SKIP, '--yes', '--switch-config'])
+
+        output = _output(capsys)
+        assert code == 1, output
+        assert 'Leftovers not removed: content downloads failed' in output
+        assert 'Removing what the previous configuration' not in output
+        assert (claude_dir / 'agents' / 'core.md').is_file()
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert leftovers['skipped'] == 'content downloads failed'
+        assert leftovers['items'] == [{'kind': 'file', 'path': 'agents/core.md', 'sha256': digest}]
+        write_config(configs, 'b.yaml', {'name': 'B', 'rules': ['rules/rule.md']})
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        assert f'  [remove] file: {claude_dir / "agents" / "core.md"}' in _block(_output(capsys))
+        assert not (claude_dir / 'agents' / 'core.md').exists()
+        assert read_manifest(claude_dir)['leftovers']['removed'] == ['file: agents/core.md']
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestRenamedHookFile:
+    """A hook file the configuration renamed leaves once no settings file a session reads wires it."""
+
+    def test_isolated_profile_removes_the_old_script_and_its_helper(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Step 18 rebuilds config.json without the old script, so the summary already marks it for removal."""
+        cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        assert (profile_dir / 'hooks' / 'a.py').as_posix() in (profile_dir / 'config.json').read_text(encoding='utf-8')
+        write_config(configs, 'hooks.yaml', _hooked('b.py', []))
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        output = _output(capsys)
+        assert _block(output) == [
+            f'  [remove] file: {profile_dir / "hooks" / "a.py"}',
+            f'  [remove] file: {profile_dir / "hooks" / "h.py"}',
+            f'  {REMOVES}',
+        ]
+        assert not (profile_dir / 'hooks' / 'a.py').exists()
+        assert not (profile_dir / 'hooks' / 'h.py').exists()
+        assert (profile_dir / 'hooks' / 'b.py').is_file()
+        config = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
+        assert (profile_dir / 'hooks' / 'b.py').as_posix() in json.dumps(config['hooks'])
+
+    def test_base_profile_keeps_a_script_its_settings_json_still_wires(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The base settings.json keeps the hook group that runs the old script, so the script stays with it."""
+        cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'hooks.yaml', _hooked('b.py', []))
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        output = _output(capsys)
+        settings = claude_dir / 'settings.json'
+        assert _block(output) == [
+            f'  [kept: still wired in {settings} hooks.Stop] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [kept: stays with hooks/a.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}',
+            '  They stay in place.',
+        ]
+        assert (claude_dir / 'hooks' / 'a.py').is_file(), 'a wired script is never removed'
+        assert (claude_dir / 'hooks' / 'h.py').is_file()
+        assert [item['path'] for item in read_manifest(claude_dir)['leftovers']['items']] == ['hooks/a.py', 'hooks/h.py']
+
+    def test_a_dependent_that_links_hooks_keeps_the_script_until_its_refresh(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent's config.json wires the source's script until Step 24 refreshes it; a later flagged run removes it."""
+        cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
+        claude_dir = e2e_isolated_home['claude_dir']
+        source, lab = claude_dir / 'team-1', claude_dir / 'team-lab'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        link = ['--command-names', 'team-lab', '--link-dirs', 'hooks', '--link-from', 'team-1']
+        assert run_main([str(cfg), *SKIP, '--yes', *link]) == 0
+        assert (lab / 'hooks' / 'a.py').as_posix() in (lab / 'config.json').read_text(encoding='utf-8')
+        write_config(configs, 'hooks.yaml', _hooked('b.py', []))
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'team-1', *SKIP, '--yes', '--remove-leftovers'], argv0=str(runner))
+
+        output = _output(capfd)
+        assert code == 0, output
+        wired = (
+            f'still wired in profile team-lab ({lab / "config.json"} hooks.Stop) until that profile is refreshed; '
+            'a later run with --remove-leftovers removes it'
+        )
+        assert _block(output) == [
+            f'  [kept: {wired}] file: {source / "hooks" / "a.py"}',
+            f'  [kept: stays with hooks/a.py, which is still wired] file: {source / "hooks" / "h.py"}',
+            '  They stay in place.',
+        ]
+        assert (source / 'hooks' / 'a.py').is_file()
+        assert (source / 'hooks' / 'h.py').is_file()
+        assert '- team-lab: ok' in output
+        assert (lab / 'hooks' / 'b.py').as_posix() in (lab / 'config.json').read_text(encoding='utf-8'), (
+            'Step 24 rewired the dependent'
+        )
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes', '--remove-leftovers'], argv0=str(runner)) == 0
+
+        output = _output(capfd)
+        assert f'  [remove] file: {source / "hooks" / "a.py"}' in _block(output)
+        assert not (source / 'hooks' / 'a.py').exists()
+        assert not (source / 'hooks' / 'h.py').exists()
+        assert (source / 'hooks' / 'b.py').is_file()
+        assert os.path.isfile(lab / 'hooks' / 'b.py'), 'the dependent still reaches the new script through its link'

@@ -29,6 +29,7 @@ from tests.e2e.validators import validate_manifest
 SKIP = ['--skip-install', '--no-admin']
 HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
 NOTE = 'was installed by a release that recorded no leftovers; they are tracked from this run on.'
+FLAG_FOOTER = f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}'
 
 
 @pytest.fixture
@@ -121,10 +122,11 @@ class TestLeftoversAreListedAndKept:
             f'  [leftover] file: {profile_dir / "rules" / "other.md"}',
             f'  [leftover] file outside ~/.claude: {outside}',
             '  They stay in place.',
+            FLAG_FOOTER,
         ]
         assert _block(output).strip('\n').split('\n') == expected_rows
         assert dry_block == _block(output), '--dry-run lists the same leftovers'
-        assert '   * Leftovers left in place (3):' in output
+        assert '   * Leftovers left in place (3; --remove-leftovers removes them):' in output
         assert f'       - file: {profile_dir / "rules" / "other.md"}' in output
         assert NOTE not in output
         for path in (profile_dir / 'agents' / 'extra.md', profile_dir / 'rules' / 'other.md', outside):
@@ -191,6 +193,7 @@ class TestChangedAndGoneLeftovers:
             f'  [changed since written: left in place, no longer tracked] file: {profile_dir / "rules" / "other.md"}',
             f'  [leftover] file outside ~/.claude: {outside}',
             '  They stay in place.',
+            FLAG_FOOTER,
         ]
         assert '   * No longer tracked:' in output
         assert f'       - file: {profile_dir / "rules" / "other.md"} (changed since written)' in output
@@ -208,6 +211,7 @@ class TestChangedAndGoneLeftovers:
         assert _block(_output(capsys)).strip('\n').split('\n') == [
             f'  [leftover] file outside ~/.claude: {outside}',
             '  They stay in place.',
+            FLAG_FOOTER,
         ], 'a dropped leftover is reported only once'
         assert read_manifest(profile_dir)['leftovers']['dropped'] == []
 
@@ -241,7 +245,7 @@ class TestDestinationAnotherProfileRecords:
 
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestConfigurationSwitch:
-    """What an accepted configuration switch removes before Step 1 is not listed or carried as a leftover."""
+    """What an accepted configuration switch removes in Step 23 is listed by the switch guard, not as left in place."""
 
     def test_switch_lists_only_what_it_keeps(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -269,12 +273,18 @@ class TestConfigurationSwitch:
             f'  [kept: recorded by profile team-1] file outside ~/.claude: {held}',
             '  They stay in place.',
         ], 'the files the switch removes are not listed as left in place'
+        assert output.index('Step 18:') < output.index('Removing what the previous configuration of "base"'), (
+            'the switch removes after the new configuration is in place'
+        )
         assert not (claude_dir / 'agents' / 'core.md').exists()
         assert not own.exists()
         assert held.is_file()
-        assert _items(claude_dir) == [
+        assert '   * Leftovers removed (2):' in output
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert leftovers['items'] == [
             {'kind': 'destination', 'path': str(held), 'sha256': setup_environment._sha256_of_file(held)},
         ]
+        assert sorted(leftovers['removed']) == sorted(['file: agents/core.md', f'file outside ~/.claude: {own}'])
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')

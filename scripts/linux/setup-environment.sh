@@ -16,6 +16,8 @@
 # To make a profile that links content from another profile install Claude Code, the IDE extension and Node.js
 # and run every dependency command itself, instead of leaving that work to its source's run (same as --run-all-commands):
 #   export CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS=1
+# To remove what earlier runs installed and the configuration no longer installs (same as --remove-leftovers):
+#   export CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS=1
 
 set -euo pipefail
 

@@ -280,8 +280,8 @@ class TestComputeProfileLeftovers:
             (str(outside), 'removable', ''),
         ]
 
-    def test_excluding_drops_what_a_configuration_switch_removes(self, layout: tuple[Path, Path]) -> None:
-        """The residue an accepted switch removes before Step 1 is never reported as left in place."""
+    def test_switch_removals_are_left_out_of_the_listing(self, layout: tuple[Path, Path]) -> None:
+        """The residue an accepted switch removes in Step 23 is listed by the switch guard, not as left in place."""
         claude_dir, profile_dir = layout
         rule = _write(profile_dir / 'rules' / 'old.md', b'old')
         agent = _write(profile_dir / 'agents' / 'old.md', b'agent')
@@ -292,10 +292,16 @@ class TestComputeProfileLeftovers:
             'machine_wide_destinations': [{'dest': str(outside), 'source': 's', 'sha256': tool}],
         }
 
-        report = _compute(manifest, profile_dir, claude_dir).excluding([profile_dir / 'Rules' / 'old.md', outside])
+        report = _compute(manifest, profile_dir, claude_dir).with_switch_removals(
+            [profile_dir / 'Rules' / 'old.md', outside],
+        )
 
-        assert [entry.item.path for entry in report.entries] == ['agents/old.md']
-        assert report.excluding([]) is report
+        assert [entry.item.path for entry in report.listed()] == ['agents/old.md']
+        assert len(report.carried()) == 3, 'they stay recorded until Step 23 removes them'
+        assert [line for line in report.lines() if line.startswith('[')] == [
+            f'[leftover] file: {profile_dir / "agents" / "old.md"}',
+        ]
+        assert report.with_switch_removals([]) is report
 
     def test_destinations(self, layout: tuple[Path, Path]) -> None:
         claude_dir, profile_dir = layout
@@ -451,6 +457,7 @@ class TestReportLines:
             f'[now linked from profile src: no longer tracked] file: {profile_dir / "skills" / "x" / "a.md"}',
             f'[kept: recorded by profile other] file outside ~/.claude: {outside}',
             'They stay in place.',
+            setup_environment.LEFTOVERS_FLAG_FOOTER,
         ]
 
     def test_untracked_note_alone(self, tmp_path: Path) -> None:
@@ -473,7 +480,7 @@ class TestReportLines:
         profile_dir = tmp_path / 'p'
         outside = profile_dir.parent / 'tool.txt'
         assert self._report(profile_dir).completion_sections() == [
-            ('Leftovers left in place (3):', [
+            ('Leftovers left in place (3; --remove-leftovers removes them):', [
                 f'file: {profile_dir / "rules" / "old.md"}',
                 f'file: {profile_dir / "rules" / "locked.md"} (cannot check: Permission denied)',
                 f'file outside ~/.claude: {outside} (kept: recorded by profile other)',
