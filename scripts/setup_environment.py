@@ -5439,6 +5439,23 @@ def _decide_claude_install(
     )
 
 
+def normalized_claude_code_version(value: object) -> str | None:
+    """Read a claude-code-version value as the release a run pins.
+
+    Args:
+        value: The configuration's claude-code-version value, a YAML number
+            included.
+
+    Returns:
+        The version as text, or None when the run installs the latest
+        release: the value is absent, blank or 'latest' in any letter case.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if not text or text.lower() == 'latest' else text
+
+
 def apply_auto_update_settings(
     claude_code_version_normalized: str | None,
     global_config: dict[str, Any] | None,
@@ -19494,6 +19511,9 @@ class PlannedRecords:
             settings.json, in order, so the file can be read as the run
             leaves it before the run writes it; empty when only the
             records are known.
+        settings_deleted: The key paths of the base settings.json members
+            those deltas declare null: the write deletes each of them with
+            every value, list element and hook group below it.
         os_env: The names of the OS environment variables it declares, set
             or deleted: Step 7 manages each of them.
         mcp_servers: The names of the MCP servers it declares, at any scope:
@@ -19509,6 +19529,7 @@ class PlannedRecords:
     destinations: frozenset[str] = frozenset()
     settings: tuple[LeftoverItem, ...] = ()
     settings_deltas: tuple[dict[str, Any], ...] = ()
+    settings_deleted: frozenset[tuple[str, ...]] = frozenset()
     os_env: frozenset[str] = frozenset()
     mcp_servers: frozenset[str] = frozenset()
     dependency_entries: frozenset[str] = frozenset()
@@ -19538,13 +19559,17 @@ class PlannedRecords:
             item: A leftover.
 
         Returns:
-            True for an item of the same identity, and for a profile file
-            inside a dependency entry the commands installed, or that is
-            one: it was installed again with the entry. A planned file never
-            makes another file of its entry installed.
+            True for an item of the same identity; for a settings item at or
+            below a member the configuration declares null, which its own
+            write deletes; and for a profile file inside a dependency entry
+            the commands installed, or that is one: it was installed again
+            with the entry. A planned file never makes another file of its
+            entry installed.
         """
         if item.key() in self._keys:
             return True
+        if item.is_setting():
+            return any(item.keys[:len(deleted)] == deleted for deleted in self.settings_deleted)
         return item.kind == LEFTOVER_FILE and _content_entry_key(item.path) in self._installed_entries
 
     def writes_group(self, event: str, group: object) -> bool:
@@ -19588,6 +19613,7 @@ def planned_records(
         destinations=frozenset(str(target) for _entry, target in _download_targets_outside(downloads, claude_dir)),
         settings=tuple(_settings_items_of(_settings_records_of_deltas(*deltas))),
         settings_deltas=deltas,
+        settings_deleted=frozenset(keys for delta in deltas for keys in _settings_delta_deletions(delta)),
         os_env=_declared_os_env_names(config),
         mcp_servers=_declared_mcp_server_names(config),
     )
@@ -19655,6 +19681,29 @@ def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
     return list(items.values())
 
 
+def _settings_delta_deletions(delta: Mapping[str, Any]) -> list[tuple[str, ...]]:
+    """List the key paths of the members a settings delta declares null.
+
+    Args:
+        delta: What a step merges into settings.json, whose null members
+            the merge deletes from the file (a null inside a list is data).
+
+    Returns:
+        The keys from the top of settings.json to each null member.
+    """
+    deletions: list[tuple[str, ...]] = []
+
+    def _walk(members: Mapping[str, Any], keys: tuple[str, ...]) -> None:
+        for key, member in members.items():
+            if member is None:
+                deletions.append((*keys, str(key)))
+            elif isinstance(member, dict):
+                _walk(cast(dict[str, Any], member), (*keys, str(key)))
+
+    _walk(delta, ())
+    return deletions
+
+
 def settings_write_records(delta: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Record what a settings delta writes into settings.json, as digests only.
 
@@ -19706,15 +19755,21 @@ def planned_settings_deltas(config: dict[str, Any], claude_dir: Path) -> tuple[d
             commands name.
 
     Returns:
-        The user-settings section with its command keys expanded as Step 14
-        expands them, and the status line and hooks delta Step 18 builds.
+        The user-settings section as Step 14 merges it, with the update
+        controls a pinned run injects and its command keys expanded as
+        Step 14 expands them, and the status line and hooks delta Step 18
+        builds.
     """
     user_settings = config.get('user-settings')
+    section = deepcopy(cast(dict[str, Any], user_settings)) if isinstance(user_settings, dict) else {}
+    if normalized_claude_code_version(config.get('claude-code-version')) is not None:
+        section = _inject_auto_update_controls(None, section, None, [], [])[1] or {}
+        section = _inject_ide_extension_controls(None, section, None, [], [])[1] or {}
     profile_config = {
         camel_key: config[yaml_key] for yaml_key, camel_key in _YAML_TO_CAMEL_PROFILE_KEYS.items() if yaml_key in config
     }
     return (
-        _expand_tilde_keys_in_settings(cast(dict[str, Any], user_settings)) if isinstance(user_settings, dict) else {},
+        _expand_tilde_keys_in_settings(section),
         _profile_settings_delta(profile_config, claude_dir / 'hooks').settings,
     )
 
@@ -21386,7 +21441,8 @@ def compute_profile_leftovers(
     environment variables and MCP server registrations the previous run
     recorded and the leftovers it carried, one per identity,
     the written record first. A record without a digest is never a
-    leftover, and neither is anything the configuration installs again.
+    leftover, and neither is anything the configuration installs again,
+    nor a settings.json item it deletes (PlannedRecords.writes()).
 
     Args:
         manifest: The profile's manifest.
@@ -27771,24 +27827,13 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
 
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
-        claude_code_version_normalized = None  # Default to latest
-
-        if claude_code_version is not None:
-            # Convert to string to handle YAML numeric values (e.g., 1.0 becomes "1.0")
-            claude_code_version_str = str(claude_code_version).strip()
-
-            # Handle empty strings
-            if not claude_code_version_str:
-                warning('Empty claude-code-version value, using latest')
-                claude_code_version_normalized = None
-            # Handle "latest" value (case-insensitive)
-            elif claude_code_version_str.lower() == 'latest':
-                info(f'Claude Code version specified: {claude_code_version} (will install latest available)')
-                claude_code_version_normalized = None
-            # Specific version specified
-            else:
-                info(f'Claude Code version specified: {claude_code_version_str}')
-                claude_code_version_normalized = claude_code_version_str
+        claude_code_version_normalized = normalized_claude_code_version(claude_code_version)
+        if claude_code_version_normalized is not None:
+            info(f'Claude Code version specified: {claude_code_version_normalized}')
+        elif claude_code_version is not None and not str(claude_code_version).strip():
+            warning('Empty claude-code-version value, using latest')
+        elif claude_code_version is not None:
+            info(f'Claude Code version specified: {claude_code_version} (will install latest available)')
 
         # Set process env early to prevent CLI auto-install during installation
         if claude_code_version_normalized is not None:

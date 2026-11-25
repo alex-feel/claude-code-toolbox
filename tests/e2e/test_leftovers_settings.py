@@ -192,6 +192,97 @@ class TestBaseSettingsLeftovers:
         assert _commands(final['hooks']['Stop']) == [_hook_command(claude_dir, 'b.py')]
         assert not (claude_dir / 'hooks' / 'a.py').exists()
 
+    def test_a_value_or_list_the_configuration_now_deletes_is_neither_listed_nor_carried(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A null in user-settings makes Step 14 delete the item, so no run reports it as left in place."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        settings_path = claude_dir / 'settings.json'
+        cfg = write_config(configs, 'base.yaml', {
+            'name': 'Null Settings',
+            'user-settings': {
+                'theme': 'dark',
+                'env': {'FOO': 'x'},
+                'availableModels': ['opus', 'sonnet'],
+                'permissions': {'allow': ['Read'], 'ask': ['Bash(git push)']},
+            },
+        })
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        recorded = [record['path'] for record in read_manifest(claude_dir)['settings_written']]
+        assert ['env', 'FOO'] in recorded
+        assert ['availableModels'] in recorded
+        assert ['permissions', 'ask'] in recorded
+        write_config(configs, 'base.yaml', {
+            'name': 'Null Settings',
+            'user-settings': {
+                'env': {'FOO': None},
+                'availableModels': None,
+                'permissions': {'allow': ['Read'], 'ask': None},
+            },
+        })
+        capsys.readouterr()
+        rows = [
+            f'  [leftover] {settings_path}: theme',
+            '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ]
+        deleted = [f'{settings_path}: env.FOO', f'{settings_path}: availableModels', f'{settings_path}: permissions.ask']
+
+        assert run_main(['--profile', 'base', *SKIP, '--dry-run']) == 0
+        assert leftover_rows(printed(capsys)) == rows
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        output = printed(capsys)
+        assert leftover_rows(output) == rows
+        assert f'       - {settings_path}: theme' in output, 'the completion summary lists the value left in place'
+        assert not [name for name in deleted if name in output], 'nothing the run deleted is listed anywhere'
+        final = _settings(claude_dir)
+        assert 'FOO' not in final.get('env', {})
+        assert 'availableModels' not in final
+        assert final['permissions'] == {'allow': ['Read']}
+        assert final['theme'] == 'dark', 'the leftover stays in place without the flag'
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert [item['path'] for item in leftovers['items']] == [['theme']]
+        assert leftovers['dropped'] == []
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        output = printed(capsys)
+        assert leftover_rows(output) == rows
+        assert 'already gone' not in output, 'the next run finds nothing it carried gone'
+
+    def test_a_pin_writes_the_update_controls_in_place_of_a_null_env_so_its_variables_stay_leftovers(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A pinned run merges the update controls into env instead of deleting it, so a variable written earlier stays."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        settings_path = claude_dir / 'settings.json'
+        cfg = write_config(configs, 'base.yaml', {
+            'name': 'Pinned Null Env', 'claude-code-version': PIN, 'user-settings': {'env': {'FOO': 'x'}},
+        })
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'base.yaml', {
+            'name': 'Pinned Null Env', 'claude-code-version': PIN, 'user-settings': {'env': None},
+        })
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        assert leftover_rows(printed(capsys)) == [
+            f'  [leftover] {settings_path}: env.FOO',
+            '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ]
+        assert _settings(claude_dir)['env']['FOO'] == 'x', 'the null env deleted nothing'
+        assert [item['path'] for item in read_manifest(claude_dir)['leftovers']['items']] == [['env', 'FOO']]
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        env = _settings(claude_dir)['env']
+        assert 'FOO' not in env
+        assert env['DISABLE_UPDATES'] == '1', 'the update controls of the pin stay'
+
     def test_a_remembered_selection_that_splits_a_matcher_group_lists_no_leftover_group(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:

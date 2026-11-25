@@ -470,6 +470,76 @@ class TestComputation:
         element = f'settings.json: permissions.allow element {digest("B")[:12]}'
         assert _states(report) == {element: 'removable'}
 
+    @pytest.mark.parametrize(
+        ('user_settings', 'listed'),
+        [
+            ({'env': {'FOO': None}}, ['env.FOO_BAR', 'availableModels', 'permissions.ask']),
+            ({'env': None}, ['availableModels', 'permissions.ask']),
+            ({'availableModels': None}, ['env.FOO', 'env.FOO_BAR', 'permissions.ask']),
+            ({'permissions': {'ask': None}}, ['env.FOO', 'env.FOO_BAR', 'availableModels']),
+        ],
+    )
+    def test_an_item_the_configuration_deletes_is_no_leftover(
+        self, claude_dir: Path, user_settings: dict[str, Any], listed: list[str],
+    ) -> None:
+        """Step 14 deletes what a null names, so no value, element or list at or below it is left behind."""
+        self._assert_listed_and_carried(claude_dir, {'user-settings': user_settings}, listed)
+
+    @pytest.mark.parametrize(
+        ('user_settings', 'listed'),
+        [
+            ({'env': None}, ['env.FOO', 'env.FOO_BAR', 'availableModels', 'permissions.ask']),
+            ({'env': {'FOO': None}}, ['env.FOO_BAR', 'availableModels', 'permissions.ask']),
+        ],
+    )
+    def test_a_pin_turns_a_null_env_into_the_update_controls_which_delete_no_variable(
+        self, claude_dir: Path, user_settings: dict[str, Any], listed: list[str],
+    ) -> None:
+        """A pinned run writes the update controls into env, in place of a null env, and keeps a null member."""
+        self._assert_listed_and_carried(
+            claude_dir, {'claude-code-version': '2.1.280', 'user-settings': user_settings}, listed,
+        )
+
+    @pytest.mark.parametrize('pin', ['latest', ' ', None])
+    def test_a_run_installing_the_latest_release_deletes_a_null_env(self, claude_dir: Path, pin: str | None) -> None:
+        self._assert_listed_and_carried(
+            claude_dir, {'claude-code-version': pin, 'user-settings': {'env': None}}, ['availableModels', 'permissions.ask'],
+        )
+
+    @pytest.mark.parametrize(
+        ('value', 'pinned'),
+        [('2.1.280', '2.1.280'), (' 2.1.280 ', '2.1.280'), (1.0, '1.0'), ('LATEST', None), ('', None), (None, None)],
+    )
+    def test_the_pin_is_read_as_the_run_reads_it(self, value: object, pinned: str | None) -> None:
+        assert setup_environment.normalized_claude_code_version(value) == pinned
+
+    @staticmethod
+    def _assert_listed_and_carried(claude_dir: Path, config: dict[str, Any], listed: list[str]) -> None:
+        _settings(claude_dir, {
+            'env': {'FOO': 'x', 'FOO_BAR': 'y'},
+            'availableModels': ['opus', 'sonnet'],
+            'permissions': {'ask': ['Bash(git push)']},
+        })
+        records = {
+            'env.FOO': [_record('setting', ['env', 'FOO'], 'x')],
+            'env.FOO_BAR': [_record('setting', ['env', 'FOO_BAR'], 'y')],
+            'availableModels': [
+                _record('setting-element', ['availableModels'], 'opus'),
+                _record('setting-element', ['availableModels'], 'sonnet'),
+            ],
+            'permissions.ask': [_record('setting-element', ['permissions', 'ask'], 'Bash(git push)')],
+        }
+        planned = setup_environment.planned_records(config, claude_dir, claude_dir=claude_dir, base=True)
+
+        report = _compute(_manifest_with([record for group in records.values() for record in group]), claude_dir,
+                          planned=planned)
+
+        expected = sorted(_item(record).label() for path in listed for record in records[path])
+        assert sorted(_states(report)) == expected
+        assert set(_states(report).values()) == {'removable'}
+        carried = setup_environment.leftovers_manifest_record(report, run_at='2026-11-25T00:00:00Z')['items']
+        assert sorted(_item(record).label() for record in carried) == expected
+
     def test_rows_name_the_settings_file_and_what_sits_there(self, claude_dir: Path) -> None:
         group = {'matcher': '*', 'hooks': [_hook('x')]}
         settings = _settings(claude_dir, {'theme': 'dark', 'permissions': {'allow': ['B']}, 'hooks': {'Stop': [group]}})
