@@ -2219,17 +2219,23 @@ def expand_tildes_for_cmd(command: str) -> str:
     )
 
 
+# The spellings of the home folder at the start of a path: ~, $HOME,
+# ${HOME}, "$HOME", $env:USERPROFILE and %USERPROFILE%. The lookbehind keeps
+# a token glued to a preceding path or word (foo~/.claude, /x/$HOME) from
+# counting as one.
+_HOME_TOKEN_LOOKBEHIND = r'(?<![\w/\\.\-])'
+_HOME_TOKEN = r'"\$HOME"|\$\{HOME\}|\$HOME|\$env:USERPROFILE|%USERPROFILE%|~'
+# A home token that opens a path: the token followed by a separator
+_HOME_PATH_PREFIX_PATTERN = re.compile(rf'{_HOME_TOKEN_LOOKBEHIND}(?:{_HOME_TOKEN})(?=[\\/])')
 # A path naming the base config home or a ~/.claude.json sibling in any
-# spelling: the home token (~, $HOME, ${HOME}, "$HOME", $env:USERPROFILE,
-# %USERPROFILE%), a separator, .claude, then either a .json sibling suffix
-# or a boundary. A sibling suffix accepts the shell globs a cleanup line
-# spells (.claude.json.corrupted.*, .claude.json.backup.*), so the glob
-# moves into the profile with the path. The lookbehind keeps a token glued
-# to a preceding path or word (foo~/.claude, /x/$HOME) from matching; the
-# lookahead keeps ~/.claude-backup and ~/.claudex out.
+# spelling: a home token, a separator, .claude, then either a .json sibling
+# suffix or a boundary. A sibling suffix accepts the shell globs a cleanup
+# line spells (.claude.json.corrupted.*, .claude.json.backup.*), so the glob
+# moves into the profile with the path. The lookahead keeps ~/.claude-backup
+# and ~/.claudex out.
 _CONFIG_HOME_PATTERN = re.compile(
-    r'(?<![\w/\\.\-])'
-    r'(?P<home>"\$HOME"|\$\{HOME\}|\$HOME|\$env:USERPROFILE|%USERPROFILE%|~)'
+    rf'{_HOME_TOKEN_LOOKBEHIND}'
+    rf'(?P<home>{_HOME_TOKEN})'
     r'(?P<sep>[\\/])\.claude'
     r'(?P<sibling>\.json(?:\.[\w*?-]+)*)?'
     r'(?![\w.\-])',
@@ -19020,6 +19026,11 @@ LEFTOVER_SETTING = 'setting'
 LEFTOVER_SETTING_ELEMENT = 'setting-element'
 LEFTOVER_HOOK_GROUP = 'hook-group'
 LEFTOVER_SETTINGS_KINDS = frozenset({LEFTOVER_SETTING, LEFTOVER_SETTING_ELEMENT, LEFTOVER_HOOK_GROUP})
+# The settings.json objects recorded and removed as one value: the status
+# line is one display configuration, which Claude Code's /statusline rewrites
+# in place, so it leaves whole while it holds what the setup wrote and stays
+# whole once any member of it changed
+SETTINGS_OBJECTS_RECORDED_WHOLE = frozenset({('statusLine',)})
 # An OS environment variable of the base profile, and an MCP server
 # registration at one CLI scope
 LEFTOVER_OS_ENV = 'os-env'
@@ -19075,6 +19086,9 @@ LEFTOVER_SERVER_STILL_REGISTERED = 'the server is still registered'
 LEFTOVER_NO_CLAUDE_COMMAND = 'claude command not found'
 # The top-level profile directory of the hook files a settings file can wire
 LEFTOVER_HOOKS_DIR = 'hooks'
+# The mark a files_written record and a file leftover carry for a hooks.helpers
+# module
+HOOK_HELPER_RECORD_KEY = 'hook_helper'
 LEFTOVERS_HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
 LEFTOVERS_FOOTER = 'They stay in place.'
 LEFTOVERS_FLAG_FOOTER = (
@@ -19221,6 +19235,9 @@ class LeftoverItem:
             project); empty for every other item.
         command: The dependency command that installed a dependency entry,
             as the configuration spells it; empty for every other item.
+        hook_helper: Whether a profile file was installed as a hooks.helpers
+            module, which the hook scripts beside it import and no settings
+            file wires.
     """
 
     kind: str
@@ -19231,6 +19248,7 @@ class LeftoverItem:
     entries: tuple[str, ...] = ()
     scope: str = ''
     command: str = ''
+    hook_helper: bool = False
 
     @classmethod
     def setting(
@@ -19366,7 +19384,10 @@ class LeftoverItem:
         if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
             return {'kind': self.kind, 'path': self.path, 'command': self.command, 'identity': self.sha256}
         if not self.is_setting():
-            return {'kind': self.kind, 'path': self.path, 'sha256': self.sha256}
+            path_record: dict[str, Any] = {'kind': self.kind, 'path': self.path, 'sha256': self.sha256}
+            if self.hook_helper:
+                path_record[HOOK_HELPER_RECORD_KEY] = True
+            return path_record
         record: dict[str, Any] = {'kind': self.kind, 'path': list(self.keys), 'sha256': self.sha256}
         if self.kind == LEFTOVER_HOOK_GROUP:
             record['matcher'] = self.matcher
@@ -19392,7 +19413,8 @@ class LeftoverItem:
             that is not one, a server without a name, with whitespace in
             it, or at a scope that is no CLI scope, or a dependency entry
             that is not one entry of a content directory, or lacks its
-            command or its identity.
+            command or its identity; a hook_helper mark that is not a
+            boolean, or that marks anything but a file.
         """
         if not isinstance(record, dict):
             return None
@@ -19406,10 +19428,11 @@ class LeftoverItem:
             return cls._settings_from_record(str(kind), record_dict, digest)
         if kind in (LEFTOVER_OS_ENV, LEFTOVER_MCP_SERVER):
             return cls._machine_from_record(str(kind), record_dict, digest)
-        if not isinstance(path, str):
+        hook_helper = record_dict.get(HOOK_HELPER_RECORD_KEY, False)
+        if not isinstance(path, str) or not isinstance(hook_helper, bool) or (hook_helper and kind != LEFTOVER_FILE):
             return None
         if kind == LEFTOVER_FILE and _is_profile_relative(path):
-            return cls(kind, path, digest)
+            return cls(kind, path, digest, hook_helper=hook_helper)
         if kind == LEFTOVER_DESTINATION and os.path.isabs(path) and not _is_inside_config_home(Path(path), claude_dir):
             return cls(kind, path, digest)
         return None
@@ -19475,9 +19498,10 @@ class LeftoverEntry(NamedTuple):
         state: LEFTOVER_REMOVABLE (still exactly as written),
             LEFTOVER_PARTIAL (a hook group changed since written that still
             holds some of the hooks the setup wrote), LEFTOVER_HELD (a
-            destination another profile records, or a hook file kept with
-            a wired one), LEFTOVER_REFERENCED (a hook file a settings file
-            still wires), LEFTOVER_UNREADABLE, LEFTOVER_CHANGED (other
+            destination another profile records, a hook helper kept while a
+            hook file beside it is wired, or a dependency entry whose
+            command failed), LEFTOVER_REFERENCED (a hook file a settings
+            file still wires), LEFTOVER_UNREADABLE, LEFTOVER_CHANGED (other
             bytes or another value, or no longer a regular file),
             LEFTOVER_GONE, or LEFTOVER_LINKED (reached through a directory
             link, so it belongs to the link's target).
@@ -19514,6 +19538,10 @@ class PlannedRecords:
         settings_deleted: The key paths of the base settings.json members
             those deltas declare null: the write deletes each of them with
             every value, list element and hook group below it.
+        rebuilt_settings: The hooks and status line Step 18 builds into an
+            isolated profile's config.json, which it rebuilds each run, so
+            the hook files are checked against them before the run writes
+            the file; None for the base profile.
         os_env: The names of the OS environment variables it declares, set
             or deleted: Step 7 manages each of them.
         mcp_servers: The names of the MCP servers it declares, at any scope:
@@ -19530,6 +19558,7 @@ class PlannedRecords:
     settings: tuple[LeftoverItem, ...] = ()
     settings_deltas: tuple[dict[str, Any], ...] = ()
     settings_deleted: frozenset[tuple[str, ...]] = frozenset()
+    rebuilt_settings: dict[str, Any] | None = None
     os_env: frozenset[str] = frozenset()
     mcp_servers: frozenset[str] = frozenset()
     dependency_entries: frozenset[str] = frozenset()
@@ -19597,7 +19626,8 @@ def planned_records(
             takes it; None for a base run.
         base: Whether the run installs the base profile, whose settings.json
             Steps 14 and 18 write; an isolated profile's config.json is
-            rebuilt each run and leaves nothing behind.
+            rebuilt each run and leaves nothing behind, and only its hooks
+            and status line are planned, for the hook files.
 
     Returns:
         The planned records.
@@ -19614,6 +19644,7 @@ def planned_records(
         settings=tuple(_settings_items_of(_settings_records_of_deltas(*deltas))),
         settings_deltas=deltas,
         settings_deleted=frozenset(keys for delta in deltas for keys in _settings_delta_deletions(delta)),
+        rebuilt_settings=None if base else _planned_profile_settings(config, profile_dir / LEFTOVER_HOOKS_DIR),
         os_env=_declared_os_env_names(config),
         mcp_servers=_declared_mcp_server_names(config),
     )
@@ -19633,6 +19664,16 @@ def _is_machine_wide_setting(keys: Sequence[str]) -> bool:
     return len(keys) == 2 and keys[0] == 'env' and keys[1] in MACHINE_WIDE_ENV_CONTROLS
 
 
+def _without_null_members(value: object) -> object:
+    """Return a written value as the merge leaves it: every null member, at every depth, deleted."""
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _without_null_members(member)
+        for key, member in cast(dict[str, Any], value).items() if member is not None
+    }
+
+
 def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
     """List the settings items a settings delta writes, one per value, list element and hook group.
 
@@ -19642,9 +19683,11 @@ def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
 
     Returns:
         One item per non-null scalar and per empty object (a value), per
-        element of a list (a list element), and per matcher group under
-        hooks.<Event> (a hook group, with its matcher and hook digests);
-        one item per identity, the machine-wide binary controls left out.
+        element of a list (a list element), per matcher group under
+        hooks.<Event> (a hook group, with its matcher and hook digests), and
+        one for the status line, an object recorded whole as one value
+        without its null members (SETTINGS_OBJECTS_RECORDED_WHOLE); one item
+        per identity, the machine-wide binary controls left out.
     """
     items: dict[tuple[str, str], LeftoverItem] = {}
 
@@ -19654,6 +19697,9 @@ def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
 
     def _walk(value: object, keys: tuple[str, ...]) -> None:
         if value is None:
+            return
+        if isinstance(value, dict) and keys in SETTINGS_OBJECTS_RECORDED_WHOLE:
+            _add(LeftoverItem.setting(LEFTOVER_SETTING, keys, leftover_digest(_without_null_members(value))))
             return
         if isinstance(value, dict):
             members = cast(dict[str, Any], value)
@@ -19765,13 +19811,24 @@ def planned_settings_deltas(config: dict[str, Any], claude_dir: Path) -> tuple[d
     if normalized_claude_code_version(config.get('claude-code-version')) is not None:
         section = _inject_auto_update_controls(None, section, None, [], [])[1] or {}
         section = _inject_ide_extension_controls(None, section, None, [], [])[1] or {}
+    return _expand_tilde_keys_in_settings(section), _planned_profile_settings(config, claude_dir / 'hooks')
+
+
+def _planned_profile_settings(config: dict[str, Any], hooks_dir: Path) -> dict[str, Any]:
+    """Build the status line and hooks Step 18 writes for a configuration, printing nothing.
+
+    Args:
+        config: The configuration.
+        hooks_dir: The profile's hooks/ directory, which the hook commands
+            name.
+
+    Returns:
+        The delta _build_profile_settings() returns.
+    """
     profile_config = {
         camel_key: config[yaml_key] for yaml_key, camel_key in _YAML_TO_CAMEL_PROFILE_KEYS.items() if yaml_key in config
     }
-    return (
-        _expand_tilde_keys_in_settings(section),
-        _profile_settings_delta(profile_config, claude_dir / 'hooks').settings,
-    )
+    return _profile_settings_delta(profile_config, hooks_dir).settings
 
 
 def planned_settings_records(config: dict[str, Any], claude_dir: Path) -> list[dict[str, Any]]:
@@ -20205,11 +20262,18 @@ class LiveLeftoverState:
             wires a profile-relative file under hooks/, or None when none
             does (see _hook_file_references()); a settings file the view
             given with it holds is read from the view.
+        hook_files_wired: Names the first file under the profile's hooks/
+            -- on disk, or among the profile-relative paths the run installs,
+            and not among those Step 23 removes before -- that a settings
+            file a session reads still wires, or None (see
+            _first_wired_hook_file()).
         settings: Reads the base settings.json a settings leftover is
             checked against, as _read_settings_object() does.
-        settings_after: The view of a settings file once the settings
-            leftovers Step 23 removes before the hook files are gone, so
-            the summary marks a hook file wired only by them as removable.
+        settings_after: The settings files as the run leaves them before
+            Step 23 looks at the hook files: the base settings.json with
+            what Steps 14 and 18 merge in and the settings leftovers Step 23
+            removes gone, or the config.json Step 18 rebuilds for an
+            isolated profile, so the summary reads the wiring Step 23 reads.
         os_env: Reads the values an OS environment variable holds, as
             read_os_env_variable() does.
         mcp: Reads the entry each CLI scope holds for an MCP server name,
@@ -20224,6 +20288,9 @@ class LiveLeftoverState:
     hook_references: Callable[[str, Mapping[Path, dict[str, Any]]], str | None] = field(
         default=lambda _relative, _view: None,
     )
+    hook_files_wired: Callable[[Iterable[str], Iterable[str], Mapping[Path, dict[str, Any]]], str | None] = field(
+        default=lambda _planned, _removed, _view: None,
+    )
     settings: Callable[[Path], dict[str, Any] | None] = field(default=lambda _path: None)
     settings_after: tuple[tuple[Path, dict[str, Any]], ...] = ()
     os_env: Callable[[str], tuple[str, ...]] = field(default=lambda _name: ())
@@ -20233,6 +20300,10 @@ class LiveLeftoverState:
     def wiring(self, relative: str) -> str | None:
         """Say where a hook file is still wired, reading the settings files through the view this state holds."""
         return self.hook_references(relative, dict(self.settings_after))
+
+    def wired_hook_file(self, planned: Iterable[str], removed: Iterable[str] = ()) -> str | None:
+        """Name a file of the hooks folder still wired, reading the settings files through the view this state holds."""
+        return self.hook_files_wired(planned, removed, dict(self.settings_after))
 
     @classmethod
     def for_profile(
@@ -20265,7 +20336,14 @@ class LiveLeftoverState:
 
         def _references(relative: str, view: Mapping[Path, dict[str, Any]]) -> str | None:
             return _hook_file_references(
-                relative, profile_dir=profile_dir, settings_files=settings_files, dependents=dependents, view=view,
+                relative, profile_dir=profile_dir, home_dir=home_dir, settings_files=settings_files,
+                dependents=dependents, view=view,
+            )
+
+        def _wired(planned: Iterable[str], removed: Iterable[str], view: Mapping[Path, dict[str, Any]]) -> str | None:
+            return _first_wired_hook_file(
+                planned, removed=removed, profile_dir=profile_dir, home_dir=home_dir, settings_files=settings_files,
+                dependents=dependents, view=view,
             )
 
         return cls(
@@ -20273,6 +20351,7 @@ class LiveLeftoverState:
             under_link=lambda relative: _under_directory_link(profile_dir, relative),
             destination_holders=_holders,
             hook_references=_references,
+            hook_files_wired=_wired,
             settings=_read_settings_object,
             os_env=read_os_env_variable,
             mcp=lambda name: _live_mcp_registrations(name, profile_dir if isolated else None),
@@ -20609,8 +20688,9 @@ def leftover_settings_files(profile_dir: Path, *, isolated: bool, before_consent
             of an isolated profile reads its config.json and settings.json.
         before_consent: Whether the run has not installed anything yet.
             Step 18 rebuilds an isolated profile's config.json from the
-            configuration, so before consent its wiring is what this run
-            replaces and is not read.
+            configuration, so before consent the file on disk is what this
+            run replaces and is left off the list: the rebuilt one is read
+            from the view _settings_after_this_run() gives.
 
     Returns:
         The files, in the order a reader names them.
@@ -20622,19 +20702,29 @@ def leftover_settings_files(profile_dir: Path, *, isolated: bool, before_consent
     return [profile_dir / 'config.json', profile_dir / 'settings.json']
 
 
-def _text_names_path(text: str, path: str, *, windows: bool) -> bool:
+def _text_names_path(text: str, path: str, *, windows: bool, home: str) -> bool:
     """Report whether a command string or argument names a path.
+
+    A path that opens with a home token (~, $HOME, ${HOME}, "$HOME",
+    $env:USERPROFILE, %USERPROFILE%, the spellings ConfigHomeReroot
+    recognizes) names the path below the home, as the shell that runs the
+    command resolves it, so a hook wired by hand as uv run
+    ~/.claude/hooks/a.py names the file as its absolute spelling does.
 
     Args:
         text: A hook command, one of its arguments, or a status line command.
         path: The forward-slash spelling of an absolute path.
         windows: Whether paths compare as Windows paths: without letter case
-            and with either separator.
+            and with either separator. Elsewhere a path compares as
+            spelled, so a backslash spelling names no file there.
+        home: The forward-slash spelling of the home folder a home token
+            stands for.
 
     Returns:
         True when the path occurs in the text and the character after it
         cannot continue a file name, so a.py never matches a.pyc.
     """
+    text = _HOME_PATH_PREFIX_PATTERN.sub(lambda _token: home, text)
     if windows:
         text, path = text.replace('\\', '/').casefold(), path.casefold()
     start = text.find(path)
@@ -20679,6 +20769,8 @@ def _wired_commands(settings: dict[str, Any]) -> list[tuple[str, str]]:
 def _settings_file_wiring(
     settings_file: Path,
     path: str,
+    *,
+    home: str,
     view: Mapping[Path, dict[str, Any]] | None = None,
 ) -> str | None:
     """Name where a settings file wires a path.
@@ -20690,26 +20782,84 @@ def _settings_file_wiring(
     Args:
         settings_file: The settings file.
         path: The forward-slash spelling of the absolute path.
+        home: The forward-slash spelling of the home folder a home token in
+            a command stands for (see _text_names_path()).
         view: Settings files to read from this mapping instead of the disk.
 
     Returns:
         'hooks.<Event>' or 'statusLine' for the first place that names the
         path, or None when the file is absent or names it nowhere.
     """
-    content = view[settings_file] if view and settings_file in view else _read_settings_object(settings_file)
+    content = _settings_content(settings_file, view)
     if content is None:
         return None
     windows = sys.platform == 'win32'
     for where, text in _wired_commands(content):
-        if _text_names_path(text, path, windows=windows):
+        if _text_names_path(text, path, windows=windows, home=home):
             return where
     return None
+
+
+def _settings_content(settings_file: Path, view: Mapping[Path, dict[str, Any]] | None) -> dict[str, Any] | None:
+    """Read a settings file from the view when it holds the file, from the disk otherwise (_read_settings_object())."""
+    return view[settings_file] if view and settings_file in view else _read_settings_object(settings_file)
+
+
+class _WiringSource(NamedTuple):
+    """A settings file whose hooks and status line can run a profile's hook files.
+
+    Attributes:
+        settings_file: The file.
+        directory: The profile directory its commands name the hook files
+            below: the profile's own, or that of a profile linking hooks/
+            from it.
+        dependent: The name of that linking profile, or None for one of the
+            profile's own files.
+    """
+
+    settings_file: Path
+    directory: Path
+    dependent: str | None
+
+
+def _hook_wiring_sources(
+    profile_dir: Path,
+    settings_files: Sequence[Path],
+    dependents: Sequence['InstalledProfile'],
+    view: Mapping[Path, dict[str, Any]] | None,
+) -> list[_WiringSource]:
+    """List the settings files a session of the profile, or of a profile linking its hooks/, reads.
+
+    Args:
+        profile_dir: The profile directory.
+        settings_files: The profile's own settings files.
+        dependents: The profiles that link content from this one; those
+            whose links hold hooks/ run this profile's hook files through
+            their own config.json and settings.json.
+        view: Settings files as the run leaves them; one the list does not
+            name, such as the config.json Step 18 rebuilds, is read too.
+
+    Returns:
+        The profile's own files first, then the linking profiles' files.
+    """
+    own = [*settings_files, *(file for file in (view or {}) if file not in settings_files)]
+    sources = [_WiringSource(settings_file, profile_dir, None) for settings_file in own]
+    for dependent in dependents:
+        link = manifest_link(dependent.manifest)
+        dirs = [str(entry).casefold() for entry in cast(list[object], link['dirs'])] if link else []
+        if LEFTOVER_HOOKS_DIR in dirs:
+            sources.extend(
+                _WiringSource(settings_file, dependent.directory, dependent.name)
+                for settings_file in (dependent.directory / 'config.json', dependent.directory / 'settings.json')
+            )
+    return sources
 
 
 def _hook_file_references(
     relative: str,
     *,
     profile_dir: Path,
+    home_dir: Path,
     settings_files: Sequence[Path],
     dependents: Sequence['InstalledProfile'],
     view: Mapping[Path, dict[str, Any]] | None = None,
@@ -20717,16 +20867,18 @@ def _hook_file_references(
     """Say where a hook file of a profile is still wired.
 
     A session runs a hook file when a hook command, one of its args or the
-    status line command names its path. The profile's own settings files
-    name it below the profile directory; a profile that links hooks/ from
-    this one names it below its own directory, in its config.json and its
-    settings.json, until its next run rebuilds them. A settings file that
-    cannot be read leaves the answer unknown, and _settings_file_wiring()
-    raises LeftoverReadError for it.
+    status line command names its path, absolute or below a home token. The
+    profile's own settings files name it below the profile directory; a
+    profile that links hooks/ from this one names it below its own
+    directory, in its config.json and its settings.json, until its next run
+    rebuilds them. A settings file that cannot be read leaves the answer
+    unknown, and _settings_file_wiring() raises LeftoverReadError for it.
 
     Args:
         relative: The profile-relative path of the file.
         profile_dir: The profile directory.
+        home_dir: User home directory, which a home token in a command
+            stands for.
         settings_files: The profile's own settings files to read.
         dependents: The profiles that link content from this one.
         view: Own settings files to read from this mapping instead of the
@@ -20739,24 +20891,106 @@ def _hook_file_references(
     parts = PurePosixPath(relative).parts
     if len(parts) < 2 or parts[0].casefold() != LEFTOVER_HOOKS_DIR:
         return None
-    own_path = profile_dir.joinpath(*parts).as_posix()
-    for settings_file in settings_files:
-        where = _settings_file_wiring(settings_file, own_path, view)
-        if where is not None:
-            return f'still wired in {settings_file} {where}'
-    for dependent in dependents:
-        link = manifest_link(dependent.manifest)
-        dirs = [str(entry).casefold() for entry in cast(list[object], link['dirs'])] if link else []
-        if LEFTOVER_HOOKS_DIR not in dirs:
+    home = home_dir.as_posix()
+    for source in _hook_wiring_sources(profile_dir, settings_files, dependents, view):
+        where = _settings_file_wiring(
+            source.settings_file, source.directory.joinpath(*parts).as_posix(), home=home, view=view,
+        )
+        if where is None:
             continue
-        dependent_path = dependent.directory.joinpath(*parts).as_posix()
-        for settings_file in (dependent.directory / 'config.json', dependent.directory / 'settings.json'):
-            where = _settings_file_wiring(settings_file, dependent_path)
-            if where is not None:
-                return (
-                    f'still wired in profile {dependent.name} ({settings_file} {where}) until that profile is '
-                    f'refreshed; a later run with {REMOVE_LEFTOVERS_FLAG} removes it'
-                )
+        if source.dependent is None:
+            return f'still wired in {source.settings_file} {where}'
+        return (
+            f'still wired in profile {source.dependent} ({source.settings_file} {where}) until that profile is '
+            f'refreshed; a later run with {REMOVE_LEFTOVERS_FLAG} removes it'
+        )
+    return None
+
+
+def _hook_folder_files(hooks_dir: Path) -> list[str]:
+    """List the files below a profile's hooks/ directory as profile-relative POSIX paths.
+
+    Args:
+        hooks_dir: The directory.
+
+    Returns:
+        The paths; none when the directory does not exist.
+
+    Raises:
+        LeftoverReadError: When the directory cannot be listed.
+    """
+    errors: list[OSError] = []
+    files: list[str] = []
+    for directory, _subdirectories, names in os.walk(hooks_dir, onerror=errors.append):
+        relative = Path(directory).relative_to(hooks_dir)
+        files.extend(PurePosixPath(LEFTOVER_HOOKS_DIR, *relative.parts, name).as_posix() for name in names)
+    failure = next((error for error in errors if not isinstance(error, FileNotFoundError)), None)
+    if failure is not None:
+        raise LeftoverReadError(f'{hooks_dir} cannot be listed: {failure.strerror or failure}') from failure
+    return files
+
+
+def _first_wired_hook_file(
+    planned: Iterable[str],
+    *,
+    removed: Iterable[str] = (),
+    profile_dir: Path,
+    home_dir: Path,
+    settings_files: Sequence[Path],
+    dependents: Sequence['InstalledProfile'],
+    view: Mapping[Path, dict[str, Any]] | None = None,
+) -> str | None:
+    """Name a file of a profile's hooks/ folder that a settings file a session reads still wires.
+
+    The files are those on disk and the ones the run installs there, which
+    Step 17 may not have downloaded yet, without the deselected hook files
+    Step 23 deletes before it looks at the leftovers. Each settings file is
+    read once,
+    and a file is wired when a hook command, one of its args or the status
+    line command names it, as _hook_file_references() reads them. A folder
+    or a settings file that cannot be read leaves the answer unknown, and
+    _hook_folder_files() or _read_settings_object() raises
+    LeftoverReadError for it.
+
+    Args:
+        planned: Profile-relative paths the run installs; those under
+            hooks/ count with the files on disk.
+        removed: Profile-relative paths Step 23 deletes before the
+            leftovers, which count as gone.
+        profile_dir: The profile directory.
+        home_dir: User home directory, which a home token stands for.
+        settings_files: The profile's own settings files to read.
+        dependents: The profiles that link content from this one.
+        view: Own settings files to read from this mapping instead of the
+            disk.
+
+    Returns:
+        The first such file in path order, as a profile-relative path, or
+        None when no settings file wires any.
+    """
+    gone = {_file_key(path) for path in removed}
+    files = {
+        _file_key(relative): relative
+        for relative in [
+            *_hook_folder_files(profile_dir / LEFTOVER_HOOKS_DIR),
+            *(path for path in planned if _file_key(path).split('/')[0] == LEFTOVER_HOOKS_DIR),
+        ]
+        if _file_key(relative) not in gone
+    }
+    if not files:
+        return None
+    readers: list[tuple[Path, list[str]]] = []
+    for source in _hook_wiring_sources(profile_dir, settings_files, dependents, view):
+        content = _settings_content(source.settings_file, view)
+        if content is not None:
+            readers.append((source.directory, [text for _where, text in _wired_commands(content)]))
+    home, windows = home_dir.as_posix(), sys.platform == 'win32'
+    for key in sorted(files):
+        parts = PurePosixPath(files[key]).parts
+        for directory, texts in readers:
+            target = directory.joinpath(*parts).as_posix()
+            if any(_text_names_path(text, target, windows=windows, home=home) for text in texts):
+                return files[key]
     return None
 
 
@@ -20930,6 +21164,9 @@ class LeftoverReport:
         linked_entries: frozenset[str],
         link_source: str,
         selected: PlannedRecords | None = None,
+        live: LiveLeftoverState | None = None,
+        remove: bool = False,
+        deselected_hook_files: Iterable[str] = (),
     ) -> 'LeftoverReport':
         """Mark the files and dependency entries under the entries this run links, and leave out its hook groups.
 
@@ -20939,13 +21176,22 @@ class LeftoverReport:
         computed from the configuration before component selection, whose
         hook groups differ from the selected ones when a selection splits a
         matcher group; a group the selected configuration writes is no
-        leftover.
+        leftover. The hook helpers are held again by the hook files the
+        selected configuration wires.
 
         Args:
             linked_entries: The entries this run's link plan makes links.
             link_source: The display name of the profile they link from.
             selected: What the component-selected configuration installs,
                 or None when it installs what the report was computed from.
+            live: The live readers the report was computed with; with
+                selected, the hook helpers are held again.
+            remove: Whether the run removes leftovers, as the report was
+                computed.
+            deselected_hook_files: The profile-relative paths of the hook
+                files of the deselected components, which Step 23 deletes
+                before the leftovers unless a selected item installs the
+                same file.
 
         Returns:
             The refined report.
@@ -20955,13 +21201,30 @@ class LeftoverReport:
             entry for entry in self.entries
             if selected is None or entry.item.kind != LEFTOVER_HOOK_GROUP or not selected.writes(entry.item)
         ]
-        return replace(self, entries=tuple(
+        entries = [
             LeftoverEntry(entry.item, LEFTOVER_LINKED, f'now linked from profile {link_source}')
             if entry.item.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY)
             and _file_key(entry.item.path).split('/')[0] in linked
             else entry
             for entry in entries
-        ))
+        ]
+        if selected is not None and live is not None:
+            entries = [
+                LeftoverEntry(entry.item, LEFTOVER_REMOVABLE)
+                if entry.state == LEFTOVER_HELD and entry.item.hook_helper else entry
+                for entry in entries
+            ]
+            removing = [
+                entry for entry in entries if entry.item.is_setting() and entry.state in _REMOVABLE_LEFTOVER_STATES
+            ] if remove else []
+            entries = _hold_with_wired_hook_files(
+                entries, _settings_after_this_run(live, self.profile_dir, removing, selected), planned=selected.files,
+                removed=[
+                    path for path in deselected_hook_files
+                    if not selected.writes(LeftoverItem(LEFTOVER_FILE, path, None))
+                ],
+            )
+        return replace(self, entries=tuple(entries))
 
     def after_dependency_commands(
         self,
@@ -21155,8 +21418,10 @@ def _recorded_leftover_candidates(manifest: dict[str, Any], claude_dir: Path) ->
         environment, is never one.
     """
     records: list[object] = [
-        {'kind': LEFTOVER_FILE, 'path': cast(dict[str, Any], record).get('path'),
-         'sha256': cast(dict[str, Any], record).get('sha256')}
+        {'kind': LEFTOVER_FILE, **{
+            key: value for key, value in cast(dict[str, Any], record).items()
+            if key in ('path', 'sha256', HOOK_HELPER_RECORD_KEY)
+        }}
         for record in cast(list[object], manifest.get('files_written') or [])
         if isinstance(record, dict)
     ]
@@ -21328,51 +21593,51 @@ def _under_hooks(item: LeftoverItem) -> bool:
     return item.kind == LEFTOVER_FILE and _file_key(item.path).split('/')[0] == LEFTOVER_HOOKS_DIR
 
 
-def _still_wired(entry: LeftoverEntry, live: LiveLeftoverState) -> bool:
-    """Report whether a leftover under hooks/ is a hook file a session still runs, changed by hand or not.
-
-    Args:
-        entry: The leftover with its state.
-        live: The live readers.
-
-    Returns:
-        True for a referenced entry, and for a changed one a settings file
-        still wires (or whose wiring cannot be read).
-    """
-    if not _under_hooks(entry.item):
-        return False
-    if entry.state == LEFTOVER_REFERENCED:
-        return True
-    if entry.state != LEFTOVER_CHANGED:
-        return False
-    try:
-        return live.wiring(entry.item.path) is not None
-    except LeftoverReadError:
-        return True
+def _holdable_helper(entry: LeftoverEntry) -> bool:
+    """Report whether a leftover is a hooks.helpers module that holds what the setup wrote and nothing wires."""
+    return entry.state == LEFTOVER_REMOVABLE and entry.item.hook_helper and _under_hooks(entry.item)
 
 
-def _hold_with_wired_hook_files(entries: list[LeftoverEntry], live: LiveLeftoverState) -> list[LeftoverEntry]:
-    """Keep every leftover under hooks/ while a hook file there is still wired.
+def _hold_with_wired_hook_files(
+    entries: Sequence[LeftoverEntry],
+    live: LiveLeftoverState,
+    *,
+    planned: Iterable[str],
+    removed: Iterable[str] = (),
+) -> list[LeftoverEntry]:
+    """Keep every dropped hook helper while any hook file of the profile's hooks/ folder is still wired.
 
-    Helper modules are imported by the hook scripts, never wired, so a
-    script that stays wired keeps the helpers it may import, also a script
-    edited by hand, which the run leaves in place.
+    A helper module is imported by the hook scripts beside it and wired
+    nowhere, and any script there may import it: the configuration's own,
+    a script edited by hand, one the user wired, a leftover still wired.
+    So a dropped helper stays while a settings file a session reads wires
+    any file of the folder, and the summary, --dry-run and Step 23 read the
+    folder alike.
 
     Args:
         entries: The leftovers with their states.
         live: The live readers.
+        planned: The profile-relative paths the run installs, which count
+            with the files on disk.
+        removed: The deselected hook files Step 23 deletes before the
+            leftovers, which count as gone.
 
     Returns:
-        The entries, each removable one under hooks/ held while another
-        there is still wired.
+        The entries, each removable hook helper held while a hook file is
+        wired, or unreadable when the wiring cannot be read.
     """
-    wired = next((entry for entry in entries if _still_wired(entry, live)), None)
+    if not any(_holdable_helper(entry) for entry in entries):
+        return list(entries)
+    try:
+        wired = live.wired_hook_file(planned, removed)
+    except LeftoverReadError as e:
+        return [LeftoverEntry(entry.item, LEFTOVER_UNREADABLE, str(e)) if _holdable_helper(entry) else entry
+                for entry in entries]
     if wired is None:
-        return entries
+        return list(entries)
     return [
-        LeftoverEntry(entry.item, LEFTOVER_HELD, f'stays with {wired.item.path}, which is still wired')
-        if entry.state == LEFTOVER_REMOVABLE and _under_hooks(entry.item)
-        else entry
+        LeftoverEntry(entry.item, LEFTOVER_HELD, f'stays with {wired}, which is still wired')
+        if _holdable_helper(entry) else entry
         for entry in entries
     ]
 
@@ -21387,27 +21652,33 @@ def _leftover_order(entry: LeftoverEntry) -> tuple[int, str]:
 
 def _settings_after_this_run(
     live: LiveLeftoverState,
-    settings_file: Path,
+    profile_dir: Path,
     removing: Sequence[LeftoverEntry],
     planned: PlannedRecords,
 ) -> LiveLeftoverState:
-    """Read the base settings.json, for the hook files, as it will be when Step 23 checks them.
+    """Read the settings files, for the hook files, as they will be when Step 23 checks them.
 
-    Steps 14 and 18 merge what the run writes into the file first, which
-    keeps every hook group and overwrites a value such as the status line
-    command, and Step 23 removes the settings leftovers it removes before it
-    looks at the hook files.
+    An isolated profile's config.json is the one Step 18 rebuilds from the
+    configuration. Into the base settings.json Steps 14 and 18 merge what
+    the run writes first, which keeps every hook group and overwrites a
+    value such as the status line command, and Step 23 removes the settings
+    leftovers it removes before it looks at the hook files.
 
     Args:
         live: The live readers.
-        settings_file: The base settings.json.
+        profile_dir: The profile directory.
         removing: The settings leftovers Step 23 removes.
-        planned: What the run writes, with the deltas Steps 14 and 18 merge.
+        planned: What the run writes, with the deltas Steps 14 and 18 merge
+            or the hooks and status line Step 18 rebuilds.
 
     Returns:
-        The readers with that view, or unchanged when the run neither writes
-        into the file nor removes from it, or the file cannot be read.
+        The readers with that view, or unchanged for a base run that neither
+        writes into the file nor removes from it, or whose file cannot be
+        read.
     """
+    if planned.rebuilt_settings is not None:
+        return replace(live, settings_after=((profile_dir / 'config.json', planned.rebuilt_settings),))
+    settings_file = profile_dir / SETTINGS_FILE_NAME
     if not planned.settings_deltas and not removing:
         return live
     try:
@@ -21454,8 +21725,8 @@ def compute_profile_leftovers(
         remove: Whether the run removes leftovers (--remove-leftovers):
             Step 23 then removes the settings.json leftovers before it
             looks at the hook files, so a hook file only they wire is
-            marked removable. A hook file is checked against settings.json
-            as the run leaves it, the run's own writes merged in.
+            marked removable. A hook file is checked against the settings
+            files as the run leaves them (_settings_after_this_run()).
 
     Returns:
         The report.
@@ -21469,7 +21740,7 @@ def compute_profile_leftovers(
     ]
     live = _settings_after_this_run(
         live,
-        profile_dir / SETTINGS_FILE_NAME,
+        profile_dir,
         [entry for entry in settings_entries if entry.state in _REMOVABLE_LEFTOVER_STATES] if remove else [],
         planned,
     )
@@ -21479,7 +21750,7 @@ def compute_profile_leftovers(
             *settings_entries,
         ],
         key=_leftover_order,
-    ), live)
+    ), live, planned=planned.files)
     return LeftoverReport(
         profile_name=profile_name,
         profile_dir=profile_dir,
@@ -21933,7 +22204,7 @@ def run_leftovers_step(
         path_entries = [_leftover_entry(entry.item, profile_dir, live) for entry in looked_at if entry.item.has_path()]
         path_outcomes = [
             _leftover_step_outcome(entry, written=written, profile_dir=profile_dir)
-            for entry in _hold_with_wired_hook_files(path_entries, live)
+            for entry in _hold_with_wired_hook_files(path_entries, live, planned=())
         ]
         _prune_emptied_skill_directories(
             [o.entry.item.location(profile_dir) for o in path_outcomes if o.result == LEFTOVER_REMOVED],
@@ -22011,7 +22282,8 @@ def file_records(
     previous_manifest: dict[str, Any] | None,
     *,
     download_failed: bool,
-) -> list[dict[str, str | None]]:
+    hook_helpers: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """Record the profile files a run installed with the digest of each.
 
     Args:
@@ -22019,13 +22291,17 @@ def file_records(
         planned_paths: The profile-relative paths the run installs.
         previous_manifest: The profile's previous manifest, or None.
         download_failed: Whether a content download of this run failed.
+        hook_helpers: The paths among them installed as hooks.helpers
+            modules (planned_hook_helpers()).
 
     Returns:
-        One {path, sha256} record per path; the digest is None for a file
-        that is absent or unreadable, and after a failed download for one
-        whose bytes differ from what the previous run recorded.
+        One {path, sha256} record per path, with hook_helper: true for a
+        helper module; the digest is None for a file that is absent or
+        unreadable, and after a failed download for one whose bytes differ
+        from what the previous run recorded.
     """
     previous = _previous_digests(previous_manifest, 'files_written', 'path', _file_key)
+    helpers = {_file_key(helper) for helper in hook_helpers}
     return [
         {
             'path': path,
@@ -22034,9 +22310,26 @@ def file_records(
                 previous.get(_file_key(path)),
                 download_failed=download_failed,
             ),
+            **({HOOK_HELPER_RECORD_KEY: True} if _file_key(path) in helpers else {}),
         }
         for path in planned_paths
     ]
+
+
+def planned_hook_helpers(config: dict[str, Any]) -> frozenset[str]:
+    """List the profile-relative paths of the hooks.helpers modules a configuration declares.
+
+    Args:
+        config: The resolved, component-selected configuration.
+
+    Returns:
+        The paths, as planned_profile_files() spells them.
+    """
+    hooks = config.get('hooks')
+    helpers = cast(dict[str, Any], hooks).get('helpers') if isinstance(hooks, dict) else None
+    return frozenset(
+        f'{LEFTOVER_HOOKS_DIR}/{_installed_resource_name(item)}' for item in cast(list[object], helpers or [])
+    )
 
 
 def destination_records(
@@ -22109,6 +22402,7 @@ def written_profile_records(
             planned_profile_files(config, profile_dir, linked_entries=linked_entries),
             previous_manifest,
             download_failed=download_failed,
+            hook_helpers=planned_hook_helpers(config),
         ),
         'machine_wide_destinations': destination_records(
             downloads, config_source, base_url, claude_dir, previous_manifest, download_failed=download_failed,
@@ -27562,9 +27856,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     info(line)
                 sys.exit(1)
         # What the leftovers are read against before consent: the settings
-        # files a session reads (the ones Step 18 rebuilds left out), the
-        # dependents that link hooks/ from this profile, the OS environment
-        # and the MCP registrations
+        # files a session reads (an isolated config.json as Step 18 rebuilds
+        # it, from the view the computation adds), the dependents that link
+        # hooks/ from this profile, the OS environment and the MCP
+        # registrations
         pre_consent_live = LiveLeftoverState.for_profile(
             target_config_dir, home_dir,
             settings_files=leftover_settings_files(
@@ -27697,6 +27992,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     config, target_config_dir, claude_dir=home_dir / '.claude', reroot=reroot,
                     base=not primary_command_name,
                 ) if selection.is_active else None,
+                live=pre_consent_live,
+                remove=remove_leftovers,
+                deselected_hook_files=[
+                    f'{LEFTOVER_HOOKS_DIR}/{_installed_resource_name(item)}' for item in deselected['hooks-files']
+                ],
             )
 
         # The configuration this run installs, recorded beside the manifest

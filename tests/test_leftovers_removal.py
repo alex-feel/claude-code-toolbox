@@ -2,11 +2,12 @@
 
 A run given --remove-leftovers (or CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS=1)
 removes in Step 23 each leftover that still holds what the setup wrote. A
-hook file a settings file still wires is kept, and so is every other
-leftover under hooks/ while one is kept, because a kept script may import
-them. Step 23 derives every state again from what is on disk then, records
-each outcome in the manifest, and a removal that fails keeps the item
-recorded and ends the run with exit code 1.
+hook file a settings file still wires, by its absolute path or below a home
+token, is kept, and so is a dropped hooks.helpers module while any hook file
+of the folder is wired, because that script may import it. Step 23 derives
+every state again from what is on disk then, records each outcome in the
+manifest, and a removal that fails keeps the item recorded and ends the run
+with exit code 1.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import hashlib
 import io
 import json
 import sys
+from collections.abc import Iterable
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -70,10 +72,23 @@ def _live(
     settings_files: tuple[Path, ...] = (),
     dependents: tuple[InstalledProfile, ...] = (),
 ) -> LiveLeftoverState:
-    """A live state over the real file system and real settings files, with links and holders given."""
+    """A live state over the real file system and real settings files, with links and holders given.
+
+    Returns:
+        The readers; the layout fixture puts the profile at
+        <home>/.claude/p, so the home the wiring check expands is two levels
+        above it.
+    """
     def _references(relative: str, view: Mapping[Path, dict[str, Any]]) -> str | None:
         return setup_environment._hook_file_references(
-            relative, profile_dir=profile_dir, settings_files=settings_files, dependents=dependents, view=view,
+            relative, profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=settings_files,
+            dependents=dependents, view=view,
+        )
+
+    def _wired(planned: Iterable[str], removed: Iterable[str], view: Mapping[Path, dict[str, Any]]) -> str | None:
+        return setup_environment._first_wired_hook_file(
+            planned, removed=removed, profile_dir=profile_dir, home_dir=profile_dir.parents[1],
+            settings_files=settings_files, dependents=dependents, view=view,
         )
 
     return LiveLeftoverState(
@@ -81,6 +96,7 @@ def _live(
         under_link=lambda relative: relative.split('/')[0] in linked,
         destination_holders=lambda dest: (holders or {}).get(dest, []),
         hook_references=_references,
+        hook_files_wired=_wired,
     )
 
 
@@ -90,6 +106,11 @@ def _report(profile_dir: Path, *entries: LeftoverEntry) -> LeftoverReport:
 
 def _removable(path: str, digest: str, kind: str = 'file') -> LeftoverEntry:
     return LeftoverEntry(LeftoverItem(kind, path, digest), 'removable', '')
+
+
+def _helper(path: str, digest: str) -> LeftoverEntry:
+    """A removable leftover installed as a hooks.helpers module."""
+    return LeftoverEntry(LeftoverItem('file', path, digest, hook_helper=True), 'removable', '')
 
 
 def _step(
@@ -196,7 +217,7 @@ class TestHookFileReferences:
         _write_json(settings, _wiring(profile_dir, 'a.py', 'PreToolUse'))
 
         detail = setup_environment._hook_file_references(
-            'hooks/a.py', profile_dir=profile_dir, settings_files=[settings], dependents=[],
+            'hooks/a.py', profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=[settings], dependents=[],
         )
 
         assert detail == f'still wired in {settings} hooks.PreToolUse'
@@ -213,7 +234,7 @@ class TestHookFileReferences:
 
         def _references(relative: str) -> str | None:
             return setup_environment._hook_file_references(
-                relative, profile_dir=profile_dir, settings_files=[settings], dependents=[],
+                relative, profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=[settings], dependents=[],
             )
 
         assert _references('hooks/a.py') == f'still wired in {settings} hooks.Stop'
@@ -227,7 +248,8 @@ class TestHookFileReferences:
         _write_json(settings, {'statusLine': {'type': 'command', 'command': f'uv run "{status}"'}})
 
         detail = setup_environment._hook_file_references(
-            'hooks/status.py', profile_dir=profile_dir, settings_files=[settings], dependents=[],
+            'hooks/status.py', profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=[settings],
+            dependents=[],
         )
 
         assert detail == f'still wired in {settings} statusLine'
@@ -239,7 +261,7 @@ class TestHookFileReferences:
 
         def _references(relative: str) -> str | None:
             return setup_environment._hook_file_references(
-                relative, profile_dir=profile_dir, settings_files=[settings], dependents=[],
+                relative, profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=[settings], dependents=[],
             )
 
         assert _references('hooks/a.py') is None
@@ -248,7 +270,8 @@ class TestHookFileReferences:
     def test_absent_settings_files_wire_nothing(self, layout: tuple[Path, Path]) -> None:
         _claude_dir, profile_dir = layout
         assert setup_environment._hook_file_references(
-            'hooks/a.py', profile_dir=profile_dir, settings_files=[profile_dir / 'settings.json'], dependents=[],
+            'hooks/a.py', profile_dir=profile_dir, home_dir=profile_dir.parents[1],
+            settings_files=[profile_dir / 'settings.json'], dependents=[],
         ) is None
 
     def test_an_unreadable_settings_file_cannot_be_checked(self, layout: tuple[Path, Path]) -> None:
@@ -257,7 +280,8 @@ class TestHookFileReferences:
         settings.write_text('{not json', encoding='utf-8')
         with pytest.raises(LeftoverReadError, match='settings.json'):
             setup_environment._hook_file_references(
-                'hooks/a.py', profile_dir=profile_dir, settings_files=[settings], dependents=[],
+                'hooks/a.py', profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=[settings],
+                dependents=[],
             )
 
     def test_a_dependent_linking_hooks_wires_its_own_spelling(self, layout: tuple[Path, Path]) -> None:
@@ -271,7 +295,7 @@ class TestHookFileReferences:
         ]
 
         detail = setup_environment._hook_file_references(
-            'hooks/a.py', profile_dir=profile_dir, settings_files=[], dependents=dependents,
+            'hooks/a.py', profile_dir=profile_dir, home_dir=profile_dir.parents[1], settings_files=[], dependents=dependents,
         )
 
         assert detail == (
@@ -291,22 +315,99 @@ class TestHookFileReferences:
     ])
     def test_spelling_match(self, text: str, windows: bool, expected: bool) -> None:
         """Windows paths compare without letter case and with either separator; other platforms exactly."""
-        assert setup_environment._text_names_path(text, 'C:/Users/Me/.claude/hooks/a.py', windows=windows) is expected
+        assert setup_environment._text_names_path(
+            text, 'C:/Users/Me/.claude/hooks/a.py', windows=windows, home='C:/Users/Me',
+        ) is expected
+
+    @pytest.mark.parametrize(('text', 'expected'), [
+        ('uv run ~/.claude/hooks/a.py', True),
+        ('uv run "$HOME/.claude/hooks/a.py"', True),
+        ('uv run "$HOME"/.claude/hooks/a.py', True),
+        ('uv run ${HOME}/.claude/hooks/a.py', True),
+        ('uv run $env:USERPROFILE/.claude/hooks/a.py', True),
+        ('uv run %USERPROFILE%/.claude/hooks/a.py', True),
+        ('uv run --script=~/.claude/hooks/a.py', True),
+        ('uv run ~\\.claude\\hooks\\a.py', False),
+        ('uv run foo~/.claude/hooks/a.py', False),
+        ('uv run /x$HOME/.claude/hooks/a.py', False),
+        ('uv run ~other/.claude/hooks/a.py', False),
+        ('uv run ~/.claude/hooks/a.pyc', False),
+        ('uv run ~/.claude/p/hooks/a.py', False),
+    ])
+    def test_home_token_spellings_outside_windows(self, text: str, expected: bool) -> None:
+        """A hook wired by hand names a file through the home token, which the check reads as the home.
+
+        A token glued to a word or a path, ~other and a longer name name
+        nothing; outside Windows a path compares as spelled, so a backslash
+        spelling names no file there.
+        """
+        assert setup_environment._text_names_path(
+            text, '/home/me/.claude/hooks/a.py', windows=False, home='/home/me',
+        ) is expected
+
+    @pytest.mark.parametrize('token', ['~', '$HOME', '${HOME}', '"$HOME"', '$env:USERPROFILE', '%USERPROFILE%'])
+    @pytest.mark.parametrize('separator', ['/', '\\'])
+    def test_home_token_spellings_on_windows(self, token: str, separator: str) -> None:
+        """On Windows every home token names the home with either separator and in any letter case."""
+        text = f'uv run {token}{separator}.claude{separator}Hooks{separator}A.py'
+        assert setup_environment._text_names_path(
+            text, 'C:/Users/Me/.claude/hooks/a.py', windows=True, home='C:/Users/Me',
+        ) is True
+
+    @pytest.mark.parametrize('profile', ['', 'p'], ids=['base', 'isolated'])
+    def test_a_hand_wired_home_token_spelling_is_a_reference(self, tmp_path: Path, profile: str) -> None:
+        """A settings file that runs the file as ~/.claude/... or $HOME/.claude/... still wires it."""
+        home = tmp_path / 'home'
+        profile_dir = home / '.claude' / profile if profile else home / '.claude'
+        settings = profile_dir / 'settings.json'
+        prefix = f'~/.claude/{profile}/' if profile else '~/.claude/'
+        _write_json(settings, {'hooks': {'Stop': [{'matcher': '', 'hooks': [
+            {'type': 'command', 'command': f'uv run {prefix}hooks/a.py'},
+            {'type': 'command', 'command': 'uv', 'args': ['run', f'$HOME/{prefix[2:]}hooks/b.py']},
+        ]}]}})
+
+        def _references(relative: str) -> str | None:
+            return setup_environment._hook_file_references(
+                relative, profile_dir=profile_dir, home_dir=home, settings_files=[settings], dependents=[],
+            )
+
+        assert _references('hooks/a.py') == f'still wired in {settings} hooks.Stop'
+        assert _references('hooks/b.py') == f'still wired in {settings} hooks.Stop'
+        assert _references('hooks/c.py') is None
+
+    def test_a_dependent_wiring_through_a_home_token_is_a_reference(self, layout: tuple[Path, Path]) -> None:
+        claude_dir, profile_dir = layout
+        lab = claude_dir / 'lab'
+        _write_json(lab / 'settings.json', _hooks_settings(
+            'Stop', {'type': 'command', 'command': 'uv run %USERPROFILE%/.claude/lab/hooks/a.py'},
+        ))
+        dependents = [
+            InstalledProfile('lab', lab, lab / 'manifest.json', {'link': {'dirs': ['hooks'], 'source': 'p'}}),
+        ]
+
+        detail = setup_environment._hook_file_references(
+            'hooks/a.py', profile_dir=profile_dir, home_dir=claude_dir.parent, settings_files=[], dependents=dependents,
+        )
+
+        assert detail is not None
+        assert detail.startswith(f'still wired in profile lab ({lab / "settings.json"} hooks.Stop)')
 
 
 class TestComputeWithHookReferences:
-    """A wired hook file is kept, and every other leftover under hooks/ stays with it."""
+    """A wired hook file is kept, and a dropped hook helper stays while any hook file of the folder is wired."""
 
-    def test_wired_script_holds_its_helpers(self, layout: tuple[Path, Path]) -> None:
+    def test_wired_script_holds_the_helpers_but_not_another_dropped_script(self, layout: tuple[Path, Path]) -> None:
         claude_dir, profile_dir = layout
         script = _write(profile_dir / 'hooks' / 'a.py', b'import helper')
+        other = _write(profile_dir / 'hooks' / 'other.py', b'other')
         helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
         rule = _write(profile_dir / 'rules' / 'old.md', b'rule')
         settings = profile_dir / 'settings.json'
         _write_json(settings, _wiring(profile_dir, 'a.py', 'PreToolUse'))
         manifest: dict[str, object] = {'files_written': [
             {'path': 'hooks/a.py', 'sha256': script},
-            {'path': 'hooks/helper.py', 'sha256': helper},
+            {'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True},
+            {'path': 'hooks/other.py', 'sha256': other},
             {'path': 'rules/old.md', 'sha256': rule},
         ]}
 
@@ -318,34 +419,192 @@ class TestComputeWithHookReferences:
         assert [(entry.item.path, entry.state, entry.detail) for entry in report.entries] == [
             ('hooks/a.py', 'referenced', f'still wired in {settings} hooks.PreToolUse'),
             ('hooks/helper.py', 'held', 'stays with hooks/a.py, which is still wired'),
+            ('hooks/other.py', 'removable', ''),
             ('rules/old.md', 'removable', ''),
+        ], 'a dropped script nothing wires is no helper: only a hooks.helpers module stays'
+        assert [item.path for item in report.carried()] == [
+            'hooks/a.py', 'hooks/helper.py', 'hooks/other.py', 'rules/old.md',
         ]
-        assert [item.path for item in report.carried()] == ['hooks/a.py', 'hooks/helper.py', 'rules/old.md']
+        record = setup_environment.leftovers_manifest_record(report, run_at='t')
+        assert {'kind': 'file', 'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True} in record['items']
 
-    def test_a_hand_edited_script_that_is_still_wired_holds_the_helpers(self, layout: tuple[Path, Path]) -> None:
-        """An edited script is left in place, and while a settings file runs it, it may still import the helpers."""
+    @pytest.mark.parametrize('wiring', ['edited', 'current', 'by-hand'])
+    def test_a_helper_stays_while_any_hook_file_of_the_folder_is_wired(
+        self, layout: tuple[Path, Path], wiring: str,
+    ) -> None:
+        """A script edited by hand, one the configuration installs now and one the user put there all keep a helper."""
         claude_dir, profile_dir = layout
-        _write(profile_dir / 'hooks' / 'a.py', b'edited by hand')
         helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
         settings = profile_dir / 'settings.json'
-        manifest: dict[str, object] = {'files_written': [
-            {'path': 'hooks/a.py', 'sha256': _sha(b'as written')},
-            {'path': 'hooks/helper.py', 'sha256': helper},
-        ]}
+        records: list[dict[str, object]] = [{'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True}]
+        planned = PlannedRecords()
+        if wiring == 'edited':
+            _write(profile_dir / 'hooks' / 'a.py', b'edited by hand')
+            records.append({'path': 'hooks/a.py', 'sha256': _sha(b'as written')})
+        elif wiring == 'current':
+            planned = PlannedRecords(files=frozenset({'hooks/a.py'}))
+        else:
+            _write(profile_dir / 'hooks' / 'a.py', b'mine')
+        manifest: dict[str, object] = {'files_written': records}
 
-        def _states() -> list[tuple[str, str]]:
+        def _states() -> dict[str, str]:
             report = setup_environment.compute_profile_leftovers(
-                manifest, profile_dir, profile_name='p', planned=PlannedRecords(),
+                manifest, profile_dir, profile_name='p', planned=planned,
                 live=_live(profile_dir, settings_files=(settings,)), claude_dir=claude_dir,
             )
-            return [(entry.item.path, entry.state) for entry in report.entries]
+            return {entry.item.path: entry.state for entry in report.entries}
 
-        assert _states() == [('hooks/a.py', 'changed'), ('hooks/helper.py', 'removable')], 'nothing wires it yet'
+        assert _states()['hooks/helper.py'] == 'removable', 'nothing wires a hook file yet'
         _write_json(settings, _wiring(profile_dir, 'a.py'))
-        assert _states() == [('hooks/a.py', 'changed'), ('hooks/helper.py', 'held')]
+        assert _states()['hooks/helper.py'] == 'held'
 
-    def test_the_own_config_json_is_not_read_before_consent(self, layout: tuple[Path, Path]) -> None:
-        """Step 18 rebuilds an isolated profile's config.json, so the summary does not count its wiring."""
+    def test_a_planned_hook_file_counts_before_step_17_installs_it(self, layout: tuple[Path, Path]) -> None:
+        """Before consent the new script is not on disk yet; the summary still reads it as Step 23 will."""
+        claude_dir, profile_dir = layout
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        settings = profile_dir / 'settings.json'
+        _write_json(settings, _wiring(profile_dir, 'new.py'))
+        live = _live(profile_dir, settings_files=(settings,))
+
+        assert live.wired_hook_file(['hooks/new.py', 'rules/r.md']) == 'hooks/new.py'
+        assert live.wired_hook_file(['rules/r.md']) is None, 'a file neither on disk nor planned is not one'
+        assert live.wired_hook_file([]) is None
+        assert (profile_dir / 'hooks' / 'helper.py').is_file()
+        assert helper
+
+    def test_a_hook_file_step_23_deselects_first_counts_as_gone(self, layout: tuple[Path, Path]) -> None:
+        """A deselected component's script leaves before the leftovers, so its wiring keeps no helper."""
+        claude_dir, profile_dir = layout
+        _write(profile_dir / 'hooks' / 'a.py', b'a')
+        settings = profile_dir / 'settings.json'
+        _write_json(settings, _wiring(profile_dir, 'a.py'))
+        live = _live(profile_dir, settings_files=(settings,))
+
+        assert live.wired_hook_file([]) == 'hooks/a.py'
+        assert live.wired_hook_file([], ['hooks/A.py']) is None, 'paths compare as the leftover keys do'
+
+    def test_unreadable_wiring_leaves_a_helper_unchecked(self, layout: tuple[Path, Path]) -> None:
+        claude_dir, profile_dir = layout
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        settings = profile_dir / 'settings.json'
+        settings.write_text('{broken', encoding='utf-8')
+
+        held = setup_environment._hold_with_wired_hook_files(
+            [_helper('hooks/helper.py', helper)], _live(profile_dir, settings_files=(settings,)), planned=(),
+        )
+
+        assert [(entry.state, 'settings.json' in entry.detail) for entry in held] == [('unreadable', True)]
+
+    def test_a_dependent_wiring_its_own_spelling_holds_the_helper(self, layout: tuple[Path, Path]) -> None:
+        claude_dir, profile_dir = layout
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        _write(profile_dir / 'hooks' / 'a.py', b'a')
+        lab = claude_dir / 'lab'
+        _write_json(lab / 'config.json', _wiring(lab, 'a.py'))
+        dependents = (
+            InstalledProfile('lab', lab, lab / 'manifest.json', {'link': {'dirs': ['hooks'], 'source': 'p'}}),
+        )
+
+        held = setup_environment._hold_with_wired_hook_files(
+            [_helper('hooks/helper.py', helper)], _live(profile_dir, dependents=dependents), planned=(),
+        )
+
+        assert [(entry.state, entry.detail) for entry in held] == [('held', 'stays with hooks/a.py, which is still wired')]
+
+    def test_the_rebuilt_config_json_of_an_isolated_profile_is_read_before_consent(
+        self, layout: tuple[Path, Path],
+    ) -> None:
+        """Step 18 rebuilds config.json, so the summary reads the hooks the configuration wires, not the file on disk."""
+        claude_dir, profile_dir = layout
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        _write_json(profile_dir / 'config.json', {})
+        manifest: dict[str, object] = {
+            'files_written': [{'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True}],
+        }
+        live = LiveLeftoverState.for_profile(
+            profile_dir, claude_dir.parent,
+            settings_files=setup_environment.leftover_settings_files(profile_dir, isolated=True, before_consent=True),
+        )
+
+        def _state(config: dict[str, Any]) -> str:
+            planned = setup_environment.planned_records(config, profile_dir, claude_dir=claude_dir)
+            report = setup_environment.compute_profile_leftovers(
+                manifest, profile_dir, profile_name='p', planned=planned, live=live, claude_dir=claude_dir,
+            )
+            return report.entries[0].state
+
+        hooked = {'hooks': {'files': ['hooks/b.py'], 'events': [{'event': 'Stop', 'type': 'command', 'command': 'b.py'}]}}
+        assert _state(hooked) == 'held'
+        assert _state({'hooks': {'files': ['hooks/b.py']}, 'status-line': {'file': 'b.py'}}) == 'held'
+        assert _state({'rules': ['rules/r.md']}) == 'removable', 'a configuration wiring no hook file holds nothing'
+
+    def test_refining_with_the_selected_configuration_holds_the_helper_again(
+        self, layout: tuple[Path, Path],
+    ) -> None:
+        """A selection that drops the only wired hook releases the helper; one that keeps it holds the helper."""
+        claude_dir, profile_dir = layout
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        manifest: dict[str, object] = {
+            'files_written': [{'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True}],
+        }
+        live = LiveLeftoverState.for_profile(
+            profile_dir, claude_dir.parent,
+            settings_files=setup_environment.leftover_settings_files(profile_dir, isolated=True, before_consent=True),
+        )
+        hooked = {'hooks': {'files': ['hooks/b.py'], 'events': [{'event': 'Stop', 'type': 'command', 'command': 'b.py'}]}}
+        report = setup_environment.compute_profile_leftovers(
+            manifest, profile_dir, profile_name='p',
+            planned=setup_environment.planned_records(hooked, profile_dir, claude_dir=claude_dir),
+            live=live, claude_dir=claude_dir,
+        )
+        assert report.entries[0].state == 'held'
+
+        def _refined(selected_config: dict[str, Any]) -> str:
+            selected = setup_environment.planned_records(selected_config, profile_dir, claude_dir=claude_dir)
+            refined = report.refined(linked_entries=frozenset(), link_source='base', selected=selected, live=live)
+            return refined.entries[0].state
+
+        assert _refined({'rules': ['rules/r.md']}) == 'removable'
+        assert _refined(hooked) == 'held'
+
+    def test_refining_leaves_out_the_hook_files_the_selection_deselects(self, layout: tuple[Path, Path]) -> None:
+        """A base settings.json still wires a deselected script before consent; Step 23 deletes it first."""
+        claude_dir, _profile_dir = layout
+        helper = _write(claude_dir / 'hooks' / 'helper.py', b'helper')
+        _write(claude_dir / 'hooks' / 'a.py', b'a')
+        _write_json(claude_dir / 'settings.json', _wiring(claude_dir, 'a.py'))
+        manifest: dict[str, object] = {
+            'files_written': [{'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True}],
+        }
+        live = LiveLeftoverState.for_profile(
+            claude_dir, claude_dir.parent,
+            settings_files=setup_environment.leftover_settings_files(claude_dir, isolated=False, before_consent=True),
+        )
+        hooked = {'hooks': {'files': ['hooks/a.py'], 'events': [{'event': 'Stop', 'type': 'command', 'command': 'a.py'}]}}
+        report = setup_environment.compute_profile_leftovers(
+            manifest, claude_dir, profile_name='base',
+            planned=setup_environment.planned_records(hooked, claude_dir, claude_dir=claude_dir, base=True),
+            live=live, claude_dir=claude_dir,
+        )
+        assert report.entries[0].state == 'held'
+        selected = setup_environment.planned_records({}, claude_dir, claude_dir=claude_dir, base=True)
+
+        def _refined(deselected: list[str]) -> str:
+            return report.refined(
+                linked_entries=frozenset(), link_source='base', selected=selected, live=live,
+                deselected_hook_files=deselected,
+            ).entries[0].state
+
+        assert _refined(['hooks/a.py']) == 'removable'
+        assert _refined([]) == 'held', 'a script that stays on disk and in settings.json keeps the helper'
+        kept = setup_environment.planned_records(hooked, claude_dir, claude_dir=claude_dir, base=True)
+        assert report.refined(
+            linked_entries=frozenset(), link_source='base', selected=kept, live=live,
+            deselected_hook_files=['hooks/a.py'],
+        ).entries[0].state == 'held', 'a deselected file a selected item installs stays'
+
+    def test_the_own_config_json_on_disk_is_not_read_before_consent(self, layout: tuple[Path, Path]) -> None:
+        """Step 18 rebuilds an isolated profile's config.json, so the summary does not count the wiring on disk."""
         claude_dir, profile_dir = layout
         script = _write(profile_dir / 'hooks' / 'old.py', b'old')
         _write_json(profile_dir / 'config.json', _wiring(profile_dir, 'old.py'))
@@ -464,13 +723,13 @@ class TestRunLeftoversStep:
         assert (profile_dir / 'agents' / 'old.md').is_file()
         assert held_path.is_file()
 
-    def test_a_wired_hook_file_and_its_helpers_are_kept(self, layout: tuple[Path, Path]) -> None:
+    def test_a_wired_hook_file_and_the_helpers_are_kept(self, layout: tuple[Path, Path]) -> None:
         claude_dir, profile_dir = layout
         script = _write(profile_dir / 'hooks' / 'a.py', b'import helper')
         helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
         settings = profile_dir / 'config.json'
         _write_json(settings, _wiring(profile_dir, 'a.py'))
-        report = _report(profile_dir, _removable('hooks/a.py', script), _removable('hooks/helper.py', helper))
+        report = _report(profile_dir, _removable('hooks/a.py', script), _helper('hooks/helper.py', helper))
 
         removal = _step(
             report, live=_live(profile_dir, settings_files=(settings,)), claude_dir=claude_dir, profile_dir=profile_dir,
@@ -479,6 +738,44 @@ class TestRunLeftoversStep:
         assert _results(removal) == {'hooks/a.py': 'kept', 'hooks/helper.py': 'kept'}
         assert (profile_dir / 'hooks' / 'a.py').is_file()
         assert (profile_dir / 'hooks' / 'helper.py').is_file()
+
+    def test_a_helper_is_kept_in_step_23_while_a_script_edited_by_hand_is_wired(
+        self, layout: tuple[Path, Path],
+    ) -> None:
+        """The edited script is reported once and no longer tracked; Step 23 still keeps the helper it may import."""
+        claude_dir, profile_dir = layout
+        _write(profile_dir / 'hooks' / 'a.py', b'edited by hand')
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        settings = profile_dir / 'settings.json'
+        _write_json(settings, _wiring(profile_dir, 'a.py'))
+        live = _live(profile_dir, settings_files=(settings,))
+        manifest: dict[str, object] = {'files_written': [
+            {'path': 'hooks/a.py', 'sha256': _sha(b'as written')},
+            {'path': 'hooks/helper.py', 'sha256': helper, 'hook_helper': True},
+        ]}
+        report = setup_environment.compute_profile_leftovers(
+            manifest, profile_dir, profile_name='p', planned=PlannedRecords(), live=live, claude_dir=claude_dir,
+            remove=True,
+        )
+        assert [(entry.item.path, entry.state) for entry in report.entries] == [
+            ('hooks/a.py', 'changed'), ('hooks/helper.py', 'held'),
+        ]
+
+        removal = _step(report, live=live, claude_dir=claude_dir, profile_dir=profile_dir)
+
+        assert _results(removal) == {'hooks/helper.py': 'kept'}
+        assert (profile_dir / 'hooks' / 'helper.py').is_file()
+
+    def test_a_helper_leaves_in_step_23_once_nothing_in_the_folder_is_wired(self, layout: tuple[Path, Path]) -> None:
+        claude_dir, profile_dir = layout
+        helper = _write(profile_dir / 'hooks' / 'helper.py', b'helper')
+        _write(profile_dir / 'hooks' / 'kept.py', b'unwired')
+        report = _report(profile_dir, _helper('hooks/helper.py', helper))
+
+        removal = _step(report, live=_live(profile_dir), claude_dir=claude_dir, profile_dir=profile_dir)
+
+        assert _results(removal) == {'hooks/helper.py': 'removed'}
+        assert not (profile_dir / 'hooks' / 'helper.py').exists()
 
     def test_a_file_this_run_wrote_again_is_dropped_before_anything_is_removed(
         self, layout: tuple[Path, Path],

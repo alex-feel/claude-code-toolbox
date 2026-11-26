@@ -9,6 +9,9 @@ import pytest
 SKIP = ['--skip-install', '--no-admin']
 HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
 REMOVES = 'Step 23 removes each item marked [remove] only while it still holds what the setup wrote.'
+REMOVES_OTHERS_STAY = (
+    'Step 23 removes each item marked [remove] only while it still holds what the setup wrote; the others stay in place.'
+)
 _ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
 

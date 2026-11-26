@@ -176,13 +176,14 @@ class TestProfileAll:
         assert _report(captured.out) == [
             '   * base: ok',
             '   * team-1: ok',
-            '       - leftovers removed (2):',
+            '       - leftovers removed (1):',
             '           file: hooks/a.py',
-            '           file: hooks/h.py',
+            '       - leftovers left (1):',
+            '           file: hooks/h.py (kept: stays with hooks/b.py, which is still wired)',
             '   * team-lab: ok',
         ]
         assert not (source / 'hooks' / 'a.py').exists()
-        assert not (source / 'hooks' / 'h.py').exists()
+        assert (source / 'hooks' / 'h.py').is_file(), 'the new script both profiles run may import it'
         assert (source / 'hooks' / 'b.py').is_file()
 
     def test_without_the_flag_each_profile_with_leftovers_names_its_command(

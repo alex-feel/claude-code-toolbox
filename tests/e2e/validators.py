@@ -1579,8 +1579,9 @@ def _leftover_item_shape_error(item: object) -> bool:
             or item['scope'] not in _MCP_CLI_SCOPES
         )
     return (
-        not isinstance(item, dict) or set(item) != {'kind', 'path', 'sha256'}
+        not isinstance(item, dict) or set(item) - {'hook_helper'} != {'kind', 'path', 'sha256'}
         or item['kind'] not in ('file', 'destination') or not isinstance(item['path'], str)
+        or ('hook_helper' in item and (item['hook_helper'] is not True or item['kind'] != 'file'))
     )
 
 
@@ -1855,11 +1856,24 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     )
     files = data['files_written'] if isinstance(data['files_written'], list) else []
     errors.extend(
-        f'Manifest files_written entry: expected path and sha256, got {record!r}'
+        f'Manifest files_written entry: expected path and sha256, and hook_helper true for a helper, got {record!r}'
         for record in files
-        if not isinstance(record, dict) or set(record) != {'path', 'sha256'}
+        if not isinstance(record, dict) or set(record) - {'hook_helper'} != {'path', 'sha256'}
         or not isinstance(record['path'], str) or not isinstance(record['sha256'], str | None)
+        or record.get('hook_helper', True) is not True
     )
+    hooks_section = config.get('hooks')
+    helpers = hooks_section.get('helpers') if isinstance(hooks_section, dict) else None
+    helper_paths = {
+        f"hooks/{str(helper).split('?')[0].replace(chr(92), '/').rsplit('/', 1)[-1]}"
+        for helper in helpers or []
+    }
+    marked = {record['path'] for record in files if isinstance(record, dict) and record.get('hook_helper')}
+    if files and marked != helper_paths & {record['path'] for record in files if isinstance(record, dict)}:
+        errors.append(
+            f'Manifest files_written: expected hook_helper on exactly the hooks.helpers modules {sorted(helper_paths)}, '
+            f'got {sorted(marked)}',
+        )
     dependency_entries = data['dependency_entries'] if isinstance(data['dependency_entries'], list) else []
     errors.extend(
         f'Manifest dependency_entries record: expected a command and its {{path, identity}} entries, got {record!r}'

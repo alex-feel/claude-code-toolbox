@@ -133,9 +133,28 @@ class TestLeftoverItemRecords:
         {'kind': 'file', 'path': 'rules/../../x', 'sha256': 'ab'},
         {'kind': 'file', 'path': 'rules\\..\\..\\x', 'sha256': 'ab'},
         {'kind': 'destination', 'path': 'relative/x.txt', 'sha256': 'ab'},
+        {'kind': 'file', 'path': 'hooks/h.py', 'sha256': 'ab', 'hook_helper': 'yes'},
+        {'kind': 'file', 'path': 'hooks/h.py', 'sha256': 'ab', 'hook_helper': 1},
+        {'kind': 'destination', 'path': str(Path('/srv/out/x.txt').resolve()), 'sha256': 'ab', 'hook_helper': True},
     ])
     def test_records_of_another_shape_are_refused(self, tmp_path: Path, record: object) -> None:
         assert LeftoverItem.from_record(record, claude_dir=tmp_path / '.claude') is None
+
+    def test_a_hook_helper_mark_round_trips_and_is_read_from_files_written(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        record = {'kind': 'file', 'path': 'hooks/h.py', 'sha256': 'ab', 'hook_helper': True}
+        item = LeftoverItem.from_record(record, claude_dir=claude_dir)
+        assert item is not None
+        assert item.hook_helper
+        assert item.to_record() == record
+        plain = LeftoverItem.from_record({**record, 'hook_helper': False}, claude_dir=claude_dir)
+        assert plain is not None
+        assert not plain.hook_helper
+        assert plain.to_record() == {'kind': 'file', 'path': 'hooks/h.py', 'sha256': 'ab'}
+        candidates = setup_environment._recorded_leftover_candidates(
+            {'files_written': [{'path': 'hooks/h.py', 'sha256': 'ab', 'hook_helper': True}]}, claude_dir,
+        )
+        assert [(candidate.path, candidate.hook_helper) for candidate in candidates] == [('hooks/h.py', True)]
 
     def test_destination_inside_the_config_home_is_refused(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
@@ -570,6 +589,21 @@ class TestFileRecords:
             {'path': 'rules/same.md', 'sha256': same},
             {'path': 'rules/changed.md', 'sha256': None},
             {'path': 'rules/new.md', 'sha256': None},
+        ]
+
+    def test_a_hooks_helpers_module_is_marked(self, tmp_path: Path) -> None:
+        script, helper = _write(tmp_path / 'hooks' / 'a.py', b'a'), _write(tmp_path / 'hooks' / 'h.py', b'h')
+        helpers = setup_environment.planned_hook_helpers(
+            {'hooks': {'files': ['src/a.py'], 'helpers': ['https://host/lib/h.py?ref=main']}},
+        )
+        assert helpers == frozenset({'hooks/h.py'})
+
+        records = setup_environment.file_records(
+            tmp_path, ['hooks/a.py', 'hooks/h.py'], None, download_failed=False, hook_helpers=helpers,
+        )
+
+        assert records == [
+            {'path': 'hooks/a.py', 'sha256': script}, {'path': 'hooks/h.py', 'sha256': helper, 'hook_helper': True},
         ]
 
     def test_destination_records_follow_the_same_rule(self, tmp_path: Path) -> None:

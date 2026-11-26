@@ -103,11 +103,17 @@ class TestRecords:
             _record('setting', ['permissions', 'defaultMode'], 'plan'),
             _record('setting', ['sandbox'], {}),
             _record('setting', ['env', 'FOO'], 'x'),
-            _record('setting', ['statusLine', 'type'], 'command'),
-            _record('setting', ['statusLine', 'command'], 'c'),
-            _record('setting', ['statusLine', 'padding'], 0),
+            _record('setting', ['statusLine'], {'type': 'command', 'command': 'c', 'padding': 0}),
         ])
         assert 'dark' not in json.dumps(records), 'only digests are recorded'
+
+    def test_the_status_line_is_recorded_whole_as_the_write_leaves_it(self) -> None:
+        """A status line is one display setting: one record, its null members left out as the merge deletes them."""
+        delta = {'statusLine': {'type': 'command', 'command': 'c', 'padding': None, 'refreshInterval': 5}}
+
+        records = setup_environment.settings_write_records(delta)
+
+        assert records == [_record('setting', ['statusLine'], {'type': 'command', 'command': 'c', 'refreshInterval': 5})]
 
     def test_hook_groups_are_recorded_whole_with_their_matcher_and_entries(self) -> None:
         pre = {'matcher': '*', 'hooks': [_hook('a'), _hook('b')]}
@@ -136,7 +142,7 @@ class TestRecords:
         expanded = setup_environment._expand_tilde_keys_in_settings(user_settings)['apiKeyHelper']
         assert expanded != '~/.claude/helper.sh'
         assert _record('setting', ['apiKeyHelper'], expanded) in records
-        assert _record('setting', ['statusLine', 'command'], 's') in records
+        assert _record('setting', ['statusLine'], {'type': 'command', 'command': 's'}) in records
         assert setup_environment.written_settings_records(None, {}) == []
 
     def test_planned_records_are_computed_without_printing(
@@ -276,6 +282,33 @@ class TestItemState:
         if state == 'removable':
             assert entry.shown == '"Bash(ls)"'
 
+    @pytest.mark.parametrize(('content', 'state'), [
+        ({'statusLine': {'type': 'command', 'command': 'c', 'padding': 2}}, 'removable'),
+        ({'statusLine': {'type': 'command', 'command': 'claude-statusline', 'padding': 2}}, 'changed'),
+        ({'statusLine': {'type': 'command', 'command': 'c'}}, 'changed'),
+        ({'statusLine': {'type': 'command', 'command': 'c', 'padding': 2, 'refreshInterval': 9}}, 'changed'),
+        ({}, 'gone'),
+    ])
+    def test_status_line_is_one_value(self, content: dict[str, Any], state: str) -> None:
+        """A status line changed in any member, as /statusline changes it, reads as changed whole."""
+        item = _item(_record('setting', ['statusLine'], {'type': 'command', 'command': 'c', 'padding': 2}))
+
+        entry = setup_environment.settings_item_state(item, content, written=PlannedRecords())
+
+        assert entry.state == state
+
+    def test_a_member_the_configuration_dropped_without_a_null_keeps_the_status_line_changed(self) -> None:
+        """The merge keeps a member an earlier run wrote, so the status line no longer equals what was written."""
+        written = setup_environment.settings_write_records({'statusLine': {'type': 'command', 'command': 'c'}})
+        merged = setup_environment.deep_merge_settings(
+            {'statusLine': {'type': 'command', 'command': 'c', 'padding': 2}},
+            {'statusLine': {'type': 'command', 'command': 'c'}},
+        )
+
+        entry = setup_environment.settings_item_state(_item(written[0]), merged, written=PlannedRecords())
+
+        assert entry.state == 'changed'
+
     def test_group_present_whole_is_removable(self) -> None:
         group = {'matcher': '*', 'hooks': [_hook('a'), _hook('b')]}
         content = {'hooks': {'PreToolUse': [{'matcher': '', 'hooks': [_hook('user')]}, group]}}
@@ -379,6 +412,28 @@ class TestRemoval:
 
         assert _read(settings) == {'hooks': {'PreToolUse': [kept]}}
 
+    def test_a_status_line_leaves_whole_and_one_changed_in_any_member_stays_whole(self, claude_dir: Path) -> None:
+        written = {'type': 'command', 'command': 'c', 'padding': 2}
+        item = _item(_record('setting', ['statusLine'], written))
+        settings = _settings(claude_dir, {'statusLine': written, 'model': 'm'})
+
+        removed = setup_environment.remove_settings_leftovers(
+            settings, [setup_environment.settings_item_state(item, _read(settings), written=PlannedRecords())],
+            written=PlannedRecords(),
+        )
+
+        assert [outcome.result for outcome in removed] == ['removed']
+        assert _read(settings) == {'model': 'm'}
+        rewritten = {'type': 'command', 'command': 'claude-statusline'}
+        _settings(claude_dir, {'statusLine': rewritten})
+
+        kept = setup_environment.remove_settings_leftovers(
+            settings, [LeftoverEntry(item, 'removable')], written=PlannedRecords(),
+        )
+
+        assert [(outcome.result, outcome.detail) for outcome in kept] == [('dropped', 'changed')]
+        assert _read(settings) == {'statusLine': rewritten}, 'no member of a changed status line leaves'
+
     def test_an_item_changed_before_the_removal_is_left_in_place(self, claude_dir: Path) -> None:
         settings = _settings(claude_dir, {'theme': 'dark'})
         entry = setup_environment.settings_item_state(
@@ -438,10 +493,7 @@ _STEP_18_CONTENT: dict[str, Any] = {
     'hooks': {'Stop': [_STOP_GROUP]},
 }
 _STEP_18_RECORDS: dict[str, list[dict[str, Any]]] = {
-    'statusLine.type': [_record('setting', ['statusLine', 'type'], 'command')],
-    'statusLine.command': [_record('setting', ['statusLine', 'command'], _STATUS_COMMAND)],
-    'statusLine.padding': [_record('setting', ['statusLine', 'padding'], 2)],
-    'statusLine.refreshInterval': [_record('setting', ['statusLine', 'refreshInterval'], 30)],
+    'statusLine': [_record('setting', ['statusLine'], _STEP_18_CONTENT['statusLine'])],
     'hooks.Stop': [_group_record('Stop', _STOP_GROUP)],
 }
 
@@ -548,16 +600,11 @@ class TestComputation:
     @pytest.mark.parametrize(
         ('config', 'listed'),
         [
-            ({}, ['statusLine.type', 'statusLine.command', 'statusLine.padding', 'statusLine.refreshInterval',
-                  'hooks.Stop']),
+            ({}, ['statusLine', 'hooks.Stop']),
             ({'status-line': None}, ['hooks.Stop']),
-            ({'hooks': None}, ['statusLine.type', 'statusLine.command', 'statusLine.padding',
-                               'statusLine.refreshInterval']),
+            ({'hooks': None}, ['statusLine']),
             ({'status-line': None, 'hooks': None}, []),
-            ({'hooks': {'files': ['hooks/s.py']}, 'status-line': {'file': 's.py', 'padding': None}},
-             ['statusLine.refreshInterval', 'hooks.Stop']),
-            ({'hooks': {'files': ['hooks/s.py']}, 'status-line': {'file': 's.py', 'refresh-interval': None}},
-             ['statusLine.padding', 'hooks.Stop']),
+            ({'hooks': {'files': ['hooks/s.py']}, 'status-line': {'file': 's.py', 'padding': None}}, ['hooks.Stop']),
         ],
     )
     def test_a_status_line_or_hooks_member_the_configuration_deletes_is_no_leftover(
@@ -680,7 +727,7 @@ class TestHookFileWiredByASettingsLeftover:
             {'hooks': {'files': ['hooks/b.py']}, 'status-line': {'file': 'hooks/b.py'}},
             claude_dir, claude_dir=claude_dir, base=True,
         )
-        assert _item(_record('setting', ['statusLine', 'command'], new)) in planned.settings
+        assert _item(_record('setting', ['statusLine'], {'type': 'command', 'command': new})) in planned.settings
 
         states = _states(_compute(manifest, claude_dir, planned=planned, remove=remove))
 
