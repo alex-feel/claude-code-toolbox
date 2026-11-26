@@ -14,6 +14,7 @@ version pin wrote stays.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from tests.e2e.leftovers_support import REMOVES_OTHERS_STAY
 from tests.e2e.leftovers_support import SKIP
 from tests.e2e.leftovers_support import leftover_rows
 from tests.e2e.leftovers_support import printed
+from tests.e2e.leftovers_support import symlink_file
 from tests.e2e.profile_support import home_state
 from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
@@ -158,6 +160,45 @@ class TestBaseSettingsLeftovers:
         assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
 
         assert leftover_rows(printed(capsys)) == [held, '  They stay in place.'], 'only the held helper is left'
+
+    def test_a_settings_file_linked_from_elsewhere_stays_linked_and_its_target_loses_the_leftovers(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A settings.json kept in a dotfiles folder and linked into ~/.claude is edited where it lives."""
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        settings_path = claude_dir / 'settings.json'
+        target = home / 'dotfiles' / 'claude-settings.json'
+        target.parent.mkdir()
+        target.write_text(json.dumps({'model': 'opus'}, indent=2), encoding='utf-8')
+        symlink_file(settings_path, target)
+        cfg = write_config(configs, 'base.yaml', {
+            'name': 'Linked Settings', 'user-settings': {'theme': 'dark', 'permissions': {'allow': ['Read', 'Bash(ls)']}},
+        })
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        assert settings_path.is_symlink(), 'the install writes through the link'
+        assert _settings(claude_dir) == {
+            'model': 'opus', 'theme': 'dark', 'permissions': {'allow': ['Read', 'Bash(ls)']},
+        }
+        write_config(configs, 'base.yaml', {'name': 'Linked Settings', 'user-settings': {'permissions': {'allow': ['Read']}}})
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--remove-leftovers', '--yes']) == 0
+
+        output = printed(capsys)
+        assert leftover_rows(output) == [
+            f'  [remove] {settings_path}: permissions.allow element "Bash(ls)"',
+            f'  [remove] {settings_path}: theme',
+            f'  {REMOVES}',
+        ]
+        assert f'Removed leftover {settings_path}: theme' in output, 'the run names the settings file as linked'
+        assert settings_path.is_symlink(), 'the removal keeps the link'
+        assert os.path.samefile(settings_path, target)
+        assert json.loads(target.read_text(encoding='utf-8')) == {'model': 'opus', 'permissions': {'allow': ['Read']}}
+        assert sorted(path.name for path in target.parent.iterdir()) == ['claude-settings.json'], (
+            'no temporary file is left beside the target'
+        )
+        assert read_manifest(claude_dir)['leftovers']['items'] == []
 
     def test_dropping_every_hook_removes_the_scripts_the_group_and_the_helper_in_one_run(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],

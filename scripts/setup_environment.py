@@ -20058,7 +20058,10 @@ def remove_settings_leftovers(
     Each leftover is looked at again in the content as read, after the
     removals before it, and removed only while it still holds what the
     setup wrote; never through _write_merged_json(), whose list union could
-    never remove anything.
+    never remove anything. The write replaces the file the path resolves
+    to, so a settings.json that is a symlink, such as one a dotfiles
+    manager links into ~/.claude, keeps its link and its target is edited
+    where it lives, as every other settings write edits it.
 
     Args:
         settings_path: The base settings.json.
@@ -20090,7 +20093,10 @@ def remove_settings_leftovers(
         return outcomes
     rendered = json.dumps(content, indent=2, ensure_ascii=False) + '\n'
     try:
-        _write_file_atomic(settings_path, lambda temporary: temporary.write_text(rendered, encoding='utf-8'))
+        _write_file_atomic(
+            Path(os.path.realpath(settings_path)),
+            lambda temporary: temporary.write_text(rendered, encoding='utf-8'),
+        )
     except OSError as e:
         reason = e.strerror or str(e)
         for outcome in removed:

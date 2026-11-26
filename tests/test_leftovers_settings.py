@@ -12,6 +12,7 @@ wrote. The machine-wide update controls are never recorded.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from scripts.setup_environment import LeftoverReadError
 from scripts.setup_environment import LeftoverReport
 from scripts.setup_environment import LiveLeftoverState
 from scripts.setup_environment import PlannedRecords
+from tests.e2e.leftovers_support import symlink_file
 
 digest = setup_environment.leftover_digest
 
@@ -457,6 +459,41 @@ class TestRemoval:
 
         assert [(outcome.result, outcome.detail) for outcome in outcomes] == [('failed', 'Access is denied')]
         assert _read(settings) == {'theme': 'dark', 'model': 'm'}
+
+    @pytest.mark.parametrize('spelling', ['absolute', 'relative', 'chain'])
+    def test_a_symlinked_settings_file_keeps_its_link_and_its_target_loses_the_leftover(
+        self, claude_dir: Path, spelling: str,
+    ) -> None:
+        """The write lands in the file the link resolves to, so a settings.json kept elsewhere stays linked."""
+        dotfiles = claude_dir.parent / 'dotfiles'
+        dotfiles.mkdir()
+        target = dotfiles / 'claude-settings.json'
+        target.write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
+        settings = claude_dir / 'settings.json'
+        if spelling == 'absolute':
+            symlink_file(settings, target)
+        elif spelling == 'relative':
+            symlink_file(settings, Path('..') / 'dotfiles' / 'claude-settings.json')
+        else:
+            hop = dotfiles / 'settings-link.json'
+            symlink_file(hop, target)
+            symlink_file(settings, hop)
+        entry = setup_environment.settings_item_state(
+            _item(_record('setting', ['theme'], 'dark')), _read(settings), written=PlannedRecords(),
+        )
+
+        outcomes = setup_environment.remove_settings_leftovers(settings, [entry], written=PlannedRecords())
+
+        assert [outcome.result for outcome in outcomes] == ['removed']
+        assert settings.is_symlink(), 'the link itself is not replaced by a regular file'
+        assert os.path.samefile(settings, target)
+        assert _read(target) == {'model': 'm'}, 'the file the link resolves to loses the leftover'
+        if spelling == 'chain':
+            assert (dotfiles / 'settings-link.json').is_symlink(), 'every link of the chain stays'
+        assert sorted(path.name for path in claude_dir.iterdir()) == ['settings.json'], 'no temporary file is left'
+        assert sorted(path.name for path in dotfiles.iterdir()) == sorted(
+            ['claude-settings.json', *(['settings-link.json'] if spelling == 'chain' else [])],
+        ), 'no temporary file is left beside the target'
 
     def test_an_unreadable_file_keeps_every_item(self, claude_dir: Path) -> None:
         settings = claude_dir / 'settings.json'
