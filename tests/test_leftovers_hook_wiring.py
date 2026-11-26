@@ -145,14 +145,13 @@ class TestHookFileWiredByASettingsLeftover:
         assert states['file: hooks/a.py'] == 'removable'
         assert states['file: hooks/h.py'] == 'removable'
 
-    def test_a_selection_reads_the_helper_against_settings_without_the_leftovers(self, claude_dir: Path) -> None:
-        """The summary of a run with selected components holds the helpers again against the same view."""
+    def test_a_selection_keeps_the_helper_a_leftover_beside_a_file_only_a_leftover_wires(self, claude_dir: Path) -> None:
+        """The summary of a run with selected components keeps the states computed against the same view."""
         manifest = _layout(claude_dir, {'hooks': {'Stop': [_stop_group(claude_dir)]}}, helper=True)
-        live = _live(claude_dir)
-        report = _compute(manifest, claude_dir, live=live)
+        report = _compute(manifest, claude_dir)
         selected = setup_environment.planned_records({}, claude_dir, claude_dir=claude_dir, base=True)
 
-        refined = report.refined(linked_entries=frozenset(), link_source='base', selected=selected, live=live)
+        refined = report.refined(linked_entries=frozenset(), link_source='base', selected=selected)
 
         assert _states(refined)['file: hooks/h.py'] == 'removable'
         assert _states(refined)['file: hooks/a.py'] == 'removable'

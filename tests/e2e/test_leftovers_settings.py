@@ -23,7 +23,6 @@ import pytest
 from scripts import setup_environment
 from tests.e2e.leftovers_support import HEADING
 from tests.e2e.leftovers_support import REMOVES
-from tests.e2e.leftovers_support import REMOVES_OTHERS_STAY
 from tests.e2e.leftovers_support import SKIP
 from tests.e2e.leftovers_support import leftover_rows
 from tests.e2e.leftovers_support import printed
@@ -115,24 +114,23 @@ class TestBaseSettingsLeftovers:
         dry = printed(capsys)
         assert home_state(e2e_isolated_home['home']) == before, 'a dry run removes nothing'
         marker = '[would be removed in Step 23]'
-        held = f'  [kept: stays with hooks/b.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}'
         assert leftover_rows(dry) == [
             f'  {marker} file: {claude_dir / "hooks" / "a.py"}',
-            held,
+            f'  {marker} file: {claude_dir / "hooks" / "h.py"}',
             f'  {marker} {settings_path}: hooks.PreToolUse group matcher "*" (1 hook)',
             f'  {marker} {settings_path}: permissions.allow element "Bash(ls)"',
-            f'  {REMOVES_OTHERS_STAY.replace("[remove]", marker)}',
-        ]
+            f'  {REMOVES.replace("[remove]", marker)}',
+        ], 'b.py is installed as the configuration ships it and imports no dropped helper'
 
         assert run_main(['--profile', 'base', *SKIP, '--remove-leftovers', '--yes']) == 0
 
         output = printed(capsys)
         assert leftover_rows(output) == [
             f'  [remove] file: {claude_dir / "hooks" / "a.py"}',
-            held,
+            f'  [remove] file: {claude_dir / "hooks" / "h.py"}',
             f'  [remove] {settings_path}: hooks.PreToolUse group matcher "*" (1 hook)',
             f'  [remove] {settings_path}: permissions.allow element "Bash(ls)"',
-            f'  {REMOVES_OTHERS_STAY}',
+            f'  {REMOVES}',
         ]
         group_removed = output.index(f'Removed leftover {settings_path}: hooks.PreToolUse group')
         assert output.index('Step 23: Removing leftovers...') < group_removed
@@ -140,7 +138,7 @@ class TestBaseSettingsLeftovers:
             'the hook group leaves before the hook file it wires'
         )
         assert not (claude_dir / 'hooks' / 'a.py').exists()
-        assert (claude_dir / 'hooks' / 'h.py').is_file(), 'the wired b.py may import the dropped helper'
+        assert not (claude_dir / 'hooks' / 'h.py').exists()
         assert (claude_dir / 'hooks' / 'b.py').is_file()
         final = _settings(claude_dir)
         assert _commands(final['hooks']['PreToolUse']) == [_hook_command(claude_dir, 'b.py')]
@@ -149,17 +147,18 @@ class TestBaseSettingsLeftovers:
         assert final['env']['DISABLE_UPDATES'] == '1', 'the machine-wide update controls stay'
         assert final['permissions']['allow'] == ['Read', 'Edit'], 'only the dropped element leaves'
         leftovers = read_manifest(claude_dir)['leftovers']
-        assert [item['path'] for item in leftovers['items']] == ['hooks/h.py']
+        assert leftovers['items'] == []
         assert [label.split(' group ')[0] for label in leftovers['removed']] == [
             'settings.json: hooks.PreToolUse',
             f'settings.json: permissions.allow element {setup_environment.leftover_digest("Bash(ls)")[:12]}',
             'file: hooks/a.py',
+            'file: hooks/h.py',
         ]
         assert not validate_manifest(claude_dir / 'manifest.json', _hooked('b.py', helpers=[], allow=['Read']))
 
         assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
 
-        assert leftover_rows(printed(capsys)) == [held, '  They stay in place.'], 'only the held helper is left'
+        assert HEADING not in printed(capsys), 'nothing is left'
 
     def test_a_settings_file_linked_from_elsewhere_stays_linked_and_its_target_loses_the_leftovers(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
@@ -557,16 +556,16 @@ class TestBaseSettingsLeftovers:
         output = printed(capsys)
         rows = [
             f'  [remove] file: {claude_dir / "hooks" / "a.py"}',
-            f'  [kept: stays with hooks/b.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}',
+            f'  [remove] file: {claude_dir / "hooks" / "h.py"}',
             f'  [remove] {settings_path}: hooks.PreToolUse group matcher "*" (1 hook)',
-            f'  {REMOVES_OTHERS_STAY}',
+            f'  {REMOVES}',
         ]
         guard = output.split('The previous configuration leaves behind:')[1].split('Accepted via')[0]
         assert all(row.strip() in guard for row in rows), guard
         assert '[kept: still wired' not in guard, 'no settings file Step 23 leaves keeps the old script'
         assert leftover_rows(output) == rows
         assert not (claude_dir / 'hooks' / 'a.py').exists()
-        assert (claude_dir / 'hooks' / 'h.py').is_file(), 'the wired b.py may import the dropped helper'
+        assert not (claude_dir / 'hooks' / 'h.py').exists(), 'b.py, installed as the configuration ships it, needs none'
         assert (claude_dir / 'hooks' / 'b.py').is_file()
         settings = _settings(claude_dir)
         assert _commands(settings['hooks']['PreToolUse']) == [_hook_command(claude_dir, 'b.py')]
@@ -638,6 +637,46 @@ class TestBaseSettingsLeftovers:
         assert 'statusLine' not in _settings(claude_dir)
         assert not (claude_dir / 'hooks' / 'a.py').exists()
         assert read_manifest(claude_dir)['leftovers']['removed'] == ['settings.json: statusLine', 'file: hooks/a.py']
+
+    def test_a_member_left_out_disappears_and_a_later_drop_removes_the_status_line_whole(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Step 18 writes the status line whole, so the file holds what the manifest records, and it leaves whole later."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        settings_path = claude_dir / 'settings.json'
+        hooked = {'name': 'Status Env', 'rules': ['rules/rule.md'], 'hooks': {'files': ['hooks/a.py']}}
+        cfg = write_config(configs, 'base.yaml', {
+            **hooked, 'status-line': {'file': 'a.py', 'padding': 1, 'refresh-interval': 30},
+        })
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        assert set(_settings(claude_dir)['statusLine']) == {'type', 'command', 'padding', 'refreshInterval'}
+        write_config(configs, 'base.yaml', {**hooked, 'status-line': {'file': 'a.py'}})
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        assert HEADING not in printed(capsys), 'the status line the run writes again is no leftover'
+        status_line = _settings(claude_dir)['statusLine']
+        assert status_line == {'type': 'command', 'command': _hook_command(claude_dir, 'a.py')}, (
+            'the members the configuration left out are gone'
+        )
+        assert [
+            record['sha256'] for record in read_manifest(claude_dir)['settings_written'] if record['path'] == ['statusLine']
+        ] == [setup_environment.leftover_digest(status_line)]
+        write_config(configs, 'base.yaml', {'name': 'Status Env', 'rules': ['rules/rule.md']})
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        rows = [f'  [leftover] file: {claude_dir / "hooks" / "a.py"}', f'  [leftover] {settings_path}: statusLine']
+        assert leftover_rows(printed(capsys)) == [
+            *rows, '  They stay in place.', f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ]
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        assert leftover_rows(printed(capsys)) == [*(row.replace('[leftover]', '[remove]') for row in rows), f'  {REMOVES}']
+        assert 'statusLine' not in _settings(claude_dir)
+        assert not (claude_dir / 'hooks' / 'a.py').exists()
 
     def test_a_status_line_changed_in_place_stays_whole_when_the_configuration_drops_it(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],

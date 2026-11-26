@@ -5,9 +5,9 @@ edit the configuration in place (its identity stays the same, as an update of
 a remote configuration does), and re-run the profile with the flag: the
 summary and --dry-run mark what Step 23 removes, Step 23 removes each leftover
 that still holds what the setup wrote, keeps a hook file a settings file still
-wires and a dropped hook helper while any hook file of the folder is wired,
-skips every removal after a failed content download, and the manifest records
-what was removed and what stays.
+wires and a dropped hook helper while a hook file the run does not install is
+wired, skips every removal after a failed content download, and the manifest
+records what was removed and what stays.
 """
 
 from __future__ import annotations
@@ -312,14 +312,15 @@ class TestConfigurationSwitchAfterAFailedDownload:
 class TestRenamedHookFile:
     """A hook file the configuration renamed leaves once no settings file a session reads wires it."""
 
-    def test_isolated_profile_removes_the_old_script_and_keeps_the_helper_while_a_hook_is_wired(
-        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    @pytest.mark.parametrize('own_script', ['as-shipped', 'edited'])
+    def test_isolated_profile_removes_the_old_script_and_the_helper_its_own_new_script_does_not_need(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str], own_script: str,
     ) -> None:
         """Step 18 rebuilds config.json without the old script, so the summary already marks it for removal.
 
-        The dropped helper stays while config.json wires the new script, which
-        may import it, and leaves with the run whose configuration wires no
-        hook file.
+        config.json wires the new script, which Step 17 installs as the
+        configuration ships it, over an edit too, so it imports no helper the
+        configuration dropped: the helper leaves in the same step.
         """
         cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
         profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
@@ -330,6 +331,8 @@ class TestRenamedHookFile:
             if record['path'].startswith('hooks/')
         ] == [('hooks/a.py', None), ('hooks/h.py', True)], 'files_written marks the hooks.helpers module'
         write_config(configs, 'hooks.yaml', _hooked('b.py', []))
+        if own_script == 'edited':
+            (profile_dir / 'hooks' / 'b.py').write_text('import h\nprint("mine")\n', encoding='utf-8')
         capsys.readouterr()
 
         assert run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers']) == 0
@@ -337,27 +340,103 @@ class TestRenamedHookFile:
         output = _output(capsys)
         assert _block(output) == [
             f'  [remove] file: {profile_dir / "hooks" / "a.py"}',
-            f'  [kept: stays with hooks/b.py, which is still wired] file: {profile_dir / "hooks" / "h.py"}',
-            f'  {REMOVES_OTHERS_STAY}',
+            f'  [remove] file: {profile_dir / "hooks" / "h.py"}',
+            f'  {REMOVES}',
         ]
         assert not (profile_dir / 'hooks' / 'a.py').exists()
-        assert (profile_dir / 'hooks' / 'h.py').is_file(), 'the wired script may import the helper'
-        assert (profile_dir / 'hooks' / 'b.py').is_file()
+        assert not (profile_dir / 'hooks' / 'h.py').exists()
+        assert (profile_dir / 'hooks' / 'b.py').read_bytes() == (configs / 'hooks' / 'b.py').read_bytes()
         config = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
         assert (profile_dir / 'hooks' / 'b.py').as_posix() in json.dumps(config['hooks'])
-        items = read_manifest(profile_dir)['leftovers']['items']
-        assert [(item['path'], item.get('hook_helper')) for item in items] == [('hooks/h.py', True)]
-        write_config(configs, 'hooks.yaml', {'name': 'Hooks Env', 'rules': ['rules/rule.md']})
+        leftovers = read_manifest(profile_dir)['leftovers']
+        assert leftovers['items'] == []
+        assert sorted(leftovers['removed']) == ['file: hooks/a.py', 'file: hooks/h.py']
+
+    @pytest.mark.parametrize('components', [False, True], ids=['all-items', 'components'])
+    @pytest.mark.parametrize('profile', ['prof-a', None], ids=['isolated', 'base'])
+    def test_a_helper_the_configuration_drops_leaves_while_its_unchanged_scripts_stay_wired(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+        profile: str | None, components: bool,
+    ) -> None:
+        """The configuration keeps its script as it was and drops only the helper: the helper is a leftover the flag removes.
+
+        The script is on disk and wired before consent and stays so after
+        Step 18, yet Step 17 installs it as the configuration ships it, so
+        it holds nothing, with component selection active as without it.
+        """
+        def _config(helpers: list[str]) -> dict[str, Any]:
+            config = _hooked('a.py', helpers)
+            if components:
+                config['rules'] = ['rules/rule.md', 'rules/other.md']
+                config['components'] = [{'name': 'extra', 'includes': {'rules': ['rules/other.md']}}]
+            return config
+
+        cfg = write_config(configs, 'hooks.yaml', _config(['h.py']))
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / profile if profile else claude_dir
+        names = ['--command-names', profile] if profile else []
+        assert run_main([str(cfg), *SKIP, '--yes', *names]) == 0
+        write_config(configs, 'hooks.yaml', _config([]))
+        capsys.readouterr()
+
+        assert run_main(['--profile', profile or 'base', *SKIP, '--yes']) == 0
+
+        row = f'file: {profile_dir / "hooks" / "h.py"}'
+        footer = setup_environment.LEFTOVERS_FLAG_FOOTER
+        assert _block(_output(capsys)) == [f'  [leftover] {row}', '  They stay in place.', f'  {footer}']
+        assert read_manifest(profile_dir)['leftovers']['kept'] == []
+
+        assert run_main(['--profile', profile or 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        assert _block(_output(capsys)) == [f'  [remove] {row}', f'  {REMOVES}']
+        assert not (profile_dir / 'hooks' / 'h.py').exists()
+        settings = profile_dir / ('config.json' if profile else 'settings.json')
+        assert (profile_dir / 'hooks' / 'a.py').as_posix() in settings.read_text(encoding='utf-8')
+        assert (profile_dir / 'hooks' / 'a.py').read_bytes() == (configs / 'hooks' / 'a.py').read_bytes()
+
+    @pytest.mark.parametrize('holder', ['leftover', 'never-written'])
+    def test_a_helper_stays_while_a_wired_hook_file_the_run_does_not_install_is_there(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str], holder: str,
+    ) -> None:
+        """A leftover script a settings file still runs, and one the setup never wrote, may import the dropped helper.
+
+        Each keeps it through the flagged run; once nothing but the
+        configuration's own script is wired, the next flagged run removes it.
+        """
+        cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
+        profile_dir = e2e_isolated_home['claude_dir'] / 'prof-a'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        name = 'a.py' if holder == 'leftover' else 'mine.py'
+        if holder == 'never-written':
+            (profile_dir / 'hooks' / 'mine.py').write_text('import h\n', encoding='utf-8')
+        settings = profile_dir / 'settings.json'
+        command = f'uv run "{(profile_dir / "hooks" / name).as_posix()}"'
+        settings.write_text(json.dumps({'hooks': {'UserPromptSubmit': [
+            {'matcher': '', 'hooks': [{'type': 'command', 'command': command}]},
+        ]}}), encoding='utf-8')
+        write_config(configs, 'hooks.yaml', _hooked('b.py', []))
+        capsys.readouterr()
 
         assert run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers']) == 0
 
-        assert _block(_output(capsys)) == [
-            f'  [remove] file: {profile_dir / "hooks" / "b.py"}',
-            f'  [remove] file: {profile_dir / "hooks" / "h.py"}',
-            f'  {REMOVES}',
-        ], 'with no hook file wired, nothing can import the helper'
-        assert not (profile_dir / 'hooks' / 'h.py').exists()
-        assert not (profile_dir / 'hooks' / 'b.py').exists()
+        held = f'  [kept: stays with hooks/{name}, which is still wired] file: {profile_dir / "hooks" / "h.py"}'
+        script = profile_dir / 'hooks' / 'a.py'
+        assert _block(_output(capsys)) == (
+            [f'  [kept: still wired in {settings} hooks.UserPromptSubmit] file: {script}', held, '  They stay in place.']
+            if holder == 'leftover' else [f'  [remove] file: {script}', held, f'  {REMOVES_OTHERS_STAY}']
+        )
+        assert (profile_dir / 'hooks' / 'h.py').is_file(), 'the wired script may import the helper'
+        assert (profile_dir / 'hooks' / name).is_file()
+        assert ('file: hooks/h.py', f'kept: stays with hooks/{name}, which is still wired') in [
+            (entry['label'], entry['reason']) for entry in read_manifest(profile_dir)['leftovers']['kept']
+        ]
+        settings.write_text('{}', encoding='utf-8')
+
+        assert run_main(['--profile', 'prof-a', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        assert f'  [remove] file: {profile_dir / "hooks" / "h.py"}' in _block(_output(capsys))
+        assert not (profile_dir / 'hooks' / 'h.py').exists(), "only the configuration's own script is wired now"
+        assert (profile_dir / 'hooks' / 'b.py').is_file()
 
     def test_a_helper_stays_in_step_23_while_a_script_edited_by_hand_is_wired(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
@@ -407,14 +486,14 @@ class TestRenamedHookFile:
 
         output = _output(capsys)
         settings = claude_dir / 'settings.json'
-        held = f'  [kept: stays with hooks/b.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}'
-        assert _block(output) == [
+        rows = [
             f'  [leftover] file: {claude_dir / "hooks" / "a.py"}',
-            held,
+            f'  [leftover] file: {claude_dir / "hooks" / "h.py"}',
             f'  [leftover] {settings}: hooks.Stop group matcher "" (1 hook)',
-            '  They stay in place.',
-            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
         ]
+        assert _block(output) == [*rows, '  They stay in place.', f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}'], (
+            'the new script b.py is installed as the configuration ships it, so it keeps no dropped helper'
+        )
         assert (claude_dir / 'hooks' / 'a.py').is_file(), 'nothing leaves without the flag'
         assert (claude_dir / 'hooks' / 'h.py').is_file()
         assert (claude_dir / 'hooks' / 'a.py').as_posix() in settings.read_text(encoding='utf-8'), 'the group stays'
@@ -422,20 +501,18 @@ class TestRenamedHookFile:
         assert [(item['kind'], item['path']) for item in leftovers['items']] == [
             ('file', 'hooks/a.py'), ('file', 'hooks/h.py'), ('hook-group', ['hooks', 'Stop']),
         ]
-        assert [entry['label'] for entry in leftovers['kept']] == ['file: hooks/h.py']
+        assert leftovers['kept'] == []
 
         assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
 
-        assert _block(_output(capsys)) == [
-            f'  [remove] file: {claude_dir / "hooks" / "a.py"}',
-            held,
-            f'  [remove] {settings}: hooks.Stop group matcher "" (1 hook)',
-            f'  {REMOVES_OTHERS_STAY}',
-        ]
+        assert _block(_output(capsys)) == [*(row.replace('[leftover]', '[remove]') for row in rows), f'  {REMOVES}']
         removed = read_manifest(claude_dir)['leftovers']['removed']
-        assert sorted(label.split(' group ')[0] for label in removed) == ['file: hooks/a.py', 'settings.json: hooks.Stop']
+        assert sorted(label.split(' group ')[0] for label in removed) == [
+            'file: hooks/a.py', 'file: hooks/h.py', 'settings.json: hooks.Stop',
+        ]
         assert not (claude_dir / 'hooks' / 'a.py').exists()
-        assert (claude_dir / 'hooks' / 'h.py').is_file()
+        assert not (claude_dir / 'hooks' / 'h.py').exists()
+        assert (claude_dir / 'hooks' / 'b.py').is_file()
 
     def test_with_selected_components_a_helper_beside_a_script_only_a_leftover_group_wires_is_a_leftover(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
@@ -611,11 +688,12 @@ class TestRenamedHookFile:
         assert run_main(['--profile', 'team-1', *SKIP, '--yes', '--remove-leftovers'], argv0=str(runner)) == 0
 
         output = _output(capfd)
-        assert f'  [remove] file: {source / "hooks" / "a.py"}' in _block(output)
-        assert f'  [kept: stays with hooks/b.py, which is still wired] file: {source / "hooks" / "h.py"}' in _block(
-            output,
-        )
+        assert _block(output) == [
+            f'  [remove] file: {source / "hooks" / "a.py"}',
+            f'  [remove] file: {source / "hooks" / "h.py"}',
+            f'  {REMOVES}',
+        ], 'both profiles run only the new script, which the source installs as the configuration ships it'
         assert not (source / 'hooks' / 'a.py').exists()
-        assert (source / 'hooks' / 'h.py').is_file(), 'the new script both profiles run may import it'
+        assert not (source / 'hooks' / 'h.py').exists()
         assert (source / 'hooks' / 'b.py').is_file()
         assert os.path.isfile(lab / 'hooks' / 'b.py'), 'the dependent still reaches the new script through its link'

@@ -398,7 +398,7 @@ class TestProfileLeftoversLines:
 
     @pytest.mark.parametrize(
         'reason',
-        ['kept: stays with hooks/b.py, which is still wired', 'cannot check: Permission denied'],
+        ['kept: stays with hooks/mine.py, which is still wired', 'cannot check: Permission denied'],
         ids=['held', 'unreadable'],
     )
     def test_unflagged_run_names_no_command_when_every_leftover_is_kept(self, tmp_path: Path, reason: str) -> None:
@@ -551,7 +551,7 @@ class TestProfileAll:
             else:
                 _write_manifest(tmp_path / '.claude' / 'team-1', 'team-1', _record(
                     fresh, items=[_file('hooks/h.py')],
-                    kept=[{'label': 'file: hooks/h.py', 'reason': 'kept: stays with hooks/b.py, which is still wired'}],
+                    kept=[{'label': 'file: hooks/h.py', 'reason': 'kept: stays with hooks/mine.py, which is still wired'}],
                 ))
             return subprocess.CompletedProcess(argv, 0)
 
@@ -569,7 +569,7 @@ class TestProfileAll:
             '       - 1 leftover(s); remove them with --profile base --remove-leftovers',
             '   * team-1: ok',
             '       - leftovers kept (1):',
-            '           file: hooks/h.py (kept: stays with hooks/b.py, which is still wired)',
+            '           file: hooks/h.py (kept: stays with hooks/mine.py, which is still wired)',
         ]
 
     def test_a_failed_flagged_child_is_retried_with_the_flag(

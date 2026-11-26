@@ -458,11 +458,23 @@ ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # builder's delta into the shared ~/.claude/settings.json via
 # _write_merged_json(), inheriting: deep-merge for nested dicts, array-union
 # for every list at every depth, RFC 7396 null-as-delete for top-level and
-# nested None values, and preservation for keys omitted from the delta.
+# nested None values, and preservation for keys omitted from the delta; the
+# status line the delta declares replaces the file's whole
+# (SETTINGS_OBJECTS_WRITTEN_WHOLE).
 PROFILE_OWNED_KEYS: frozenset[str] = frozenset({
     'statusLine',
     'hooks',
 })
+
+# The top-level settings.json keys whose object is written, recorded and
+# removed as one value. The status line is one display configuration, which
+# Claude Code's /statusline rewrites in place: Step 18 of a base run
+# replaces the one in ~/.claude/settings.json with the object the
+# configuration builds instead of merging into it, so a member a later
+# configuration leaves out is gone and the file holds what the manifest
+# records; it leaves whole while it holds what the setup wrote and stays
+# whole once any member of it changed.
+SETTINGS_OBJECTS_WRITTEN_WHOLE: frozenset[str] = frozenset({'statusLine'})
 
 # Mapping from YAML root kebab-case key names to their on-disk camelCase
 # equivalents for the profile-owned keys. Used by main() to build the
@@ -2618,6 +2630,35 @@ def deep_merge_settings(
     return cast(dict[str, Any], result)
 
 
+def merge_settings_delta(
+    existing: dict[str, Any],
+    delta: dict[str, Any],
+    *,
+    written_whole: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Merge a settings delta into a settings object, as the shared-settings writers merge it into the file.
+
+    deep_merge_settings() applies the delta. A top-level key of
+    written_whole that the delta declares replaces the existing member
+    instead of merging into it: the existing member is dropped first, so a
+    member of its object that the delta's object lacks is gone, a null
+    member is dropped rather than written, and a null still deletes the
+    key.
+
+    Args:
+        existing: The settings object as it is. Not modified.
+        delta: What the write merges in.
+        written_whole: The top-level keys the delta replaces whole
+            (SETTINGS_OBJECTS_WRITTEN_WHOLE for Step 18).
+
+    Returns:
+        The merged settings object.
+    """
+    replaced = {key for key in written_whole if key in delta}
+    base = {key: value for key, value in existing.items() if key not in replaced}
+    return deep_merge_settings(base, delta)
+
+
 def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Expand tilde paths in settings keys that contain shell commands.
 
@@ -2658,6 +2699,7 @@ def _write_merged_json(
     new_settings: dict[str, Any],
     *,
     ensure_parent: bool = True,
+    written_whole: Iterable[str] = (),
 ) -> tuple[bool, dict[str, Any]]:
     """Read-merge-write JSON file with universal deep merge.
 
@@ -2678,11 +2720,14 @@ def _write_merged_json(
     - None values: RFC 7396 null-as-delete (top-level and nested), so a
       None deletes a whole list.
     - Keys absent from new_settings: preserved unchanged in target.
+    - A top-level key of written_whole that new_settings declares replaces
+      the file's member whole (merge_settings_delta()).
 
     Args:
         target_file: Path to the JSON file to update.
         new_settings: New settings to deep-merge into existing content.
         ensure_parent: If True, create parent directories if needed.
+        written_whole: The top-level keys written whole.
 
     Returns:
         Tuple of (success, merged_dict). success is True if settings were
@@ -2704,7 +2749,7 @@ def _write_merged_json(
             warning(f'Invalid JSON in {target_file}: {e}, starting fresh')
 
     # Step 2: DEEP MERGE new settings into existing
-    merged = deep_merge_settings(existing, new_settings)
+    merged = merge_settings_delta(existing, new_settings, written_whole=written_whole)
 
     # Step 3: WRITE merged result back to file
     try:
@@ -17305,6 +17350,11 @@ def write_profile_settings_to_settings(
     - RFC 7396 null-as-delete for any key whose value is ``None``
       (top-level or nested).
     - Preservation for keys omitted from ``settings_delta``.
+    - The status line the delta declares replaces the file's whole
+      (``SETTINGS_OBJECTS_WRITTEN_WHOLE``): it is one display configuration,
+      so a member a later configuration leaves out, or one added to it by
+      hand, is gone after the write, and the file holds the object the
+      manifest records.
 
     The delta is expected to be the output of
     ``_build_profile_settings()``, which contains one entry per
@@ -17335,9 +17385,9 @@ def write_profile_settings_to_settings(
     info('Writing profile settings to settings.json...')
 
     # Delegate to the shared READ-MERGE-WRITE helper: every array at every
-    # depth is unioned with structural dedupe, and ensure_parent=True
-    # creates settings_dir if missing.
-    ok, _ = _write_merged_json(settings_file, settings_delta)
+    # depth is unioned with structural dedupe, the status line is written
+    # whole, and ensure_parent=True creates settings_dir if missing.
+    ok, _ = _write_merged_json(settings_file, settings_delta, written_whole=SETTINGS_OBJECTS_WRITTEN_WHOLE)
 
     if ok:
         success(f'Wrote profile settings to {settings_file}')
@@ -19026,11 +19076,6 @@ LEFTOVER_SETTING = 'setting'
 LEFTOVER_SETTING_ELEMENT = 'setting-element'
 LEFTOVER_HOOK_GROUP = 'hook-group'
 LEFTOVER_SETTINGS_KINDS = frozenset({LEFTOVER_SETTING, LEFTOVER_SETTING_ELEMENT, LEFTOVER_HOOK_GROUP})
-# The settings.json objects recorded and removed as one value: the status
-# line is one display configuration, which Claude Code's /statusline rewrites
-# in place, so it leaves whole while it holds what the setup wrote and stays
-# whole once any member of it changed
-SETTINGS_OBJECTS_RECORDED_WHOLE = frozenset({('statusLine',)})
 # An OS environment variable of the base profile, and an MCP server
 # registration at one CLI scope
 LEFTOVER_OS_ENV = 'os-env'
@@ -19686,7 +19731,7 @@ def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
         element of a list (a list element), per matcher group under
         hooks.<Event> (a hook group, with its matcher and hook digests), and
         one for the status line, an object recorded whole as one value
-        without its null members (SETTINGS_OBJECTS_RECORDED_WHOLE); one item
+        without its null members (SETTINGS_OBJECTS_WRITTEN_WHOLE); one item
         per identity, the machine-wide binary controls left out.
     """
     items: dict[tuple[str, str], LeftoverItem] = {}
@@ -19698,7 +19743,7 @@ def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
     def _walk(value: object, keys: tuple[str, ...]) -> None:
         if value is None:
             return
-        if isinstance(value, dict) and keys in SETTINGS_OBJECTS_RECORDED_WHOLE:
+        if isinstance(value, dict) and len(keys) == 1 and keys[0] in SETTINGS_OBJECTS_WRITTEN_WHOLE:
             _add(LeftoverItem.setting(LEFTOVER_SETTING, keys, leftover_digest(_without_null_members(value))))
             return
         if isinstance(value, dict):
@@ -20268,11 +20313,10 @@ class LiveLeftoverState:
             wires a profile-relative file under hooks/, or None when none
             does (see _hook_file_references()); a settings file the view
             given with it holds is read from the view.
-        hook_files_wired: Names the first file under the profile's hooks/
-            -- on disk, or among the profile-relative paths the run installs,
-            and not among those Step 23 removes before -- that a settings
-            file a session reads still wires, or None (see
-            _first_wired_hook_file()).
+        hook_files_wired: Names the first file on disk under the profile's
+            hooks/ -- not among the profile-relative paths the run installs
+            -- that a settings file a session reads still wires, or None
+            (see _first_wired_hook_file()).
         settings: Reads the base settings.json a settings leftover is
             checked against, as _read_settings_object() does.
         settings_after: The settings files as a run with --remove-leftovers
@@ -20295,8 +20339,8 @@ class LiveLeftoverState:
     hook_references: Callable[[str, Mapping[Path, dict[str, Any]]], str | None] = field(
         default=lambda _relative, _view: None,
     )
-    hook_files_wired: Callable[[Iterable[str], Iterable[str], Mapping[Path, dict[str, Any]]], str | None] = field(
-        default=lambda _planned, _removed, _view: None,
+    hook_files_wired: Callable[[Iterable[str], Mapping[Path, dict[str, Any]]], str | None] = field(
+        default=lambda _installed, _view: None,
     )
     settings: Callable[[Path], dict[str, Any] | None] = field(default=lambda _path: None)
     settings_after: tuple[tuple[Path, dict[str, Any]], ...] = ()
@@ -20308,9 +20352,9 @@ class LiveLeftoverState:
         """Say where a hook file is still wired, reading the settings files through the view this state holds."""
         return self.hook_references(relative, dict(self.settings_after))
 
-    def wired_hook_file(self, planned: Iterable[str], removed: Iterable[str] = ()) -> str | None:
-        """Name a file of the hooks folder still wired, reading the settings files through the view this state holds."""
-        return self.hook_files_wired(planned, removed, dict(self.settings_after))
+    def wired_hook_file(self, installed: Iterable[str]) -> str | None:
+        """Name a wired file of the hooks folder the run does not install, reading the settings through this view."""
+        return self.hook_files_wired(installed, dict(self.settings_after))
 
     @classmethod
     def for_profile(
@@ -20347,9 +20391,9 @@ class LiveLeftoverState:
                 dependents=dependents, view=view,
             )
 
-        def _wired(planned: Iterable[str], removed: Iterable[str], view: Mapping[Path, dict[str, Any]]) -> str | None:
+        def _wired(installed: Iterable[str], view: Mapping[Path, dict[str, Any]]) -> str | None:
             return _first_wired_hook_file(
-                planned, removed=removed, profile_dir=profile_dir, home_dir=home_dir, settings_files=settings_files,
+                installed, profile_dir=profile_dir, home_dir=home_dir, settings_files=settings_files,
                 dependents=dependents, view=view,
             )
 
@@ -20938,32 +20982,31 @@ def _hook_folder_files(hooks_dir: Path) -> list[str]:
 
 
 def _first_wired_hook_file(
-    planned: Iterable[str],
+    installed: Iterable[str],
     *,
-    removed: Iterable[str] = (),
     profile_dir: Path,
     home_dir: Path,
     settings_files: Sequence[Path],
     dependents: Sequence['InstalledProfile'],
     view: Mapping[Path, dict[str, Any]] | None = None,
 ) -> str | None:
-    """Name a file of a profile's hooks/ folder that a settings file a session reads still wires.
+    """Name a file of a profile's hooks/ folder that the run does not install and a settings file still wires.
 
-    The files are those on disk and the ones the run installs there, which
-    Step 17 may not have downloaded yet, without the deselected hook files
-    Step 23 deletes before it looks at the leftovers. Each settings file is
-    read once,
-    and a file is wired when a hook command, one of its args or the status
-    line command names it, as _hook_file_references() reads them. A folder
-    or a settings file that cannot be read leaves the answer unknown, and
-    _hook_folder_files() or _read_settings_object() raises
+    The files are those on disk under hooks/ that the run does not install:
+    a script edited by hand after the setup wrote it, a leftover script, a
+    file the setup never wrote. A file the run installs is left out,
+    because Steps 4 and 17 write it as the configuration ships it, over an
+    edit too; before component selection the run installs the files of the
+    deselected components as well, which Step 23 deletes before it looks at
+    the leftovers. Each settings file is read
+    once, and a file is wired when a hook command, one of its args or the
+    status line command names it, as _hook_file_references() reads them. A
+    folder or a settings file that cannot be read leaves the answer
+    unknown, and _hook_folder_files() or _read_settings_object() raises
     LeftoverReadError for it.
 
     Args:
-        planned: Profile-relative paths the run installs; those under
-            hooks/ count with the files on disk.
-        removed: Profile-relative paths Step 23 deletes before the
-            leftovers, which count as gone.
+        installed: Profile-relative paths the run installs.
         profile_dir: The profile directory.
         home_dir: User home directory, which a home token stands for.
         settings_files: The profile's own settings files to read.
@@ -20975,14 +21018,11 @@ def _first_wired_hook_file(
         The first such file in path order, as a profile-relative path, or
         None when no settings file wires any.
     """
-    gone = {_file_key(path) for path in removed}
+    skipped = {_file_key(path) for path in installed}
     files = {
         _file_key(relative): relative
-        for relative in [
-            *_hook_folder_files(profile_dir / LEFTOVER_HOOKS_DIR),
-            *(path for path in planned if _file_key(path).split('/')[0] == LEFTOVER_HOOKS_DIR),
-        ]
-        if _file_key(relative) not in gone
+        for relative in _hook_folder_files(profile_dir / LEFTOVER_HOOKS_DIR)
+        if _file_key(relative) not in skipped
     }
     if not files:
         return None
@@ -21171,8 +21211,6 @@ class LeftoverReport:
         linked_entries: frozenset[str],
         link_source: str,
         selected: PlannedRecords | None = None,
-        live: LiveLeftoverState | None = None,
-        deselected_hook_files: Iterable[str] = (),
     ) -> 'LeftoverReport':
         """Mark the files and dependency entries under the entries this run links, and leave out its hook groups.
 
@@ -21182,21 +21220,17 @@ class LeftoverReport:
         computed from the configuration before component selection, whose
         hook groups differ from the selected ones when a selection splits a
         matcher group; a group the selected configuration writes is no
-        leftover. The hook helpers are held again by the hook files the
-        selected configuration wires, read against the settings files as a
-        run with --remove-leftovers leaves them, as the report was computed.
+        leftover. The hold on the hook helpers stands as computed: the files
+        the configuration installs before component selection are those of
+        the selected components, which Step 17 writes as the configuration
+        ships them, and those of the deselected components, which Step 23
+        deletes before it looks at the leftovers, so neither holds a helper.
 
         Args:
             linked_entries: The entries this run's link plan makes links.
             link_source: The display name of the profile they link from.
             selected: What the component-selected configuration installs,
                 or None when it installs what the report was computed from.
-            live: The live readers the report was computed with; with
-                selected, the hook helpers are held again.
-            deselected_hook_files: The profile-relative paths of the hook
-                files of the deselected components, which Step 23 deletes
-                before the leftovers unless a selected item installs the
-                same file.
 
         Returns:
             The refined report.
@@ -21213,22 +21247,6 @@ class LeftoverReport:
             else entry
             for entry in entries
         ]
-        if selected is not None and live is not None:
-            entries = [
-                LeftoverEntry(entry.item, LEFTOVER_REMOVABLE)
-                if entry.state == LEFTOVER_HELD and entry.item.hook_helper else entry
-                for entry in entries
-            ]
-            removing = [
-                entry for entry in entries if entry.item.is_setting() and entry.state in _REMOVABLE_LEFTOVER_STATES
-            ]
-            entries = _hold_with_wired_hook_files(
-                entries, _settings_after_this_run(live, self.profile_dir, removing, selected), planned=selected.files,
-                removed=[
-                    path for path in deselected_hook_files
-                    if not selected.writes(LeftoverItem(LEFTOVER_FILE, path, None))
-                ],
-            )
         return replace(self, entries=tuple(entries))
 
     def after_dependency_commands(
@@ -21607,34 +21625,31 @@ def _hold_with_wired_hook_files(
     entries: Sequence[LeftoverEntry],
     live: LiveLeftoverState,
     *,
-    planned: Iterable[str],
-    removed: Iterable[str] = (),
+    installed: Iterable[str],
 ) -> list[LeftoverEntry]:
-    """Keep every dropped hook helper while any hook file of the profile's hooks/ folder is still wired.
+    """Keep every dropped hook helper while a hook file the run does not install is still wired.
 
     A helper module is imported by the hook scripts beside it and wired
-    nowhere, and any script there may import it: the configuration's own,
-    a script edited by hand, one the user wired, a leftover still wired.
-    So a dropped helper stays while a settings file a session reads wires
-    any file of the folder, and the summary, --dry-run and Step 23 read the
-    folder alike.
+    nowhere. The configuration's own scripts, which the run installs as
+    the configuration ships them, import no helper it dropped; a script
+    edited by hand after the setup wrote it, a leftover script still wired
+    and a file the setup never wrote may. So a dropped helper stays while a
+    settings file a session reads wires such a file of the folder, and the
+    summary, --dry-run and Step 23 read the folder alike.
 
     Args:
         entries: The leftovers with their states.
         live: The live readers.
-        planned: The profile-relative paths the run installs, which count
-            with the files on disk.
-        removed: The deselected hook files Step 23 deletes before the
-            leftovers, which count as gone.
+        installed: The profile-relative paths the run installs.
 
     Returns:
-        The entries, each removable hook helper held while a hook file is
-        wired, or unreadable when the wiring cannot be read.
+        The entries, each removable hook helper held while such a hook file
+        is wired, or unreadable when the wiring cannot be read.
     """
     if not any(_holdable_helper(entry) for entry in entries):
         return list(entries)
     try:
-        wired = live.wired_hook_file(planned, removed)
+        wired = live.wired_hook_file(installed)
     except LeftoverReadError as e:
         return [LeftoverEntry(entry.item, LEFTOVER_UNREADABLE, str(e)) if _holdable_helper(entry) else entry
                 for entry in entries]
@@ -21665,11 +21680,11 @@ def _settings_after_this_run(
 
     An isolated profile's config.json is the one Step 18 rebuilds from the
     configuration. Into the base settings.json Steps 14 and 18 merge what
-    the run writes first, which keeps every hook group and overwrites a
-    value such as the status line command, and a run with
-    --remove-leftovers removes the settings leftovers in Step 23 before it
-    looks at the hook files. Every run reads the hook files against this
-    view, so the leftovers it marks are what the flag removes.
+    the run writes first (merge_settings_delta(), as Step 18 writes it),
+    which keeps every hook group and replaces the status line whole, and a
+    run with --remove-leftovers removes the settings leftovers in Step 23
+    before it looks at the hook files. Every run reads the hook files
+    against this view, so the leftovers it marks are what the flag removes.
 
     Args:
         live: The live readers.
@@ -21694,7 +21709,7 @@ def _settings_after_this_run(
         return live
     view = content or {}
     for delta in planned.settings_deltas:
-        view = deep_merge_settings(view, delta)
+        view = merge_settings_delta(view, delta, written_whole=SETTINGS_OBJECTS_WRITTEN_WHOLE)
     view = deepcopy(view)
     for entry in removing:
         fresh = settings_item_state(entry.item, view, written=planned)
@@ -21757,7 +21772,7 @@ def compute_profile_leftovers(
             *settings_entries,
         ],
         key=_leftover_order,
-    ), live, planned=planned.files)
+    ), live, installed=planned.files)
     return LeftoverReport(
         profile_name=profile_name,
         profile_dir=profile_dir,
@@ -22211,7 +22226,7 @@ def run_leftovers_step(
         path_entries = [_leftover_entry(entry.item, profile_dir, live) for entry in looked_at if entry.item.has_path()]
         path_outcomes = [
             _leftover_step_outcome(entry, written=written, profile_dir=profile_dir)
-            for entry in _hold_with_wired_hook_files(path_entries, live, planned=())
+            for entry in _hold_with_wired_hook_files(path_entries, live, installed=written.files)
         ]
         _prune_emptied_skill_directories(
             [o.entry.item.location(profile_dir) for o in path_outcomes if o.result == LEFTOVER_REMOVED],
@@ -28015,10 +28030,6 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     config, target_config_dir, claude_dir=home_dir / '.claude', reroot=reroot,
                     base=not primary_command_name,
                 ) if selection.is_active else None,
-                live=pre_consent_live,
-                deselected_hook_files=[
-                    f'{LEFTOVER_HOOKS_DIR}/{_installed_resource_name(item)}' for item in deselected['hooks-files']
-                ],
             )
 
         # The configuration this run installs, recorded beside the manifest
@@ -29194,7 +29205,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # Claude Code CLI itself, so the writer uses deep-merge with
             # RFC 7396 null-as-delete (via _write_merged_json()) to
             # preserve non-delta keys while allowing explicit YAML null
-            # to remove keys.
+            # to remove keys; the status line it declares replaces the
+            # file's whole (SETTINGS_OBJECTS_WRITTEN_WHOLE).
             print()
             print(f'{Colors.CYAN}Step 18: Writing profile settings to settings.json...{Colors.NC}')
 

@@ -12,6 +12,7 @@ removes none, even with the variable set.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -197,14 +198,13 @@ class TestProfileAll:
         assert _report(captured.out) == [
             '   * base: ok',
             '   * team-1: ok',
-            '       - leftovers removed (1):',
+            '       - leftovers removed (2):',
             '           file: hooks/a.py',
-            '       - leftovers left (1):',
-            '           file: hooks/h.py (kept: stays with hooks/b.py, which is still wired)',
+            '           file: hooks/h.py',
             '   * team-lab: ok',
-        ]
+        ], 'both profiles run only the new script, which team-1 installs as the configuration ships it'
         assert not (source / 'hooks' / 'a.py').exists()
-        assert (source / 'hooks' / 'h.py').is_file(), 'the new script both profiles run may import it'
+        assert not (source / 'hooks' / 'h.py').exists()
         assert (source / 'hooks' / 'b.py').is_file()
 
     def test_without_the_flag_each_profile_names_the_command_for_what_it_removes(
@@ -217,7 +217,7 @@ class TestProfileAll:
         only by the hook group it leaves with, so the file and the group both
         count toward the command, and the command removes exactly as many as
         the line names. A profile whose only leftover is a hook helper kept
-        with a wired hook file gets no command.
+        with a wired hook file the setup never wrote gets no command.
         """
         claude_dir = e2e_isolated_home['claude_dir']
         source = claude_dir / 'team-1'
@@ -225,6 +225,12 @@ class TestProfileAll:
         assert run_main([str(base_cfg), *SKIP, '--yes']) == 0
         team_cfg = write_config(configs, 'team.yaml', _first())
         assert run_main([str(team_cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        (source / 'hooks' / 'mine.py').write_text('import h\n', encoding='utf-8')
+        mine = f'uv run "{(source / "hooks" / "mine.py").as_posix()}"'
+        (source / 'settings.json').write_text(
+            json.dumps({'hooks': {'Stop': [{'matcher': '', 'hooks': [{'type': 'command', 'command': mine}]}]}}),
+            encoding='utf-8',
+        )
         write_config(configs, 'base.yaml', _base(['rules/rule.md'], 'b.py'))
         write_config(configs, 'team.yaml', _next())
         runner = write_child_runner(tmp_path, monkeypatch)
@@ -237,7 +243,7 @@ class TestProfileAll:
         captured = capfd.readouterr()
         assert code == 0, _clean(captured.out + captured.err)
         assert all(FLAG not in argv for argv in argvs)
-        helper_held = 'kept: stays with hooks/b.py, which is still wired'
+        helper_held = 'kept: stays with hooks/mine.py, which is still wired'
         assert _kept_reasons(claude_dir) == {}
         assert _kept_reasons(source) == {'file: hooks/h.py': helper_held}
         base_lines = [

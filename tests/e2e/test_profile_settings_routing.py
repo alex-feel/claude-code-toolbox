@@ -32,8 +32,8 @@ Test coverage:
 - ``status-line.refresh-interval`` installed through main() as
   ``statusLine.refreshInterval`` in the isolated ``config.json`` and the base
   ``settings.json``, left out when the configuration omits it or sets it to
-  null, and removed from the base ``settings.json`` by a later null while a
-  later omission keeps it.
+  null, and removed from the base ``settings.json`` by a later null and by a
+  later omission alike, because Step 18 writes the status line whole.
 """
 from __future__ import annotations
 
@@ -285,10 +285,10 @@ class TestProfileDeltaWriter:
         [('refresh-interval', 'refreshInterval', 60), ('padding', 'padding', 2)],
         ids=['refresh-interval', 'padding'],
     )
-    def test_nested_null_status_line_sub_key_removes_stale_value(
+    def test_nested_null_or_omitted_status_line_sub_key_removes_stale_value(
         self, tmp_path: Path, yaml_key: str, json_key: str, value: int,
     ) -> None:
-        """A later status-line sub-key null removes the value an earlier run wrote; an omission keeps it."""
+        """A later status-line sub-key null removes the value an earlier run wrote, and so does an omission."""
         hooks_dir = tmp_path / 'hooks'
         hooks_dir.mkdir()
         settings_file = tmp_path / 'settings.json'
@@ -300,7 +300,8 @@ class TestProfileDeltaWriter:
             return on_disk
 
         assert write({yaml_key: value})[json_key] == value
-        assert write({})[json_key] == value
+        assert set(write({})) == {'type', 'command'}, 'Step 18 writes the status line whole'
+        assert write({yaml_key: value})[json_key] == value
         status_line = write({yaml_key: None})
         assert json_key not in status_line
         assert set(status_line) == {'type', 'command'}
@@ -806,19 +807,14 @@ class TestStatusLineRefreshIntervalInstall:
         assert 'refreshInterval' not in status_line
         assert list(status_line) == ['type', 'command', 'padding']
 
-    @pytest.mark.parametrize(
-        ('later', 'expected'),
-        [({'refresh-interval': None}, 'absent'), ({}, 60)],
-        ids=['null-removes', 'omission-keeps'],
-    )
-    def test_later_base_run_null_removes_and_omission_keeps(
+    @pytest.mark.parametrize('later', [{'refresh-interval': None}, {}], ids=['null-removes', 'omission-removes'])
+    def test_later_base_run_null_and_omission_remove(
         self,
         e2e_isolated_home: dict[str, Path],
         status_line_configs: Path,
         later: dict[str, Any],
-        expected: int | str,
     ) -> None:
-        """Re-running an edited configuration: a null removes the interval from settings.json, an omission keeps it."""
+        """Re-running an edited configuration: a null and an omission both remove the interval from settings.json."""
         home = e2e_isolated_home['home']
         cfg = write_config(status_line_configs, 'status.yaml', _status_line_config({'refresh-interval': 60}))
         assert run_main([str(cfg), *RUN_FLAGS]) == 0
@@ -827,4 +823,6 @@ class TestStatusLineRefreshIntervalInstall:
         write_config(status_line_configs, 'status.yaml', _status_line_config(later))
         assert run_main([str(cfg), *RUN_FLAGS]) == 0
 
-        assert _installed_status_line(home, []).get('refreshInterval', 'absent') == expected
+        status_line = _installed_status_line(home, [])
+        assert 'refreshInterval' not in status_line
+        assert list(status_line) == ['type', 'command']
