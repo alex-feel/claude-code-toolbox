@@ -1,4 +1,5 @@
-"""Shared helpers of the leftovers tests: reading the leftovers block of a run's output, and linking a file."""
+"""Shared helpers of the leftovers tests: reading the leftovers block of a run's output, linking a file, and a
+dependency command that installs a skill directory."""
 
 from __future__ import annotations
 
@@ -9,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+# The dependencies key of this platform, whose commands run in bash on Linux and macOS and in PowerShell on Windows
+DEPENDENCY_PLATFORM = {'win32': 'windows', 'darwin': 'macos'}.get(sys.platform, 'linux')
 SKIP = ['--skip-install', '--no-admin']
 HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
 REMOVES = 'Step 23 removes each item marked [remove] only while it still holds what the setup wrote.'
@@ -40,6 +43,25 @@ def symlink_file(link: Path, target: Path) -> None:
                 f'(WinError {_WINERROR_PRIVILEGE_NOT_HELD})',
             )
         raise
+
+
+def create_skill_command(name: str) -> str:
+    """A dependency command that creates one skill directory of the base config home in place.
+
+    In an isolated run the setup re-roots the path into the profile.
+
+    Args:
+        name: The skill name.
+
+    Returns:
+        The command for this platform's shell.
+    """
+    if DEPENDENCY_PLATFORM == 'windows':
+        return (
+            f'New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\\.claude\\skills\\{name}" | Out-Null; '
+            f'Set-Content -Path "$env:USERPROFILE\\.claude\\skills\\{name}\\SKILL.md" -Value {name}'
+        )
+    return f'mkdir -p "$HOME/.claude/skills/{name}" && echo {name} > "$HOME/.claude/skills/{name}/SKILL.md"'
 
 
 def printed(capture: pytest.CaptureFixture[str]) -> str:

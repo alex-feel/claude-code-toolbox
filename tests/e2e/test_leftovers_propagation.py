@@ -26,6 +26,8 @@ import pytest
 from scripts import setup_environment
 from scripts.setup_environment import SchedulerPlatform
 from tests.e2e.fake_scheduler import FakeScheduler
+from tests.e2e.leftovers_support import DEPENDENCY_PLATFORM
+from tests.e2e.leftovers_support import create_skill_command
 from tests.e2e.profile_support import home_state
 from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
@@ -83,6 +85,25 @@ def _first() -> dict[str, Any]:
 def _next() -> dict[str, Any]:
     """The next version of the same configuration: one rule, and hooks/b.py in place of hooks/a.py."""
     return _team(['rules/rule.md'], 'b.py', [])
+
+
+def _base(rules: list[str], script: str) -> dict[str, Any]:
+    """A base configuration: the rules given and one Stop hook running a hooks.files script, which settings.json wires."""
+    return {
+        'name': 'Base',
+        'rules': rules,
+        'hooks': {'files': [f'hooks/{script}'], 'events': [{'event': 'Stop', 'type': 'command', 'command': script}]},
+    }
+
+
+def _dependency_config(commands: list[str]) -> dict[str, Any]:
+    """A configuration with one rule and this platform's dependency commands."""
+    return {'name': 'Dependency Env', 'rules': ['rules/rule.md'], 'dependencies': {DEPENDENCY_PLATFORM: commands}}
+
+
+def _kept_reasons(profile_dir: Path) -> dict[str, str]:
+    """Map each label the profile's manifest records as kept to the reason it records."""
+    return {str(entry['label']): str(entry['reason']) for entry in read_manifest(profile_dir)['leftovers']['kept']}
 
 
 def _install_team(configs: Path) -> Path:
@@ -186,17 +207,24 @@ class TestProfileAll:
         assert (source / 'hooks' / 'h.py').is_file(), 'the new script both profiles run may import it'
         assert (source / 'hooks' / 'b.py').is_file()
 
-    def test_without_the_flag_each_profile_with_leftovers_names_its_command(
+    def test_without_the_flag_each_profile_names_the_command_for_what_it_removes(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """Every profile with leftovers gets one line naming the command; nothing is removed."""
+        """The command is named for the leftovers it removes; a kept one is listed with why it stays.
+
+        Nothing is removed. The base profile's renamed hook file is still
+        wired by the hook group it leaves with, so the file is kept while the
+        group is a leftover the command removes. A profile whose only leftover
+        is a hook helper kept with a wired hook file gets no command.
+        """
         claude_dir = e2e_isolated_home['claude_dir']
-        base_cfg = write_config(configs, 'base.yaml', {'name': 'Base', 'rules': ['rules/rule.md', 'rules/other.md']})
+        source = claude_dir / 'team-1'
+        base_cfg = write_config(configs, 'base.yaml', _base(['rules/rule.md', 'rules/other.md'], 'a.py'))
         assert run_main([str(base_cfg), *SKIP, '--yes']) == 0
         team_cfg = write_config(configs, 'team.yaml', _first())
         assert run_main([str(team_cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
-        write_config(configs, 'base.yaml', {'name': 'Base', 'rules': ['rules/rule.md']})
+        write_config(configs, 'base.yaml', _base(['rules/rule.md'], 'b.py'))
         write_config(configs, 'team.yaml', _next())
         runner = write_child_runner(tmp_path, monkeypatch)
         argvs: list[list[str]] = []
@@ -208,15 +236,70 @@ class TestProfileAll:
         captured = capfd.readouterr()
         assert code == 0, _clean(captured.out + captured.err)
         assert all(FLAG not in argv for argv in argvs)
-        assert _report(captured.out) == [
+        base_wired = f'kept: still wired in {claude_dir / "settings.json"} hooks.Stop'
+        helper_held = 'kept: stays with hooks/b.py, which is still wired'
+        assert _kept_reasons(claude_dir) == {'file: hooks/a.py': base_wired}
+        assert _kept_reasons(source) == {'file: hooks/h.py': helper_held}
+        base_lines = [
             '   * base: ok',
-            '       - 1 leftover(s); remove them with --profile base --remove-leftovers',
+            '       - 2 leftover(s); remove them with --profile base --remove-leftovers',
+            '       - leftovers kept (1):',
+            f'           file: hooks/a.py ({base_wired})',
+        ]
+        assert _report(captured.out) == [
+            *base_lines,
             '   * team-1: ok',
-            '       - 3 leftover(s); remove them with --profile team-1 --remove-leftovers',
+            '       - 2 leftover(s); remove them with --profile team-1 --remove-leftovers',
+            '       - leftovers kept (1):',
+            f'           file: hooks/h.py ({helper_held})',
         ]
         assert (claude_dir / 'rules' / 'other.md').is_file()
-        assert (claude_dir / 'team-1' / 'rules' / 'other.md').is_file()
-        assert (claude_dir / 'team-1' / 'hooks' / 'a.py').is_file()
+        assert (claude_dir / 'hooks' / 'a.py').is_file()
+        assert (source / 'rules' / 'other.md').is_file()
+        assert (source / 'hooks' / 'a.py').is_file()
+
+        # team-1's own flagged run removes all but the helper its wired hook keeps
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes', FLAG]) == 0
+        assert not (source / 'hooks' / 'a.py').exists()
+        assert (source / 'hooks' / 'h.py').is_file()
+        capfd.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run', side_effect=_recording_run(argvs)):
+            code = run_main(['--profile', 'all', *SKIP, '--yes'], argv0=str(runner))
+
+        captured = capfd.readouterr()
+        assert code == 0, _clean(captured.out + captured.err)
+        assert _report(captured.out) == [
+            *base_lines,
+            '   * team-1: ok',
+            '       - leftovers kept (1):',
+            f'           file: hooks/h.py ({helper_held})',
+        ]
+        assert (source / 'hooks' / 'h.py').is_file()
+
+    def test_without_the_flag_an_entry_step_6_listed_names_the_command(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """An entry no dependency command installs any more is listed now and removed by a later flagged run."""
+        skills = e2e_isolated_home['claude_dir'] / 'dep-1' / 'skills'
+        cfg = write_config(configs, 'dep.yaml', _dependency_config([create_skill_command('s1'), create_skill_command('s3')]))
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'dep-1']) == 0
+        assert (skills / 's3' / 'SKILL.md').is_file()
+        write_config(configs, 'dep.yaml', _dependency_config([create_skill_command('s1')]))
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'all', *SKIP, '--yes'], argv0=str(runner))
+
+        captured = capfd.readouterr()
+        assert code == 0, _clean(captured.out + captured.err)
+        assert _kept_reasons(skills.parent) == {'dependency entry: skills/s3': setup_environment.LEFTOVER_LISTED_NOW}
+        assert _report(captured.out) == [
+            '   * dep-1: ok',
+            '       - 1 leftover(s); remove them with --profile dep-1 --remove-leftovers',
+        ]
+        assert (skills / 's3').is_dir(), 'the run that lists an entry never removes it'
 
     def test_dry_run_previews_each_removal_and_reads_no_manifest(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

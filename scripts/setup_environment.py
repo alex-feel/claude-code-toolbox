@@ -27186,6 +27186,13 @@ def profile_leftovers_lines(
     started (the child stopped before Step 20) speaks for an earlier run: it
     counts only as the list of leftovers still recorded, never as removals.
 
+    Without the flag the record still says why each kept leftover stays, as
+    that profile's run found it: the command is named for the leftovers it
+    removes, those with no kept reason (a failed removal included) and the
+    dependency entries Step 6 listed, and the kept ones are listed with
+    their reasons instead, so a profile whose only leftovers are kept gets
+    no advice its command would not follow.
+
     Args:
         profile: The profile, as the parent listed it.
         since: When the parent started its first child.
@@ -27194,9 +27201,9 @@ def profile_leftovers_lines(
 
     Returns:
         With the flag, what the run removed and what is left with why each
-        stays; without it, one line naming how many leftovers are left and
-        the command that removes them. Empty when the manifest records none
-        or cannot be read.
+        stays; without it, a line naming how many leftovers the command
+        removes and the command, then the kept ones with why each stays.
+        Empty when the manifest records none or cannot be read.
     """
     try:
         manifest = read_profile_manifest(profile.manifest_path)
@@ -27215,22 +27222,33 @@ def profile_leftovers_lines(
         item.label() for item in (LeftoverItem.from_record(entry, claude_dir=claude_dir) for entry in _entries('items'))
         if item is not None
     ]
-    if not left and not remove:
-        return []
-    if not remove:
-        return [f'- {len(left)} leftover(s); remove them with --profile {profile.name} {REMOVE_LEFTOVERS_FLAG}']
-    if not _recorded_since(record_dict.get('run_at'), since):
-        if not left:
-            return []
-        return [f'- leftovers left ({len(left)}; recorded by an earlier run):', *(f'    {label}' for label in left)]
-    removed = [label for label in _entries('removed') if isinstance(label, str)]
-    failed = {label for label in _entries('failed') if isinstance(label, str)}
     reasons: dict[str, str] = {}
     for entry in _entries('kept'):
         if isinstance(entry, dict):
             label, reason = cast(dict[str, Any], entry).get('label'), cast(dict[str, Any], entry).get('reason')
             if isinstance(label, str) and isinstance(reason, str):
                 reasons[label] = reason
+    if not remove:
+        removable: list[str] = []
+        kept: list[str] = []
+        for label in left:
+            reason = reasons.get(label, LEFTOVER_LISTED_NOW)
+            (removable if reason == LEFTOVER_LISTED_NOW else kept).append(label)
+        unflagged: list[str] = []
+        if removable:
+            unflagged.append(
+                f'- {len(removable)} leftover(s); remove them with --profile {profile.name} {REMOVE_LEFTOVERS_FLAG}',
+            )
+        if kept:
+            unflagged.append(f'- leftovers kept ({len(kept)}):')
+            unflagged.extend(f'    {label} ({reasons[label]})' for label in kept)
+        return unflagged
+    if not _recorded_since(record_dict.get('run_at'), since):
+        if not left:
+            return []
+        return [f'- leftovers left ({len(left)}; recorded by an earlier run):', *(f'    {label}' for label in left)]
+    removed = [label for label in _entries('removed') if isinstance(label, str)]
+    failed = {label for label in _entries('failed') if isinstance(label, str)}
     lines: list[str] = []
     if removed:
         lines.append(f'- leftovers removed ({len(removed)}):')

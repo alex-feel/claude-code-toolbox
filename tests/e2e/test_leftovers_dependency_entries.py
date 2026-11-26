@@ -16,13 +16,14 @@ dependency command now installs stays in place through a flagged run.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.e2e.leftovers_support import DEPENDENCY_PLATFORM as PLATFORM
 from tests.e2e.leftovers_support import SKIP
+from tests.e2e.leftovers_support import create_skill_command as _create
 from tests.e2e.leftovers_support import leftover_rows as _block
 from tests.e2e.leftovers_support import printed as _output
 from tests.e2e.profile_support import home_state
@@ -31,7 +32,6 @@ from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_config
 from tests.e2e.validators import validate_manifest
 
-PLATFORM = {'win32': 'windows', 'darwin': 'macos'}.get(sys.platform, 'linux')
 LISTED_NOW = 'Dependency entries listed now (2; --remove-leftovers removes them on a later run):'
 
 
@@ -70,16 +70,6 @@ def _recreate(*names: str) -> str:
             f'mv "$HOME/stage/{name}" "$HOME/.claude/skills/{name}"',
         ])
     return ' && '.join(steps)
-
-
-def _create(name: str) -> str:
-    """A command that creates one skill directory in place."""
-    if PLATFORM == 'windows':
-        return (
-            f'New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\\.claude\\skills\\{name}" | Out-Null; '
-            f'Set-Content -Path "$env:USERPROFILE\\.claude\\skills\\{name}\\SKILL.md" -Value {name}'
-        )
-    return f'mkdir -p "$HOME/.claude/skills/{name}" && echo {name} > "$HOME/.claude/skills/{name}/SKILL.md"'
 
 
 def _create_if_absent(name: str) -> str:

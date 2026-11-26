@@ -382,14 +382,70 @@ class TestProfileLeftoversLines:
             '    file: rules/old.md',
         ]
 
-    def test_unflagged_run_names_the_command_that_removes_them(self, tmp_path: Path) -> None:
+    def test_unflagged_run_names_the_command_for_the_leftovers_it_removes(self, tmp_path: Path) -> None:
+        """The command counts the items the child found removable; each kept one is listed with why it stays."""
         started = datetime.now(UTC)
         record = _record(
-            (started + timedelta(seconds=5)).isoformat(), items=[_file('rules/a.md'), _file('hooks/a.py')],
+            (started + timedelta(seconds=5)).isoformat(),
+            items=[_file('rules/a.md'), _file('hooks/a.py'), _file('rules/b.md')],
             kept=[{'label': 'file: hooks/a.py', 'reason': 'kept: still wired in s hooks.Stop'}],
         )
         assert self._lines(tmp_path, record, remove=False, since=started) == [
             '- 2 leftover(s); remove them with --profile team-1 --remove-leftovers',
+            '- leftovers kept (1):',
+            '    file: hooks/a.py (kept: still wired in s hooks.Stop)',
+        ]
+
+    @pytest.mark.parametrize(
+        'reason',
+        ['kept: stays with hooks/b.py, which is still wired', 'cannot check: Permission denied'],
+        ids=['held', 'unreadable'],
+    )
+    def test_unflagged_run_names_no_command_when_every_leftover_is_kept(self, tmp_path: Path, reason: str) -> None:
+        """A leftover the child kept for a reason is one the command would not remove as that run found it."""
+        started = datetime.now(UTC)
+        record = _record(
+            (started + timedelta(seconds=5)).isoformat(), items=[_file('hooks/h.py')],
+            kept=[{'label': 'file: hooks/h.py', 'reason': reason}],
+        )
+        assert self._lines(tmp_path, record, remove=False, since=started) == [
+            '- leftovers kept (1):',
+            f'    file: hooks/h.py ({reason})',
+        ]
+
+    def test_unflagged_run_names_the_command_for_an_entry_listed_after_step_6(self, tmp_path: Path) -> None:
+        """A dependency entry Step 6 listed carries a kept reason, and a later run with the flag removes it."""
+        started = datetime.now(UTC)
+        entry = {'kind': 'dependency-entry', 'path': 'skills/s3', 'command': 'install s3', 'identity': 'd' * 64}
+        record = _record(
+            (started + timedelta(seconds=5)).isoformat(), items=[entry],
+            kept=[{'label': 'dependency entry: skills/s3', 'reason': setup_environment.LEFTOVER_LISTED_NOW}],
+        )
+        assert self._lines(tmp_path, record, remove=False, since=started) == [
+            '- 1 leftover(s); remove them with --profile team-1 --remove-leftovers',
+        ]
+
+    def test_unflagged_run_names_the_command_for_a_removal_that_failed(self, tmp_path: Path) -> None:
+        """A failed removal carries no kept reason: a run with the flag retries it."""
+        started = datetime.now(UTC)
+        record = _record(
+            '2026-01-01T00:00:00+00:00', items=[_file('rules/locked.md')], failed=['file: rules/locked.md'],
+        )
+        assert self._lines(tmp_path, record, remove=False, since=started) == [
+            '- 1 leftover(s); remove them with --profile team-1 --remove-leftovers',
+        ]
+
+    def test_unflagged_run_reads_a_stale_record_by_the_same_rule(self, tmp_path: Path) -> None:
+        """A record older than the parent's start speaks for an earlier run, whose reasons it still carries."""
+        started = datetime.now(UTC)
+        record = _record(
+            '2026-01-01T00:00:00+00:00', items=[_file('hooks/h.py'), _file('rules/a.md')],
+            kept=[{'label': 'file: hooks/h.py', 'reason': 'kept: recorded by profile p2'}],
+        )
+        assert self._lines(tmp_path, record, remove=False, since=started) == [
+            '- 1 leftover(s); remove them with --profile team-1 --remove-leftovers',
+            '- leftovers kept (1):',
+            '    file: hooks/h.py (kept: recorded by profile p2)',
         ]
 
     @pytest.mark.parametrize('run_at', ['not a time', '2030-01-01T00:00:00', None], ids=['unparsable', 'naive', 'null'])
@@ -482,15 +538,21 @@ class TestProfileAll:
             '           file: hooks/a.py (kept: still wired in s hooks.Stop)',
         ]
 
-    def test_without_the_flag_each_profile_with_leftovers_names_its_command(
+    def test_without_the_flag_each_profile_names_the_command_for_what_it_removes(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
+        """A profile whose only leftover is kept gets its reason and no command, indented under its result."""
         self._install(tmp_path)
         fresh = (datetime.now(UTC) + timedelta(seconds=5)).isoformat()
 
         def _run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
             if argv[argv.index('--profile') + 1] == 'base':
                 _write_manifest(tmp_path / '.claude', None, _record(fresh, items=[_file('rules/old.md')]))
+            else:
+                _write_manifest(tmp_path / '.claude' / 'team-1', 'team-1', _record(
+                    fresh, items=[_file('hooks/h.py')],
+                    kept=[{'label': 'file: hooks/h.py', 'reason': 'kept: stays with hooks/b.py, which is still wired'}],
+                ))
             return subprocess.CompletedProcess(argv, 0)
 
         with (
@@ -502,10 +564,12 @@ class TestProfileAll:
 
         out = capsys.readouterr().out
         report = out[out.index('Profiles refreshed:'):]
-        assert report.split('\n')[1:4] == [
+        assert report.split('\n')[1:6] == [
             '   * base: ok',
             '       - 1 leftover(s); remove them with --profile base --remove-leftovers',
             '   * team-1: ok',
+            '       - leftovers kept (1):',
+            '           file: hooks/h.py (kept: stays with hooks/b.py, which is still wired)',
         ]
 
     def test_a_failed_flagged_child_is_retried_with_the_flag(
