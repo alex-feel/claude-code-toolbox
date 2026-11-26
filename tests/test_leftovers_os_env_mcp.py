@@ -455,8 +455,6 @@ class TestCompute:
         config: dict[str, Any],
         machine: Machine,
         claude_dir: Path,
-        *,
-        remove: bool = False,
     ) -> LeftoverReport:
         return setup_environment.compute_profile_leftovers(
             {'leftovers': {}, **manifest}, claude_dir,
@@ -464,7 +462,6 @@ class TestCompute:
             planned=setup_environment.planned_records(config, claude_dir, claude_dir=claude_dir, base=True),
             live=machine.live(),
             claude_dir=claude_dir,
-            remove=remove,
         )
 
     def _states(self, report: LeftoverReport) -> list[tuple[str, str]]:

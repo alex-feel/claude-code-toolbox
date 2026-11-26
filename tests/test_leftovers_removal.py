@@ -755,7 +755,6 @@ class TestRunLeftoversStep:
         ]}
         report = setup_environment.compute_profile_leftovers(
             manifest, profile_dir, profile_name='p', planned=PlannedRecords(), live=live, claude_dir=claude_dir,
-            remove=True,
         )
         assert [(entry.item.path, entry.state) for entry in report.entries] == [
             ('hooks/a.py', 'changed'), ('hooks/helper.py', 'held'),

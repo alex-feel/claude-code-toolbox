@@ -388,10 +388,15 @@ class TestRenamedHookFile:
 
         assert (profile_dir / 'hooks' / 'h.py').is_file(), 'the next run keeps it while the script is wired'
 
-    def test_base_profile_without_the_flag_keeps_the_script_its_settings_json_wires(
+    def test_base_profile_without_the_flag_lists_the_script_with_the_group_that_wires_it(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The union-merged base settings.json keeps the hook group that runs the old script until the flag removes it."""
+        """The union-merged base settings.json keeps the old group; both are leftovers the flag removes together.
+
+        Without the flag nothing leaves and the group still runs the old
+        script, so no session meets a missing file. The rows marked
+        [leftover] are exactly what the flagged run removes.
+        """
         cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
         claude_dir = e2e_isolated_home['claude_dir']
         assert run_main([str(cfg), *SKIP, '--yes']) == 0
@@ -402,19 +407,106 @@ class TestRenamedHookFile:
 
         output = _output(capsys)
         settings = claude_dir / 'settings.json'
+        held = f'  [kept: stays with hooks/b.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}'
         assert _block(output) == [
-            f'  [kept: still wired in {settings} hooks.Stop] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [leftover] file: {claude_dir / "hooks" / "a.py"}',
+            held,
+            f'  [leftover] {settings}: hooks.Stop group matcher "" (1 hook)',
+            '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ]
+        assert (claude_dir / 'hooks' / 'a.py').is_file(), 'nothing leaves without the flag'
+        assert (claude_dir / 'hooks' / 'h.py').is_file()
+        assert (claude_dir / 'hooks' / 'a.py').as_posix() in settings.read_text(encoding='utf-8'), 'the group stays'
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert [(item['kind'], item['path']) for item in leftovers['items']] == [
+            ('file', 'hooks/a.py'), ('file', 'hooks/h.py'), ('hook-group', ['hooks', 'Stop']),
+        ]
+        assert [entry['label'] for entry in leftovers['kept']] == ['file: hooks/h.py']
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        assert _block(_output(capsys)) == [
+            f'  [remove] file: {claude_dir / "hooks" / "a.py"}',
+            held,
+            f'  [remove] {settings}: hooks.Stop group matcher "" (1 hook)',
+            f'  {REMOVES_OTHERS_STAY}',
+        ]
+        removed = read_manifest(claude_dir)['leftovers']['removed']
+        assert sorted(label.split(' group ')[0] for label in removed) == ['file: hooks/a.py', 'settings.json: hooks.Stop']
+        assert not (claude_dir / 'hooks' / 'a.py').exists()
+        assert (claude_dir / 'hooks' / 'h.py').is_file()
+
+    def test_with_selected_components_a_helper_beside_a_script_only_a_leftover_group_wires_is_a_leftover(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The summary of a run whose components are selected reads the hook folder as the flagged Step 23 leaves it."""
+        cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'hooks.yaml', {
+            'name': 'Hooks Env',
+            'rules': ['rules/rule.md', 'rules/other.md'],
+            'components': [{'name': 'extra', 'includes': {'rules': ['rules/other.md']}}],
+        })
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        settings = claude_dir / 'settings.json'
+        rows = [
+            f'  [leftover] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [leftover] file: {claude_dir / "hooks" / "h.py"}',
+            f'  [leftover] {settings}: hooks.Stop group matcher "" (1 hook)',
+        ]
+        assert _block(_output(capsys)) == [*rows, '  They stay in place.', f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}']
+        assert read_manifest(claude_dir)['leftovers']['kept'] == []
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
+
+        assert _block(_output(capsys)) == [*(row.replace('[leftover]', '[remove]') for row in rows), f'  {REMOVES}']
+        assert len(read_manifest(claude_dir)['leftovers']['removed']) == 3
+        assert not (claude_dir / 'hooks' / 'a.py').exists()
+        assert not (claude_dir / 'hooks' / 'h.py').exists()
+
+    def test_a_dependent_of_the_base_that_links_hooks_keeps_the_script_without_the_flag(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent's config.json runs the base script after the base group leaves, so the script stays."""
+        cfg = write_config(configs, 'hooks.yaml', _hooked('a.py', ['h.py']))
+        claude_dir = e2e_isolated_home['claude_dir']
+        lab = claude_dir / 'team-lab'
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        assert run_main([
+            str(cfg), *SKIP, '--yes', '--command-names', 'team-lab', '--link-dirs', 'hooks', '--link-from', 'base',
+        ]) == 0
+        assert (lab / 'hooks' / 'a.py').as_posix() in (lab / 'config.json').read_text(encoding='utf-8')
+        write_config(configs, 'hooks.yaml', _hooked('b.py', []))
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'base', *SKIP, '--yes'], argv0=str(runner))
+
+        output = _output(capfd)
+        assert code == 0, output
+        wired = (
+            f'still wired in profile team-lab ({lab / "config.json"} hooks.Stop) until that profile is refreshed; '
+            'a later run with --remove-leftovers removes it'
+        )
+        settings = claude_dir / 'settings.json'
+        assert _block(output) == [
+            f'  [kept: {wired}] file: {claude_dir / "hooks" / "a.py"}',
             f'  [kept: stays with hooks/a.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}',
             f'  [leftover] {settings}: hooks.Stop group matcher "" (1 hook)',
             '  They stay in place.',
             f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
         ]
-        assert (claude_dir / 'hooks' / 'a.py').is_file(), 'a wired script is never removed'
-        assert (claude_dir / 'hooks' / 'h.py').is_file()
-        items = read_manifest(claude_dir)['leftovers']['items']
-        assert [(item['kind'], item['path']) for item in items] == [
-            ('file', 'hooks/a.py'), ('file', 'hooks/h.py'), ('hook-group', ['hooks', 'Stop']),
-        ]
+        assert {entry['label']: entry['reason'] for entry in read_manifest(claude_dir)['leftovers']['kept']} == {
+            'file: hooks/a.py': f'kept: {wired}',
+            'file: hooks/h.py': 'kept: stays with hooks/a.py, which is still wired',
+        }
+        assert (claude_dir / 'hooks' / 'a.py').is_file()
 
     @pytest.mark.parametrize(('profile', 'token'), [('prof-a', '$HOME'), (None, '~')], ids=['isolated', 'base'])
     def test_a_script_wired_by_hand_through_the_home_folder_stays(

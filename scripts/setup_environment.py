@@ -20275,11 +20275,12 @@ class LiveLeftoverState:
             _first_wired_hook_file()).
         settings: Reads the base settings.json a settings leftover is
             checked against, as _read_settings_object() does.
-        settings_after: The settings files as the run leaves them before
-            Step 23 looks at the hook files: the base settings.json with
-            what Steps 14 and 18 merge in and the settings leftovers Step 23
-            removes gone, or the config.json Step 18 rebuilds for an
-            isolated profile, so the summary reads the wiring Step 23 reads.
+        settings_after: The settings files as a run with --remove-leftovers
+            leaves them before Step 23 looks at the hook files: the base
+            settings.json with what Steps 14 and 18 merge in and the
+            settings leftovers that Step 23 removes gone, or the config.json
+            Step 18 rebuilds for an isolated profile, so the summary of every
+            run reads the wiring a flagged Step 23 reads.
         os_env: Reads the values an OS environment variable holds, as
             read_os_env_variable() does.
         mcp: Reads the entry each CLI scope holds for an MCP server name,
@@ -21171,7 +21172,6 @@ class LeftoverReport:
         link_source: str,
         selected: PlannedRecords | None = None,
         live: LiveLeftoverState | None = None,
-        remove: bool = False,
         deselected_hook_files: Iterable[str] = (),
     ) -> 'LeftoverReport':
         """Mark the files and dependency entries under the entries this run links, and leave out its hook groups.
@@ -21183,7 +21183,8 @@ class LeftoverReport:
         hook groups differ from the selected ones when a selection splits a
         matcher group; a group the selected configuration writes is no
         leftover. The hook helpers are held again by the hook files the
-        selected configuration wires.
+        selected configuration wires, read against the settings files as a
+        run with --remove-leftovers leaves them, as the report was computed.
 
         Args:
             linked_entries: The entries this run's link plan makes links.
@@ -21192,8 +21193,6 @@ class LeftoverReport:
                 or None when it installs what the report was computed from.
             live: The live readers the report was computed with; with
                 selected, the hook helpers are held again.
-            remove: Whether the run removes leftovers, as the report was
-                computed.
             deselected_hook_files: The profile-relative paths of the hook
                 files of the deselected components, which Step 23 deletes
                 before the leftovers unless a selected item installs the
@@ -21222,7 +21221,7 @@ class LeftoverReport:
             ]
             removing = [
                 entry for entry in entries if entry.item.is_setting() and entry.state in _REMOVABLE_LEFTOVER_STATES
-            ] if remove else []
+            ]
             entries = _hold_with_wired_hook_files(
                 entries, _settings_after_this_run(live, self.profile_dir, removing, selected), planned=selected.files,
                 removed=[
@@ -21662,18 +21661,20 @@ def _settings_after_this_run(
     removing: Sequence[LeftoverEntry],
     planned: PlannedRecords,
 ) -> LiveLeftoverState:
-    """Read the settings files, for the hook files, as they will be when Step 23 checks them.
+    """Read the settings files, for the hook files, as they will be when a flagged Step 23 checks them.
 
     An isolated profile's config.json is the one Step 18 rebuilds from the
     configuration. Into the base settings.json Steps 14 and 18 merge what
     the run writes first, which keeps every hook group and overwrites a
-    value such as the status line command, and Step 23 removes the settings
-    leftovers it removes before it looks at the hook files.
+    value such as the status line command, and a run with
+    --remove-leftovers removes the settings leftovers in Step 23 before it
+    looks at the hook files. Every run reads the hook files against this
+    view, so the leftovers it marks are what the flag removes.
 
     Args:
         live: The live readers.
         profile_dir: The profile directory.
-        removing: The settings leftovers Step 23 removes.
+        removing: The settings leftovers a flagged Step 23 removes.
         planned: What the run writes, with the deltas Steps 14 and 18 merge
             or the hooks and status line Step 18 rebuilds.
 
@@ -21710,7 +21711,6 @@ def compute_profile_leftovers(
     planned: PlannedRecords,
     live: LiveLeftoverState,
     claude_dir: Path,
-    remove: bool = False,
 ) -> LeftoverReport:
     """List what a profile's earlier runs wrote and its configuration no longer installs.
 
@@ -21721,6 +21721,12 @@ def compute_profile_leftovers(
     leftover, and neither is anything the configuration installs again,
     nor a settings.json item it deletes (PlannedRecords.writes()).
 
+    A hook file is checked against the settings files as a run with
+    --remove-leftovers leaves them (_settings_after_this_run()): Step 23
+    removes the settings.json leftovers before it looks at the hook files,
+    so a hook file only a leftover wires is itself a leftover that the
+    flag removes with it, in a run without the flag as well.
+
     Args:
         manifest: The profile's manifest.
         profile_dir: The profile directory.
@@ -21728,11 +21734,6 @@ def compute_profile_leftovers(
         planned: What the configuration installs.
         live: The live readers.
         claude_dir: The base ~/.claude directory.
-        remove: Whether the run removes leftovers (--remove-leftovers):
-            Step 23 then removes the settings.json leftovers before it
-            looks at the hook files, so a hook file only they wire is
-            marked removable. A hook file is checked against the settings
-            files as the run leaves them (_settings_after_this_run()).
 
     Returns:
         The report.
@@ -21747,7 +21748,7 @@ def compute_profile_leftovers(
     live = _settings_after_this_run(
         live,
         profile_dir,
-        [entry for entry in settings_entries if entry.state in _REMOVABLE_LEFTOVER_STATES] if remove else [],
+        [entry for entry in settings_entries if entry.state in _REMOVABLE_LEFTOVER_STATES],
         planned,
     )
     entries = _hold_with_wired_hook_files(sorted(
@@ -27900,12 +27901,12 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # whose recorded configuration cannot be resolved from here. A
         # different configuration is a switch: the switch guard lists these
         # leftovers, and an accepted switch removes them in Step 23 the way
-        # --remove-leftovers does, so they are read as that run reads them
-        # (the guard either accepts the switch or stops the run). A hook file
-        # is checked against the settings files a session reads, the ones
-        # Step 18 rebuilds left out and, in a run that removes leftovers, the
-        # base settings.json as Step 23 leaves it once its own leftovers are
-        # gone, and against the dependents that link hooks/ from this profile.
+        # --remove-leftovers does. A hook file is checked against the
+        # settings files a session reads, the ones Step 18 rebuilds left out
+        # and the base settings.json as a flagged Step 23 leaves it once its
+        # own leftovers are gone, in every run, so the leftovers each run
+        # lists are what the flag removes; and against the dependents that
+        # link hooks/ from this profile.
         leftover_report: LeftoverReport | None = None
         switch_accepted = False
         if target_manifest is not None:
@@ -27915,7 +27916,6 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'Recording {config_source} as the configuration of profile "{profile_name}": its manifest '
                     'records a configuration that cannot be resolved from this directory.',
                 )
-            switching = recorded_identity is not None and recorded_identity != this_identity
             leftover_report = compute_profile_leftovers(
                 target_manifest, target_config_dir,
                 profile_name=profile_name,
@@ -27925,7 +27925,6 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 ),
                 live=pre_consent_live,
                 claude_dir=home_dir / '.claude',
-                remove=bool(args.remove_leftovers) or switching,
             )
             if recorded_identity is not None:
                 switch_accepted = guard_configuration_switch(
@@ -28017,7 +28016,6 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     base=not primary_command_name,
                 ) if selection.is_active else None,
                 live=pre_consent_live,
-                remove=remove_leftovers,
                 deselected_hook_files=[
                     f'{LEFTOVER_HOOKS_DIR}/{_installed_resource_name(item)}' for item in deselected['hooks-files']
                 ],

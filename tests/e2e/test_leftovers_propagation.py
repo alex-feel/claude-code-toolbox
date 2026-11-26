@@ -213,10 +213,11 @@ class TestProfileAll:
     ) -> None:
         """The command is named for the leftovers it removes; a kept one is listed with why it stays.
 
-        Nothing is removed. The base profile's renamed hook file is still
-        wired by the hook group it leaves with, so the file is kept while the
-        group is a leftover the command removes. A profile whose only leftover
-        is a hook helper kept with a wired hook file gets no command.
+        Nothing is removed. The base profile's renamed hook file is wired
+        only by the hook group it leaves with, so the file and the group both
+        count toward the command, and the command removes exactly as many as
+        the line names. A profile whose only leftover is a hook helper kept
+        with a wired hook file gets no command.
         """
         claude_dir = e2e_isolated_home['claude_dir']
         source = claude_dir / 'team-1'
@@ -236,15 +237,12 @@ class TestProfileAll:
         captured = capfd.readouterr()
         assert code == 0, _clean(captured.out + captured.err)
         assert all(FLAG not in argv for argv in argvs)
-        base_wired = f'kept: still wired in {claude_dir / "settings.json"} hooks.Stop'
         helper_held = 'kept: stays with hooks/b.py, which is still wired'
-        assert _kept_reasons(claude_dir) == {'file: hooks/a.py': base_wired}
+        assert _kept_reasons(claude_dir) == {}
         assert _kept_reasons(source) == {'file: hooks/h.py': helper_held}
         base_lines = [
             '   * base: ok',
-            '       - 2 leftover(s); remove them with --profile base --remove-leftovers',
-            '       - leftovers kept (1):',
-            f'           file: hooks/a.py ({base_wired})',
+            '       - 3 leftover(s); remove them with --profile base --remove-leftovers',
         ]
         assert _report(captured.out) == [
             *base_lines,
@@ -276,6 +274,20 @@ class TestProfileAll:
             f'           file: hooks/h.py ({helper_held})',
         ]
         assert (source / 'hooks' / 'h.py').is_file()
+
+        # the command the line names removes exactly the leftovers it counts
+        listed = sorted(
+            item.label() for item in (
+                setup_environment.LeftoverItem.from_record(record, claude_dir=claude_dir)
+                for record in read_manifest(claude_dir)['leftovers']['items']
+            ) if item is not None
+        )
+        assert len(listed) == 3
+        assert run_main(['--profile', 'base', *SKIP, '--yes', FLAG]) == 0
+        leftovers = read_manifest(claude_dir)['leftovers']
+        assert sorted(leftovers['removed']) == listed
+        assert leftovers['items'] == []
+        assert not (claude_dir / 'hooks' / 'a.py').exists()
 
     def test_without_the_flag_an_entry_step_6_listed_names_the_command(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

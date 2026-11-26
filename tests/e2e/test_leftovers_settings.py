@@ -203,7 +203,11 @@ class TestBaseSettingsLeftovers:
     def test_dropping_every_hook_removes_the_scripts_the_group_and_the_helper_in_one_run(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Step 23 removes the hook group first, so no file of the folder stays wired and the helper leaves too."""
+        """Step 23 removes the hook group first, so no file of the folder stays wired and the helper leaves too.
+
+        Every run lists the folder as the flagged Step 23 leaves it, so the
+        run without the flag marks [leftover] exactly what the flag removes.
+        """
         claude_dir = e2e_isolated_home['claude_dir']
         settings_path = claude_dir / 'settings.json'
         cfg = write_config(configs, 'base.yaml', _hooked('a.py', helpers=['h.py'], allow=['Read']))
@@ -215,11 +219,16 @@ class TestBaseSettingsLeftovers:
 
         assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
 
-        assert leftover_rows(printed(capsys))[:3] == [
-            f'  [kept: still wired in {settings_path} hooks.PreToolUse] file: {claude_dir / "hooks" / "a.py"}',
-            f'  [kept: stays with hooks/a.py, which is still wired] file: {claude_dir / "hooks" / "h.py"}',
+        assert leftover_rows(printed(capsys)) == [
+            f'  [leftover] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [leftover] file: {claude_dir / "hooks" / "h.py"}',
             f'  [leftover] {settings_path}: hooks.PreToolUse group matcher "*" (1 hook)',
-        ], 'without the flag the group stays and keeps both files'
+            '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ], 'without the flag the group stays, and it leaves with both files under the flag'
+        assert (claude_dir / 'hooks' / 'a.py').is_file()
+        assert 'PreToolUse' in _settings(claude_dir)['hooks'], 'the group still runs the script it wires'
+        assert read_manifest(claude_dir)['leftovers']['kept'] == []
 
         before = home_state(e2e_isolated_home['home'])
         assert run_main(['--profile', 'base', *SKIP, '--remove-leftovers', '--dry-run']) == 0
@@ -261,9 +270,9 @@ class TestBaseSettingsLeftovers:
 
         group_row = f'{settings_path}: hooks.PreToolUse group matcher "*" (1 hook inside a group changed since written)'
         assert leftover_rows(printed(capsys))[:2] == [
-            f'  [kept: still wired in {settings_path} hooks.PreToolUse] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [leftover] file: {claude_dir / "hooks" / "a.py"}',
             f'  [leftover] {group_row}',
-        ]
+        ], 'the hook the setup wrote leaves the group with the flag, so it keeps the script it runs no longer'
 
         assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
 
@@ -608,6 +617,16 @@ class TestBaseSettingsLeftovers:
         assert _settings(claude_dir)['statusLine'] == written
         write_config(configs, 'base.yaml', {'name': 'Status Env', 'rules': ['rules/rule.md']})
         capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        assert leftover_rows(printed(capsys)) == [
+            f'  [leftover] file: {claude_dir / "hooks" / "a.py"}',
+            f'  [leftover] {settings_path}: statusLine',
+            '  They stay in place.',
+            f'  {setup_environment.LEFTOVERS_FLAG_FOOTER}',
+        ], 'the status line still runs the file without the flag, and both leave with it'
+        assert _settings(claude_dir)['statusLine'] == written
 
         assert run_main(['--profile', 'base', *SKIP, '--yes', '--remove-leftovers']) == 0
 

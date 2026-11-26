@@ -547,7 +547,6 @@ def _compute(
     claude_dir: Path,
     *,
     planned: PlannedRecords | None = None,
-    remove: bool = False,
 ) -> LeftoverReport:
     return setup_environment.compute_profile_leftovers(
         manifest, claude_dir,
@@ -555,7 +554,6 @@ def _compute(
         planned=planned or PlannedRecords(),
         live=_base_live(claude_dir),
         claude_dir=claude_dir,
-        remove=remove,
     )
 
 
@@ -721,68 +719,6 @@ class TestComputation:
         assert planned.settings == ()
 
 
-class TestHookFileWiredByASettingsLeftover:
-    """Under the flag, wiring that Step 23 removes before the hook file does not keep the file."""
-
-    def _layout(self, claude_dir: Path, wiring: dict[str, Any]) -> tuple[dict[str, Any], str]:
-        script = claude_dir / 'hooks' / 'a.py'
-        script.parent.mkdir()
-        script.write_bytes(b'print(1)\n')
-        _settings(claude_dir, wiring)
-        records = [{'path': 'hooks/a.py', 'sha256': setup_environment._sha256_of_file(script)}]
-        manifest = _manifest_with(setup_environment.settings_write_records(wiring))
-        manifest['files_written'] = records
-        return manifest, script.as_posix()
-
-    def test_a_group_leaving_in_step_23_does_not_keep_the_file(self, claude_dir: Path) -> None:
-        command = f'uv run --no-project --python 3.12 "{(claude_dir / "hooks" / "a.py").as_posix()}"'
-        manifest, _ = self._layout(claude_dir, {'hooks': {'Stop': [{'matcher': '', 'hooks': [_hook(command)]}]}})
-
-        without_flag = _states(_compute(manifest, claude_dir))
-        with_flag = _states(_compute(manifest, claude_dir, remove=True))
-
-        assert without_flag['file: hooks/a.py'] == 'referenced'
-        assert with_flag['file: hooks/a.py'] == 'removable'
-        assert set(with_flag.values()) == {'removable'}
-
-    def test_a_status_line_leaving_in_step_23_does_not_keep_the_file(self, claude_dir: Path) -> None:
-        command = f'uv run --no-project --python 3.12 "{(claude_dir / "hooks" / "a.py").as_posix()}"'
-        manifest, _ = self._layout(claude_dir, {'statusLine': {'type': 'command', 'command': command}})
-
-        assert _states(_compute(manifest, claude_dir))['file: hooks/a.py'] == 'referenced'
-        assert _states(_compute(manifest, claude_dir, remove=True))['file: hooks/a.py'] == 'removable'
-
-    @pytest.mark.parametrize('remove', [False, True])
-    def test_a_status_line_step_18_points_elsewhere_does_not_keep_the_file(
-        self, claude_dir: Path, remove: bool,
-    ) -> None:
-        """A renamed status-line file: Step 18 overwrites the command before Step 23 looks at the old file."""
-        old = f'uv run --no-project --python 3.12 "{(claude_dir / "hooks" / "a.py").as_posix()}"'
-        new = f'uv run --no-project --python 3.12 "{(claude_dir / "hooks" / "b.py").as_posix()}"'
-        manifest, _ = self._layout(claude_dir, {'statusLine': {'type': 'command', 'command': old}})
-        planned = setup_environment.planned_records(
-            {'hooks': {'files': ['hooks/b.py']}, 'status-line': {'file': 'hooks/b.py'}},
-            claude_dir, claude_dir=claude_dir, base=True,
-        )
-        assert _item(_record('setting', ['statusLine'], {'type': 'command', 'command': new})) in planned.settings
-
-        states = _states(_compute(manifest, claude_dir, planned=planned, remove=remove))
-
-        assert states == {'file: hooks/a.py': 'removable'}
-
-    def test_wiring_a_user_wrote_keeps_the_file_under_the_flag(self, claude_dir: Path) -> None:
-        command = f'uv run --no-project --python 3.12 "{(claude_dir / "hooks" / "a.py").as_posix()}"'
-        manifest, _ = self._layout(claude_dir, {'hooks': {'Stop': [{'matcher': '', 'hooks': [_hook(command)]}]}})
-        user_group = {'matcher': 'Bash', 'hooks': [_hook(command)]}
-        content = _read(claude_dir / 'settings.json')
-        content['hooks']['PreToolUse'] = [user_group]
-        _settings(claude_dir, content)
-
-        states = _states(_compute(manifest, claude_dir, remove=True))
-
-        assert states['file: hooks/a.py'] == 'referenced'
-
-
 def _step(
     report: LeftoverReport,
     claude_dir: Path,
@@ -817,7 +753,7 @@ class TestStep23:
         _settings(claude_dir, {'hooks': {'Stop': [group]}, 'model': 'opus'})
         manifest = _manifest_with(setup_environment.settings_write_records({'hooks': {'Stop': [group]}}))
         manifest['files_written'] = [{'path': 'hooks/a.py', 'sha256': setup_environment._sha256_of_file(script)}]
-        return _compute(manifest, claude_dir, remove=True), group
+        return _compute(manifest, claude_dir), group
 
     def test_the_group_and_its_hook_file_leave_in_the_same_step(self, claude_dir: Path) -> None:
         report, group = self._wired(claude_dir)
