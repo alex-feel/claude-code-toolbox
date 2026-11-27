@@ -300,13 +300,16 @@ def test_positional_prompt_starts_a_session_with_the_profile_settings(profile: L
 def test_background_session_commands_dispatch_as_commands(
     profile: LauncherProfile, command: str, prompt: str | None,
 ) -> None:
-    """An unknown session id gets the command's own answer, and no prompt reaches the model."""
+    """An unknown session id gets the command's own answer, and no prompt reaches the model.
+
+    Claude Code answers ``No session matching '<id>'``; earlier releases such as 2.1.322 answer ``No job matching '<id>'``.
+    """
     launch_sh = profile.install_launcher(prompt)
 
     run = profile.run_launcher(launch_sh, command, _UNKNOWN_SESSION)
 
     assert run.returncode == 1, run.describe()
-    assert f"No job matching '{_UNKNOWN_SESSION}'" in run.output, run.describe()
+    assert re.search(rf"No (?:session|job) matching '{re.escape(_UNKNOWN_SESSION)}'", run.output), run.describe()
     assert run.requests == 0, run.describe()
 
 
