@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.6.0...v8.7.0) (2026-11-27)
+
+
+### Features
+
+* report and remove the leftovers of earlier runs ([#501](https://github.com/alex-feel/claude-code-toolbox/issues/501)) ([e5b34d5](https://github.com/alex-feel/claude-code-toolbox/commit/e5b34d5a82179fc67383ab376a340bdf4e2a823f))
+
 ## [8.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.5.0...v8.6.0) (2026-11-02)
 
 
