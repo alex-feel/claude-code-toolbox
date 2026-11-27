@@ -1519,6 +1519,120 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
     return errors
 
 
+_SETTINGS_KINDS = ('setting', 'setting-element', 'hook-group')
+_LABEL_PREFIXES = ('file', 'settings.json: ', 'OS environment variable: ', 'MCP server: ', 'dependency entry: ')
+_MCP_CLI_SCOPES = ('user', 'local', 'project')
+
+
+def _settings_record_shape_error(record: object) -> bool:
+    """Report whether a settings record departs from the shape settings_write_records() writes.
+
+    Args:
+        record: A settings_written record or a settings item of the leftovers field.
+
+    Returns:
+        True for anything but a kind, a non-empty key list and a digest, plus
+        the matcher digest and the hook digests of a hook group.
+    """
+    if not isinstance(record, dict) or record.get('kind') not in _SETTINGS_KINDS:
+        return True
+    path = record.get('path')
+    if not isinstance(path, list) or not path or not all(isinstance(key, str) for key in path):
+        return True
+    if not isinstance(record.get('sha256'), str):
+        return True
+    if record['kind'] != 'hook-group':
+        return set(record) != {'kind', 'path', 'sha256'}
+    entries = record.get('entries')
+    return (
+        set(record) != {'kind', 'path', 'sha256', 'matcher', 'entries'} or len(path) != 2 or path[0] != 'hooks'
+        or not isinstance(record.get('matcher'), str)
+        or not isinstance(entries, list) or not all(isinstance(entry, str) for entry in entries)
+    )
+
+
+def _dependency_entry_shape_error(entry: object) -> bool:
+    """Report whether a dependency entry record is no {path, identity} pair naming one entry of a content directory."""
+    if not isinstance(entry, dict) or set(entry) != {'path', 'identity'}:
+        return True
+    path, identity = entry['path'], entry['identity']
+    return (
+        not isinstance(path, str) or len(path.split('/')) != 2 or '\\' in path
+        or not isinstance(identity, str) or not identity
+    )
+
+
+def _leftover_item_shape_error(item: object) -> bool:
+    """Report whether a leftovers item is no file, destination, settings, variable, server or dependency entry record."""
+    if isinstance(item, dict) and item.get('kind') == 'dependency-entry':
+        return (
+            set(item) != {'kind', 'path', 'command', 'identity'} or not isinstance(item['command'], str)
+            or _dependency_entry_shape_error({'path': item['path'], 'identity': item['identity']})
+        )
+    if isinstance(item, dict) and item.get('kind') in _SETTINGS_KINDS:
+        return _settings_record_shape_error(item)
+    if isinstance(item, dict) and item.get('kind') == 'os-env':
+        return set(item) != {'kind', 'name', 'sha256'} or not isinstance(item['name'], str)
+    if isinstance(item, dict) and item.get('kind') == 'mcp-server':
+        return (
+            set(item) != {'kind', 'name', 'scope', 'sha256'} or not isinstance(item['name'], str)
+            or item['scope'] not in _MCP_CLI_SCOPES
+        )
+    return (
+        not isinstance(item, dict) or set(item) - {'hook_helper'} != {'kind', 'path', 'sha256'}
+        or item['kind'] not in ('file', 'destination') or not isinstance(item['path'], str)
+        or ('hook_helper' in item and (item['hook_helper'] is not True or item['kind'] != 'file'))
+    )
+
+
+def _leftovers_record_errors(leftovers: object) -> list[str]:
+    """Validate the manifest's leftovers field: its keys, its items, its dropped labels and its kept reasons.
+
+    Args:
+        leftovers: The manifest's leftovers value.
+
+    Returns:
+        One error per deviation from the shape leftovers_manifest_record() writes.
+    """
+    expected_keys = {'run_at', 'items', 'removed', 'dropped', 'skipped', 'failed', 'kept'}
+    if not isinstance(leftovers, dict) or set(leftovers) != expected_keys:
+        return [f'Manifest leftovers: expected an object with {sorted(expected_keys)}, got {leftovers!r}']
+    errors: list[str] = []
+    if not isinstance(leftovers['run_at'], str) or not leftovers['run_at']:
+        errors.append(f"Manifest leftovers.run_at: expected an ISO time, got {leftovers['run_at']!r}")
+    errors.extend(
+        f'Manifest leftovers.{key}: expected a list, got {leftovers[key]!r}'
+        for key in ('items', 'removed', 'dropped', 'failed', 'kept')
+        if not isinstance(leftovers[key], list)
+    )
+    errors.extend(
+        f'Manifest leftovers kept entry: expected a label and the reason it stays, got {entry!r}'
+        for entry in (leftovers['kept'] if isinstance(leftovers['kept'], list) else [])
+        if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
+        or not str(entry['label']).startswith(_LABEL_PREFIXES) or not entry['reason']
+    )
+    errors.extend(
+        f'Manifest leftovers item: expected the record of a file, a destination or a settings item, got {item!r}'
+        for item in (leftovers['items'] if isinstance(leftovers['items'], list) else [])
+        if _leftover_item_shape_error(item)
+    )
+    errors.extend(
+        f'Manifest leftovers dropped entry: expected a label and a reason, got {entry!r}'
+        for entry in (leftovers['dropped'] if isinstance(leftovers['dropped'], list) else [])
+        if not isinstance(entry, dict) or set(entry) != {'label', 'reason'}
+        or entry['reason'] not in ('changed', 'gone', 'linked', 'written again', 'recreated')
+    )
+    errors.extend(
+        f'Manifest leftovers.{key} entry: expected a label, got {label!r}'
+        for key in ('removed', 'failed')
+        for label in (leftovers[key] if isinstance(leftovers[key], list) else [])
+        if not isinstance(label, str) or not label.startswith(_LABEL_PREFIXES)
+    )
+    if leftovers['skipped'] not in (None, 'content downloads failed'):
+        errors.append(f"Manifest leftovers.skipped: expected None or the skip reason, got {leftovers['skipped']!r}")
+    return errors
+
+
 def _link_record_errors(link: object, yaml_values: object, config: dict[str, Any]) -> list[str]:
     """Validate the manifest's link record and recorded link values against the configuration's link keys.
 
@@ -1699,7 +1813,10 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     if not isinstance(data['yaml_values'], dict):
         errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
     errors.extend(_link_record_errors(data['link'], data['yaml_values'], config))
-    record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_keys_written', 'mcp_servers', 'files_written')
+    record_keys = (
+        'machine_wide_destinations', 'os_env_written', 'settings_written', 'mcp_servers', 'files_written',
+        'dependency_entries',
+    )
     errors.extend(
         f'Manifest {record_key}: expected a list, got {data[record_key]!r}'
         for record_key in record_keys
@@ -1711,12 +1828,61 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         for record in destinations
         if not isinstance(record, dict) or set(record) != {'dest', 'source', 'sha256'}
     )
+    settings = data['settings_written'] if isinstance(data['settings_written'], list) else []
+    errors.extend(
+        f'Manifest settings_written entry: expected the record of a value, a list element or a hook group, got {record!r}'
+        for record in settings
+        if _settings_record_shape_error(record)
+    )
+    if config.get('command-names') and settings:
+        errors.append(f'Manifest settings_written: an isolated profile records none, got {settings!r}')
+    variables = data['os_env_written'] if isinstance(data['os_env_written'], list) else []
+    errors.extend(
+        f'Manifest os_env_written entry: expected a name and the digest of its value, got {record!r}'
+        for record in variables
+        if not isinstance(record, dict) or set(record) != {'name', 'sha256'}
+        or not isinstance(record['name'], str) or not isinstance(record['sha256'], str)
+    )
+    if config.get('command-names') and variables:
+        errors.append(f'Manifest os_env_written: an isolated profile records none, got {variables!r}')
     servers = data['mcp_servers'] if isinstance(data['mcp_servers'], list) else []
     errors.extend(
-        f'Manifest mcp_servers entry: expected name and scopes, got {record!r}'
+        f'Manifest mcp_servers entry: expected a name, its scopes and a digest per CLI scope, got {record!r}'
         for record in servers
-        if not isinstance(record, dict) or set(record) != {'name', 'scopes'}
+        if not isinstance(record, dict) or set(record) != {'name', 'scopes', 'sha256'}
+        or not isinstance(record['sha256'], dict)
+        or sorted(record['sha256']) != sorted(scope for scope in record['scopes'] if scope != 'profile')
+        or not all(digest is None or isinstance(digest, str) for digest in record['sha256'].values())
     )
+    files = data['files_written'] if isinstance(data['files_written'], list) else []
+    errors.extend(
+        f'Manifest files_written entry: expected path and sha256, and hook_helper true for a helper, got {record!r}'
+        for record in files
+        if not isinstance(record, dict) or set(record) - {'hook_helper'} != {'path', 'sha256'}
+        or not isinstance(record['path'], str) or not isinstance(record['sha256'], str | None)
+        or record.get('hook_helper', True) is not True
+    )
+    hooks_section = config.get('hooks')
+    helpers = hooks_section.get('helpers') if isinstance(hooks_section, dict) else None
+    helper_paths = {
+        f"hooks/{str(helper).split('?')[0].replace(chr(92), '/').rsplit('/', 1)[-1]}"
+        for helper in helpers or []
+    }
+    marked = {record['path'] for record in files if isinstance(record, dict) and record.get('hook_helper')}
+    if files and marked != helper_paths & {record['path'] for record in files if isinstance(record, dict)}:
+        errors.append(
+            f'Manifest files_written: expected hook_helper on exactly the hooks.helpers modules {sorted(helper_paths)}, '
+            f'got {sorted(marked)}',
+        )
+    dependency_entries = data['dependency_entries'] if isinstance(data['dependency_entries'], list) else []
+    errors.extend(
+        f'Manifest dependency_entries record: expected a command and its {{path, identity}} entries, got {record!r}'
+        for record in dependency_entries
+        if not isinstance(record, dict) or set(record) != {'command', 'entries'} or not isinstance(record['command'], str)
+        or not isinstance(record['entries'], list) or not record['entries']
+        or any(_dependency_entry_shape_error(entry) for entry in record['entries'])
+    )
+    errors.extend(_leftovers_record_errors(data['leftovers']))
 
     # command_names validation: an isolated profile lists its command names,
     # the base profile lists none.

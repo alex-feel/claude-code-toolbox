@@ -11,7 +11,13 @@ installation, settings and manifest writes -- except the writers that reach
 outside the isolated home: the Windows registry (OS environment variables,
 the WM_SETTINGCHANGE broadcast, the user PATH cleanup and extension) and
 Fish universal variables. Those are replaced with no-ops so a test run never
-changes the machine it runs on.
+changes the machine it runs on; the Windows user environment is never read
+either.
+
+When the environment names a fake user environment file (see
+tests/e2e/user_environment_fake.py), the child sets, deletes and reads its
+OS environment variables there instead, so it sees what the parent test and
+its other children wrote.
 
 When the environment names a fake scheduler registry (see
 tests/e2e/fake_scheduler.py), the child answers its scheduler commands from
@@ -61,6 +67,9 @@ from tests.e2e.hook_sync_recorder import HookSyncRecorder
 from tests.e2e.node_upgrade_support import RECORD_VARIABLE as NODE_RECORD_VARIABLE
 from tests.e2e.node_upgrade_support import NodeCommandRecorder
 from tests.e2e.node_upgrade_support import replacements as node_upgrade_replacements
+from tests.e2e.user_environment_fake import ENVIRONMENT_VARIABLE as USER_ENVIRONMENT_VARIABLE
+from tests.e2e.user_environment_fake import FakeUserEnvironment
+from tests.e2e.user_environment_fake import replacements as user_environment_replacements
 
 SIMULATE_NON_ADMIN_VARIABLE = 'CCT_E2E_SIMULATE_NON_ADMIN'
 ELEVATION_MARKER = '[setup_child] elevation requested by the administrator gate'
@@ -84,8 +93,20 @@ def main() -> None:
     """Run the setup with the runner's arguments and no machine-wide writes."""
     sys.argv = [str(Path(setup_environment.__file__)), *sys.argv[1:]]
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patch.object(setup_environment, 'set_os_env_variable_windows', lambda *_args, **_kwargs: True))
-        stack.enter_context(patch.object(setup_environment, '_broadcast_wm_settingchange', lambda *_args, **_kwargs: None))
+        # The Windows user environment of the parent test, or none: the
+        # child never reads or writes the machine's own
+        user_environment = os.environ.get(USER_ENVIRONMENT_VARIABLE)
+        if user_environment:
+            for name, value in user_environment_replacements(FakeUserEnvironment(Path(user_environment))).items():
+                stack.enter_context(patch.object(setup_environment, name, value))
+        else:
+            stack.enter_context(patch.object(
+                setup_environment, 'set_os_env_variable_windows', lambda *_args, **_kwargs: True,
+            ))
+            stack.enter_context(patch.object(setup_environment, '_read_user_environment_value', lambda _name: None))
+            stack.enter_context(patch.object(
+                setup_environment, '_broadcast_wm_settingchange', lambda *_args, **_kwargs: None,
+            ))
         stack.enter_context(patch.object(
             setup_environment, 'add_directory_to_windows_path',
             lambda directory: (True, f'[neutralized] {directory}'),

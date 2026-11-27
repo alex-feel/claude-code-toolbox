@@ -41,13 +41,14 @@ def _args(
     select: str | None = None,
     skip_install: bool = True,
     run_all_commands: bool = False,
+    remove_leftovers: bool = False,
 ) -> argparse.Namespace:
     """Build resolved arguments the way main() does."""
     namespace = argparse.Namespace(
         config=config, yes=True, dry_run=False, skip_install=skip_install, no_admin=True, env_vars=None,
         select=select, with_=None, without=None, list_components=False, command_names=None, profile=None,
         switch_config=False, child_run=False, for_dependent=None, link_dirs=link_dirs, link_from=link_from,
-        run_all_commands=run_all_commands,
+        run_all_commands=run_all_commands, remove_leftovers=remove_leftovers,
     )
     cleared = {twin.variable: '' for twin in setup_environment.ENV_TWINS}
     with patch.dict(os.environ, {**cleared, **(env or {})}, clear=False):
@@ -81,7 +82,7 @@ def _manifest(
         'yaml_values': yaml_values if yaml_values is not None else {'command_names': [], 'components': []},
         'machine_wide_destinations': [],
         'os_env_written': [],
-        'settings_keys_written': [],
+        'settings_written': [],
         'mcp_servers': [],
         'files_written': [],
     }
@@ -837,7 +838,7 @@ class TestDependentConfiguration:
         assert result.config_version == '1.1.0'
         assert result.inheritance_chain == chain
         assert result.refresh == setup_environment.SourceRefresh(
-            'team-1', source.directory, 'differs', _digest_of(fetched), ['team-3'], False, False, fetched,
+            'team-1', source.directory, 'differs', _digest_of(fetched), ['team-3'], False, False, False, fetched,
         )
         output = capsys.readouterr().out
         assert (
@@ -983,6 +984,26 @@ class TestDependentConfiguration:
         assert plain.refresh.run_all_commands is False
         assert '--run-all-commands' not in plain.refresh.child_arguments('team-2')
 
+    @pytest.mark.parametrize('given', ['flag', 'environment'])
+    def test_remove_leftovers_reaches_the_refresh(self, tmp_path: Path, given: str) -> None:
+        """--remove-leftovers, typed or from its environment twin, travels to the source's run."""
+        fetched = {'name': 'Team', 'agents': ['agents/core.md', 'agents/extra.md']}
+        source = _source(tmp_path, digest='stale')
+        args = (
+            _args(config=TEAM_URL, remove_leftovers=True) if given == 'flag'
+            else _args(config=TEAM_URL, env={'CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS': '1'})
+        )
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)):
+            result = _resolve(source, args, tmp_path)
+        assert result.refresh is not None
+        assert result.refresh.remove_leftovers is True
+        assert result.refresh.child_arguments('team-2')[-1] == '--remove-leftovers'
+        with patch.object(setup_environment, 'fetch_configuration', return_value=_loaded(fetched)):
+            plain = _resolve(source, _args(config=TEAM_URL), tmp_path)
+        assert plain.refresh is not None
+        assert plain.refresh.remove_leftovers is False
+        assert '--remove-leftovers' not in plain.refresh.child_arguments('team-2')
+
     def test_base_source_is_refreshed_like_an_isolated_one(self, tmp_path: Path) -> None:
         """A dependent of the base profile refreshes it as --profile base and leaves itself out of its Step 24."""
         claude = tmp_path / '.claude'
@@ -1000,7 +1021,7 @@ class TestDependentConfiguration:
         ):
             result = _resolve(base, _args(config=TEAM_URL), tmp_path)
         assert result.refresh == setup_environment.SourceRefresh(
-            'base', claude, 'differs', _digest_of(fetched), ['team-3'], True, False, fetched,
+            'base', claude, 'differs', _digest_of(fetched), ['team-3'], True, False, False, fetched,
         )
         assert result.refresh is not None
         assert result.refresh.child_arguments('team-2') == [
@@ -1023,7 +1044,8 @@ class TestSourceRefreshOutcome:
         (source_dir / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
         (source_dir / 'resolved-config.yaml').write_text(text, encoding='utf-8')
         return setup_environment.SourceRefresh(
-            'team-1', source_dir, 'differs', manifest['config_digest'], ['team-3', 'team-4'], True, False, snapshot,
+            'team-1', source_dir, 'differs', manifest['config_digest'], ['team-3', 'team-4'], True, False, False,
+            snapshot,
         )
 
     @staticmethod
@@ -1087,7 +1109,7 @@ class TestSourceRefresh:
     ) -> setup_environment.SourceRefresh:
         return setup_environment.SourceRefresh(
             'team-1', tmp_path / '.claude' / 'team-1', reason, 'abc', dependents or [], skip_install, run_all_commands,
-            snapshot or {},
+            False, snapshot or {},
         )
 
     def test_child_arguments_carry_both_hidden_flags_and_the_parents_skip_install(self, tmp_path: Path) -> None:
@@ -1117,7 +1139,7 @@ class TestSourceRefresh:
             'common': ['uv tool install z'],
         }}
         isolated = setup_environment.SourceRefresh(
-            'team-1', home / '.claude' / 'team-1', 'differs', 'abc', [], False, False, snapshot,
+            'team-1', home / '.claude' / 'team-1', 'differs', 'abc', [], False, False, False, snapshot,
         )
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
             assert isolated.elevation_reasons(home, ['team-1']) == [
@@ -1141,7 +1163,7 @@ class TestSourceRefresh:
     def test_base_source_runs_as_profile_base(self, tmp_path: Path) -> None:
         """The base profile is refreshed by its own --profile base run, like any isolated source."""
         refresh = setup_environment.SourceRefresh(
-            'base', tmp_path / '.claude', 'differs', 'abc', ['team-3'], True, False, {},
+            'base', tmp_path / '.claude', 'differs', 'abc', ['team-3'], True, False, False, {},
         )
         assert refresh.child_arguments('team-2') == [
             '--profile', 'base', '--yes', '--child-run', '--for-dependent', 'team-2', '--skip-install', '--no-admin',
@@ -1541,18 +1563,22 @@ class TestDependentRefreshStep:
         expected = [setup_environment.DependentResult('d', 0, False)]
         with patch.object(setup_environment, 'refresh_dependents', return_value=expected) as refresh:
             assert setup_environment.run_dependent_refresh_step([dep], source_name='s', child_run=False) == expected
-        refresh.assert_called_once_with([dep], source_commands=frozenset(), run_all_commands=False)
+        refresh.assert_called_once_with(
+            [dep], source_commands=frozenset(), run_all_commands=False, remove_leftovers=False,
+        )
         assert 'Step 24: Refreshing 1 dependent profile(s): d...' in capsys.readouterr().out
 
-    def test_source_commands_and_the_flag_reach_the_children(self) -> None:
-        """The source's own commands and --run-all-commands travel to refresh_dependents()."""
+    def test_source_commands_and_the_flags_reach_the_children(self) -> None:
+        """The source's own commands, --run-all-commands and --remove-leftovers travel to refresh_dependents()."""
         dep = setup_environment.InstalledProfile('d', Path('/d'), Path('/d/manifest.json'), None)
         with patch.object(setup_environment, 'refresh_dependents', return_value=[]) as refresh:
             setup_environment.run_dependent_refresh_step(
                 [dep], source_name='s', child_run=False,
-                source_commands=frozenset({'npm install -g x'}), run_all_commands=True,
+                source_commands=frozenset({'npm install -g x'}), run_all_commands=True, remove_leftovers=True,
             )
-        refresh.assert_called_once_with([dep], source_commands=frozenset({'npm install -g x'}), run_all_commands=True)
+        refresh.assert_called_once_with(
+            [dep], source_commands=frozenset({'npm install -g x'}), run_all_commands=True, remove_leftovers=True,
+        )
 
     def test_run_started_by_a_dependent_refreshes_the_others_and_leaves_that_dependent_out(
         self, capsys: pytest.CaptureFixture[str],
@@ -1570,7 +1596,9 @@ class TestDependentRefreshStep:
             assert setup_environment.run_dependent_refresh_step(
                 [dep], source_name='s', child_run=True, for_dependent='dep',
             ) == []
-        refresh.assert_called_once_with([other], source_commands=frozenset(), run_all_commands=False)
+        refresh.assert_called_once_with(
+            [other], source_commands=frozenset(), run_all_commands=False, remove_leftovers=False,
+        )
         output = capsys.readouterr().out
         assert (
             'Step 24: Refreshing 1 other dependent profile(s): other (profile "dep" installs itself after this run)...'
@@ -1580,16 +1608,18 @@ class TestDependentRefreshStep:
         ) in output
         assert 'refreshed by the run that started this one' not in output
 
-    def test_run_started_by_a_dependent_hands_the_source_commands_and_the_flag_to_the_others(self) -> None:
-        """The other dependents a dependent's source refresh reaches get the source's commands and the flag too."""
+    def test_run_started_by_a_dependent_hands_the_source_commands_and_the_flags_to_the_others(self) -> None:
+        """The other dependents a dependent's source refresh reaches get the source's commands and the flags too."""
         dep = setup_environment.InstalledProfile('dep', Path('/dep'), Path('/dep/manifest.json'), None)
         other = setup_environment.InstalledProfile('other', Path('/o'), Path('/o/manifest.json'), None)
         with patch.object(setup_environment, 'refresh_dependents', return_value=[]) as refresh:
             setup_environment.run_dependent_refresh_step(
                 [dep, other], source_name='s', child_run=True, for_dependent='dep',
-                source_commands=frozenset({'npm install -g x'}), run_all_commands=True,
+                source_commands=frozenset({'npm install -g x'}), run_all_commands=True, remove_leftovers=True,
             )
-        refresh.assert_called_once_with([other], source_commands=frozenset({'npm install -g x'}), run_all_commands=True)
+        refresh.assert_called_once_with(
+            [other], source_commands=frozenset({'npm install -g x'}), run_all_commands=True, remove_leftovers=True,
+        )
 
 
 class TestUnrefreshedLines:

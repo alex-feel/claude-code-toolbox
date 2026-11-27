@@ -5473,8 +5473,8 @@ class TestWriteManifest:
             'name', 'version', 'claude_code_version', 'config_source',
             'config_source_url', 'config_source_type', 'config_identity', 'config_digest',
             'installed_at', 'command_names', 'components', 'link', 'origins', 'yaml_values',
-            'machine_wide_destinations', 'os_env_written', 'settings_keys_written',
-            'mcp_servers', 'files_written', 'auto_update',
+            'machine_wide_destinations', 'os_env_written', 'settings_written',
+            'mcp_servers', 'files_written', 'dependency_entries', 'auto_update', 'leftovers',
         }
         assert data['name'] == command_name
         assert data['auto_update'] is None
@@ -5498,10 +5498,10 @@ class TestWriteManifest:
             components={'select': 'core', 'with': None, 'without': None},
             yaml_values={'command_names': [], 'components': ['core']},
             machine_wide_destinations=[{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}],
-            os_env_written=['MY_VAR'],
-            settings_keys_written=['theme'],
-            mcp_servers=[{'name': 'srv', 'scopes': ['user']}],
-            files_written=['agents/a.md'],
+            os_env_written=[{'name': 'MY_VAR', 'sha256': '01'}],
+            settings_written=[{'kind': 'setting', 'path': ['theme'], 'sha256': 'ef'}],
+            mcp_servers=[{'name': 'srv', 'scopes': ['user'], 'sha256': {'user': '02'}}],
+            files_written=[{'path': 'agents/a.md', 'sha256': 'cd'}],
         )
 
         resolved = (tmp_path / 'resolved-config.yaml').read_text(encoding='utf-8')
@@ -5512,10 +5512,10 @@ class TestWriteManifest:
         assert data['components'] == {'select': 'core', 'with': None, 'without': None}
         assert data['yaml_values'] == {'command_names': [], 'components': ['core']}
         assert data['machine_wide_destinations'] == [{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}]
-        assert data['os_env_written'] == ['MY_VAR']
-        assert data['settings_keys_written'] == ['theme']
-        assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user']}]
-        assert data['files_written'] == ['agents/a.md']
+        assert data['os_env_written'] == [{'name': 'MY_VAR', 'sha256': '01'}]
+        assert data['settings_written'] == [{'kind': 'setting', 'path': ['theme'], 'sha256': 'ef'}]
+        assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user'], 'sha256': {'user': '02'}}]
+        assert data['files_written'] == [{'path': 'agents/a.md', 'sha256': 'cd'}]
 
 
 class TestRegisterGlobalCommand:

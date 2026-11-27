@@ -51,6 +51,8 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from pathlib import PurePosixPath
+from pathlib import PureWindowsPath
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Literal
@@ -456,11 +458,23 @@ ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # builder's delta into the shared ~/.claude/settings.json via
 # _write_merged_json(), inheriting: deep-merge for nested dicts, array-union
 # for every list at every depth, RFC 7396 null-as-delete for top-level and
-# nested None values, and preservation for keys omitted from the delta.
+# nested None values, and preservation for keys omitted from the delta; the
+# status line the delta declares replaces the file's whole
+# (SETTINGS_OBJECTS_WRITTEN_WHOLE).
 PROFILE_OWNED_KEYS: frozenset[str] = frozenset({
     'statusLine',
     'hooks',
 })
+
+# The top-level settings.json keys whose object is written, recorded and
+# removed as one value. The status line is one display configuration, which
+# Claude Code's /statusline rewrites in place: Step 18 of a base run
+# replaces the one in ~/.claude/settings.json with the object the
+# configuration builds instead of merging into it, so a member a later
+# configuration leaves out is gone and the file holds what the manifest
+# records; it leaves whole while it holds what the setup wrote and stays
+# whole once any member of it changed.
+SETTINGS_OBJECTS_WRITTEN_WHOLE: frozenset[str] = frozenset({'statusLine'})
 
 # Mapping from YAML root kebab-case key names to their on-disk camelCase
 # equivalents for the profile-owned keys. Used by main() to build the
@@ -730,6 +744,7 @@ ENV_TWINS: tuple[EnvTwin, ...] = (
     EnvTwin('CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'link_dirs', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_LINK_FROM', 'link_from', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS', 'run_all_commands', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS', 'remove_leftovers', 'switch'),
 )
 
 # Twins a child run started by --profile all keeps: the repository credential
@@ -1290,6 +1305,16 @@ class InstallationPlan:
     stale_controls_elsewhere: list[StaleControlCopy] = field(
         default_factory=lambda: list[StaleControlCopy](),
     )
+
+    # What the profile's earlier runs wrote and this configuration no longer
+    # installs; None when the profile has no manifest yet. Whether Step 23
+    # removes them (--remove-leftovers), whether the run is a dry run, and
+    # whether it is a scheduled run, which only lists them, decide how each
+    # row is marked and which note follows
+    leftovers: 'LeftoverReport | None' = None
+    remove_leftovers: bool = False
+    dry_run: bool = False
+    scheduled_run: bool = False
 
     # Destinations outside ~/.claude that a profile of another configuration
     # recorded from a different source
@@ -2206,17 +2231,23 @@ def expand_tildes_for_cmd(command: str) -> str:
     )
 
 
+# The spellings of the home folder at the start of a path: ~, $HOME,
+# ${HOME}, "$HOME", $env:USERPROFILE and %USERPROFILE%. The lookbehind keeps
+# a token glued to a preceding path or word (foo~/.claude, /x/$HOME) from
+# counting as one.
+_HOME_TOKEN_LOOKBEHIND = r'(?<![\w/\\.\-])'
+_HOME_TOKEN = r'"\$HOME"|\$\{HOME\}|\$HOME|\$env:USERPROFILE|%USERPROFILE%|~'
+# A home token that opens a path: the token followed by a separator
+_HOME_PATH_PREFIX_PATTERN = re.compile(rf'{_HOME_TOKEN_LOOKBEHIND}(?:{_HOME_TOKEN})(?=[\\/])')
 # A path naming the base config home or a ~/.claude.json sibling in any
-# spelling: the home token (~, $HOME, ${HOME}, "$HOME", $env:USERPROFILE,
-# %USERPROFILE%), a separator, .claude, then either a .json sibling suffix
-# or a boundary. A sibling suffix accepts the shell globs a cleanup line
-# spells (.claude.json.corrupted.*, .claude.json.backup.*), so the glob
-# moves into the profile with the path. The lookbehind keeps a token glued
-# to a preceding path or word (foo~/.claude, /x/$HOME) from matching; the
-# lookahead keeps ~/.claude-backup and ~/.claudex out.
+# spelling: a home token, a separator, .claude, then either a .json sibling
+# suffix or a boundary. A sibling suffix accepts the shell globs a cleanup
+# line spells (.claude.json.corrupted.*, .claude.json.backup.*), so the glob
+# moves into the profile with the path. The lookahead keeps ~/.claude-backup
+# and ~/.claudex out.
 _CONFIG_HOME_PATTERN = re.compile(
-    r'(?<![\w/\\.\-])'
-    r'(?P<home>"\$HOME"|\$\{HOME\}|\$HOME|\$env:USERPROFILE|%USERPROFILE%|~)'
+    rf'{_HOME_TOKEN_LOOKBEHIND}'
+    rf'(?P<home>{_HOME_TOKEN})'
     r'(?P<sep>[\\/])\.claude'
     r'(?P<sibling>\.json(?:\.[\w*?-]+)*)?'
     r'(?![\w.\-])',
@@ -2599,6 +2630,35 @@ def deep_merge_settings(
     return cast(dict[str, Any], result)
 
 
+def merge_settings_delta(
+    existing: dict[str, Any],
+    delta: dict[str, Any],
+    *,
+    written_whole: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Merge a settings delta into a settings object, as the shared-settings writers merge it into the file.
+
+    deep_merge_settings() applies the delta. A top-level key of
+    written_whole that the delta declares replaces the existing member
+    instead of merging into it: the existing member is dropped first, so a
+    member of its object that the delta's object lacks is gone, a null
+    member is dropped rather than written, and a null still deletes the
+    key.
+
+    Args:
+        existing: The settings object as it is. Not modified.
+        delta: What the write merges in.
+        written_whole: The top-level keys the delta replaces whole
+            (SETTINGS_OBJECTS_WRITTEN_WHOLE for Step 18).
+
+    Returns:
+        The merged settings object.
+    """
+    replaced = {key for key in written_whole if key in delta}
+    base = {key: value for key, value in existing.items() if key not in replaced}
+    return deep_merge_settings(base, delta)
+
+
 def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Expand tilde paths in settings keys that contain shell commands.
 
@@ -2639,6 +2699,7 @@ def _write_merged_json(
     new_settings: dict[str, Any],
     *,
     ensure_parent: bool = True,
+    written_whole: Iterable[str] = (),
 ) -> tuple[bool, dict[str, Any]]:
     """Read-merge-write JSON file with universal deep merge.
 
@@ -2659,11 +2720,14 @@ def _write_merged_json(
     - None values: RFC 7396 null-as-delete (top-level and nested), so a
       None deletes a whole list.
     - Keys absent from new_settings: preserved unchanged in target.
+    - A top-level key of written_whole that new_settings declares replaces
+      the file's member whole (merge_settings_delta()).
 
     Args:
         target_file: Path to the JSON file to update.
         new_settings: New settings to deep-merge into existing content.
         ensure_parent: If True, create parent directories if needed.
+        written_whole: The top-level keys written whole.
 
     Returns:
         Tuple of (success, merged_dict). success is True if settings were
@@ -2685,7 +2749,7 @@ def _write_merged_json(
             warning(f'Invalid JSON in {target_file}: {e}, starting fresh')
 
     # Step 2: DEEP MERGE new settings into existing
-    merged = deep_merge_settings(existing, new_settings)
+    merged = merge_settings_delta(existing, new_settings, written_whole=written_whole)
 
     # Step 3: WRITE merged result back to file
     try:
@@ -5424,6 +5488,23 @@ def _decide_claude_install(
         note=f'No working Claude Code installation was found and {cause}; installing the latest release.',
         note_is_warning=True,
     )
+
+
+def normalized_claude_code_version(value: object) -> str | None:
+    """Read a claude-code-version value as the release a run pins.
+
+    Args:
+        value: The configuration's claude-code-version value, a YAML number
+            included.
+
+    Returns:
+        The version as text, or None when the run installs the latest
+        release: the value is absent, blank or 'latest' in any letter case.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if not text or text.lower() == 'latest' else text
 
 
 def apply_auto_update_settings(
@@ -9937,6 +10018,8 @@ def collect_machine_wide_writes(
     pin_effect: str | None = None,
     scheduled_update: 'ScheduledUpdatePlan | None' = None,
     node_upgrade: 'NodeUpgradePlan | None' = None,
+    leftover_destinations: Sequence[str] = (),
+    leftover_mcp_servers: Sequence[str] = (),
 ) -> list[str]:
     """Name every write of an isolated run that reaches beyond its profile.
 
@@ -9975,6 +10058,10 @@ def collect_machine_wide_writes(
             state directory, or None.
         node_upgrade: What Step 5 does with the one Node.js of the machine,
             or None when the run does not run the Node.js step.
+        leftover_destinations: The destinations outside ~/.claude that
+            Step 23 removes as leftovers of earlier runs (--remove-leftovers).
+        leftover_mcp_servers: The project-scope MCP servers Step 23 removes
+            as leftovers from the working directory's .mcp.json.
 
     Returns:
         One line per machine-wide write, in execution order.
@@ -10026,6 +10113,12 @@ def collect_machine_wide_writes(
             writes.append(f'files-to-download outside the profile: {dest}')
     if has_dependency_commands:
         writes.append('Dependency commands: run machine-wide (listed above)')
+    writes.extend(f'remove leftover file: {path}' for path in leftover_destinations)
+    if leftover_mcp_servers:
+        writes.append(
+            '.mcp.json in the working directory: remove leftover project-scope MCP server(s) '
+            f'{", ".join(leftover_mcp_servers)}',
+        )
     if scheduled_update is not None and scheduled_update.changes_registration:
         if scheduled_update.action == 'remove':
             writes.append(f'OS scheduler: remove the daily update job {scheduled_update.name}')
@@ -10443,7 +10536,11 @@ def display_installation_summary(
     if plan.dependents:
         _print()
         _print(f'{Colors.BOLD}Dependents (profiles linking content from this one, refreshed after this run):{Colors.NC}')
-        child_flags = f'--yes --skip-install --no-admin{" " + RUN_ALL_COMMANDS_FLAG if plan.run_all_commands else ""}'
+        child_flags = ' '.join([
+            '--yes', '--skip-install', '--no-admin',
+            *([RUN_ALL_COMMANDS_FLAG] if plan.run_all_commands else []),
+            *([REMOVE_LEFTOVERS_FLAG] if plan.remove_leftovers else []),
+        ])
         for name in plan.dependents:
             _print(f'  * {name} (--profile {name} {child_flags})')
 
@@ -10518,6 +10615,16 @@ def display_installation_summary(
         for copy in plan.stale_controls_elsewhere:
             _print(f'  * {_stale_control_copy_line(copy)}')
         _print(f'  {STALE_CONTROLS_RERUN_NOTE}')
+
+    # What the profile's earlier runs wrote and this configuration no longer
+    # installs: each row says what the run finds at the path
+    if plan.leftovers is not None and plan.leftovers.has_content():
+        _print()
+        _print(f'{Colors.YELLOW}{Colors.BOLD}{LEFTOVERS_HEADING}{Colors.NC}')
+        for line in plan.leftovers.lines(
+            remove=plan.remove_leftovers, dry_run=plan.dry_run, scheduled=plan.scheduled_run,
+        ):
+            _print(f'  {line}')
 
     # The profile's daily update job: what Step 25 registers, re-registers,
     # keeps or removes, the command it runs, where its state lives, and the
@@ -11148,40 +11255,71 @@ def remove_export_from_file(config_file: Path, name: str) -> bool:
                 continue
             new_lines.append(line)
 
-        new_content = '\n'.join(new_lines)
-
-        # Clean up empty marker blocks
-        if ENV_VAR_MARKER_START in new_content:
-            start_idx = new_content.find(ENV_VAR_MARKER_START)
-            end_idx = new_content.find(ENV_VAR_MARKER_END)
-
-            if end_idx != -1:
-                before = new_content[:start_idx]
-                block = new_content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
-                after = new_content[end_idx + len(ENV_VAR_MARKER_END) :]
-
-                # Check if block is empty (only markers and whitespace)
-                block_lines = block.split('\n')
-                has_content = False
-                for block_line in block_lines:
-                    if block_line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
-                        continue
-                    if block_line.strip():
-                        has_content = True
-                        break
-
-                if not has_content:
-                    # Block is empty, remove it entirely
-                    new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
-                    # Handle edge case where file becomes only newlines
-                    if new_content.strip() == '':
-                        new_content = ''
+        new_content = _without_empty_marker_block('\n'.join(new_lines))
 
         # Only write if content changed
         if new_content != original_content:
             config_file.write_text(new_content, encoding='utf-8')
         return True
 
+    except OSError as e:
+        warning(f'Could not modify {config_file}: {e}')
+        return False
+
+
+def _without_empty_marker_block(content: str) -> str:
+    """Drop the claude-code-toolbox marker block of a shell config file's content when it holds nothing.
+
+    Args:
+        content: The file's content.
+
+    Returns:
+        The content without the block when the block holds only its markers
+        and blank lines; an empty string when nothing else is left; the
+        content unchanged otherwise.
+    """
+    start_idx = content.find(ENV_VAR_MARKER_START)
+    end_idx = content.find(ENV_VAR_MARKER_END)
+    if start_idx == -1 or end_idx == -1:
+        return content
+    before = content[:start_idx]
+    block = content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
+    after = content[end_idx + len(ENV_VAR_MARKER_END) :]
+    if any(line.strip() for line in block.split('\n') if line not in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END)):
+        return content
+    stripped = before.rstrip('\n') + '\n' + after.lstrip('\n')
+    return '' if stripped.strip() == '' else stripped
+
+
+def remove_export_from_toolbox_block(config_file: Path, name: str) -> bool:
+    """Remove the line add_export_to_file() wrote for a variable from the claude-code-toolbox marker block.
+
+    A line that sets the variable outside the block is the user's own and
+    stays. The block goes when the removal leaves it empty.
+
+    Args:
+        config_file: Path to the shell config file.
+        name: Environment variable name to remove.
+
+    Returns:
+        bool: True if successful (or the file or its block doesn't exist),
+        False on error.
+    """
+    if not config_file.exists():
+        return True
+    try:
+        content = config_file.read_text(encoding='utf-8')
+        start = content.find(ENV_VAR_MARKER_START)
+        if start == -1:
+            return True
+        end = content.find(ENV_VAR_MARKER_END)
+        stop = end + len(ENV_VAR_MARKER_END) if end != -1 else len(content)
+        prefix = _get_export_prefix(config_file, name)
+        block = [line for line in content[start:stop].split('\n') if not line.strip().startswith(prefix)]
+        new_content = _without_empty_marker_block(content[:start] + '\n'.join(block) + content[stop:])
+        if new_content != content:
+            config_file.write_text(new_content, encoding='utf-8')
+        return True
     except OSError as e:
         warning(f'Could not modify {config_file}: {e}')
         return False
@@ -11265,25 +11403,28 @@ def set_os_env_variable_unix(name: str, value: str | None) -> bool:
                 if not add_export_to_file(config_file, name, value):
                     all_success = False
 
-        # Fish universal variables: propagate immediately to all running Fish instances
-        # config.fish (set -gx) remains the durable persistence mechanism;
-        # set -Ux provides instant propagation to open Fish sessions
-        if shutil.which('fish'):
-            try:
-                if value is None:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ue {name}'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-                else:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ux {name} "{value}"'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-            except (OSError, subprocess.TimeoutExpired):
-                pass  # Non-critical: config.fish write is the durable mechanism
+        _update_fish_universal_variable(name, value)
 
     return all_success
+
+
+def _update_fish_universal_variable(name: str, value: str | None) -> None:
+    """Set or erase a Fish universal variable, so every running Fish session sees the change at once.
+
+    config.fish (set -gx) remains the durable persistence mechanism; set -Ux
+    provides instant propagation to open Fish sessions. Nothing happens
+    without Fish.
+
+    Args:
+        name: Environment variable name.
+        value: Value to set, or None to erase the variable.
+    """
+    if not shutil.which('fish'):
+        return
+    command = f'set -Ue {name}' if value is None else f'set -Ux {name} "{value}"'
+    # Non-critical: the config.fish write is the durable mechanism
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(['fish', '-c', command], capture_output=True, check=False, timeout=5)
 
 
 def set_os_env_variable(name: str, value: str | None) -> bool:
@@ -11362,21 +11503,80 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     if failed_count > 0:
         warning(f'Failed to configure {failed_count} environment variable(s)')
 
-    # Print unset guidance for deleted variables on Unix
-    if sys.platform != 'win32' and deleted_names:
-        info('To remove deleted variable(s) from your current shell session, run:')
-        for var_name in deleted_names:
-            print(f'  unset {var_name}')
-        if shutil.which('fish'):
-            info('For Fish shell:')
-            for var_name in deleted_names:
-                print(f'  set -e {var_name}')
+    _print_unset_guidance(deleted_names)
 
     # Broadcast WM_SETTINGCHANGE after all env var operations (Windows)
     if sys.platform == 'win32' and (set_count > 0 or delete_count > 0):
         _broadcast_wm_settingchange()
 
     return failed_count == 0
+
+
+def _print_unset_guidance(deleted_names: Sequence[str]) -> None:
+    """Tell a Linux or macOS user how to drop deleted variables from the shell session they run the setup in.
+
+    Args:
+        deleted_names: The variables deleted from the shell config files.
+    """
+    if sys.platform == 'win32' or not deleted_names:
+        return
+    info('To remove deleted variable(s) from your current shell session, run:')
+    for var_name in deleted_names:
+        print(f'  unset {var_name}')
+    if shutil.which('fish'):
+        info('For Fish shell:')
+        for var_name in deleted_names:
+            print(f'  set -e {var_name}')
+
+
+def _delete_toolbox_os_env_variable(name: str) -> bool:
+    """Delete one OS environment variable from where Step 7 writes it, and from the current process.
+
+    Args:
+        name: Environment variable name.
+
+    Returns:
+        bool: True when every place was updated, False when one failed.
+    """
+    if sys.platform == 'win32':
+        result = set_os_env_variable_windows(name, None)
+    else:
+        results = [remove_export_from_toolbox_block(config_file, name) for config_file in get_all_shell_config_files()]
+        _update_fish_universal_variable(name, None)
+        result = all(results)
+    if result:
+        os.environ.pop(name, None)
+    return result
+
+
+def delete_toolbox_os_env_variables(names: Sequence[str]) -> bool:
+    """Delete OS environment variables the setup set, where Step 7 wrote them and nowhere else.
+
+    A leftover variable is one the setup wrote: on Windows the one value of
+    the user environment, on Linux and macOS the line add_export_to_file()
+    wrote into the claude-code-toolbox block of each shell config file, and
+    the Fish universal variable set_os_env_variable_unix() set. A line that
+    sets the variable outside the block is the user's own and stays, unlike
+    the deletion a null os-env-variables entry asks for
+    (set_all_os_env_variables()), which removes every line that sets it.
+
+    Args:
+        names: The variable names.
+
+    Returns:
+        bool: True if every deletion succeeded, False if any failed.
+    """
+    deleted: list[str] = []
+    for name in names:
+        info(f'Deleting environment variable: {name}')
+        if _delete_toolbox_os_env_variable(name):
+            deleted.append(name)
+    if deleted:
+        success(f'Deleted {len(deleted)} environment variable(s)')
+    if len(deleted) < len(names):
+        warning(f'Failed to delete {len(names) - len(deleted)} environment variable(s)')
+    _print_unset_guidance(deleted)
+    return len(deleted) == len(names)
 
 
 def partition_os_env_variables(
@@ -13124,8 +13324,17 @@ def report_shadowing_global_npm() -> ShadowingNpm | None:
     return shadow
 
 
-def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]:
+def install_dependencies(
+    dependencies: dict[str, list[str]] | None,
+    *,
+    observer: 'DependencyEntryObserver | None' = None,
+) -> list[str]:
     """Install dependencies from configuration.
+
+    Args:
+        dependencies: The dependencies section, keyed by platform and common.
+        observer: Watches the profile's content directories around each
+            command, or None to run the commands unwatched.
 
     Returns:
         List of dependency commands that failed to install.
@@ -13242,8 +13451,14 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]
             return False
         return True
 
+    def run_dependency(dep: str) -> bool:
+        """Run one dependency command, watched by the observer when there is one."""
+        if observer is None:
+            return execute_dependency(dep)
+        return observer.around(dep, lambda: execute_dependency(dep))
+
     # Phase 1: Execute platform-specific dependencies
-    failed_deps: list[str] = [dep for dep in platform_deps_list if not execute_dependency(dep)]
+    failed_deps: list[str] = [dep for dep in platform_deps_list if not run_dependency(dep)]
 
     # Phase 2: Refresh PATH from registry on Windows
     # This picks up any PATH changes from platform-specific installations (e.g., Node.js)
@@ -13251,7 +13466,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]
         refresh_path_from_registry()
 
     # Phase 3: Execute common dependencies
-    failed_deps.extend(dep for dep in common_deps_list if not execute_dependency(dep))
+    failed_deps.extend(dep for dep in common_deps_list if not run_dependency(dep))
 
     return failed_deps
 
@@ -16851,11 +17066,11 @@ _HOOK_TYPE_ALLOWED_YAML_KEYS: dict[str, frozenset[str]] = {
 }
 
 
-def _build_hooks_json(
+def _hooks_json_and_problems(
     hooks: dict[str, Any],
     hooks_dir: Path,
-) -> dict[str, Any]:
-    """Build hooks JSON structure from YAML configuration.
+) -> tuple[dict[str, Any], list[str]]:
+    """Build hooks JSON structure from YAML configuration, without printing.
 
     Converts YAML hook event definitions into Claude Code's JSON hooks format.
     Generates absolute POSIX paths for hook file references. Supports all five
@@ -16879,14 +17094,16 @@ def _build_hooks_json(
         hooks_dir: Directory containing downloaded hook files.
 
     Returns:
-        Dictionary with hook event names as keys and matcher/hooks arrays
-        as values. Empty dict if no hook events defined.
+        The hooks JSON, a dictionary with hook event names as keys and
+        matcher/hooks arrays as values (empty if no hook events are
+        defined), and one message per entry skipped or key ignored.
     """
     result: dict[str, Any] = {}
+    problems: list[str] = []
 
     hook_events = hooks.get('events', [])
     if not hook_events:
-        return result
+        return result, problems
 
     # Basenames listed in hooks.files, derived the way
     # validate_hooks_files_consistency() derives them, so an exec-form
@@ -16906,48 +17123,48 @@ def _build_hooks_json(
         config = hook.get('config')  # Optional config file reference
 
         if not event:
-            warning('Invalid hook configuration: missing event, skipping')
+            problems.append('Invalid hook configuration: missing event, skipping')
             continue
 
         if event not in HOOK_EVENT_NAMES:
-            warning(
+            problems.append(
                 f'Unknown hook event name: {event} (not recognized by Claude Code 2.1.238, '
                 'which rejects unknown event names at configuration load time)',
             )
 
         allowed_keys = _HOOK_TYPE_ALLOWED_YAML_KEYS.get(hook_type)
         if allowed_keys is None:
-            warning(f'Unknown hook type: {hook_type}, skipping')
+            problems.append(f'Unknown hook type: {hook_type}, skipping')
             continue
 
         unknown_keys = sorted(set(hook) - allowed_keys)
         if unknown_keys:
-            warning(
+            problems.append(
                 f"Hook event {event}: ignoring key(s) not supported for hook type '{hook_type}': "
                 f'{", ".join(unknown_keys)}',
             )
 
         # Validate required fields per hook type
         if hook_type == 'command' and not command:
-            warning('Invalid command hook: missing command, skipping')
+            problems.append('Invalid command hook: missing command, skipping')
             continue
         if hook_type == 'http':
             url = hook.get('url')
             if not url:
-                warning('Invalid http hook: missing url, skipping')
+                problems.append('Invalid http hook: missing url, skipping')
                 continue
             if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
-                warning(f'Invalid http hook: url must be an http:// or https:// URL, got {url}, skipping')
+                problems.append(f'Invalid http hook: url must be an http:// or https:// URL, got {url}, skipping')
                 continue
         if hook_type in ('prompt', 'agent') and not hook.get('prompt'):
-            warning(f'Invalid {hook_type} hook: missing prompt, skipping')
+            problems.append(f'Invalid {hook_type} hook: missing prompt, skipping')
             continue
         if hook_type == 'mcp_tool':
             if not hook.get('server'):
-                warning('Invalid mcp_tool hook: missing server, skipping')
+                problems.append('Invalid mcp_tool hook: missing server, skipping')
                 continue
             if not hook.get('tool'):
-                warning('Invalid mcp_tool hook: missing tool, skipping')
+                problems.append('Invalid mcp_tool hook: missing tool, skipping')
                 continue
 
         # Claude Code requires a positive timeout on every hook type
@@ -16955,7 +17172,7 @@ def _build_hooks_json(
         if timeout is not None and (
             isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0
         ):
-            warning(f'Invalid {hook_type} hook: timeout must be a positive number, got {timeout}, skipping')
+            problems.append(f'Invalid {hook_type} hook: timeout must be a positive number, got {timeout}, skipping')
             continue
 
         # Add to result
@@ -17007,7 +17224,7 @@ def _build_hooks_json(
                     'args': exec_args + extra_args,
                 }
                 if hook.get('shell') is not None:
-                    warning(
+                    problems.append(
                         f"Hook event {event}: 'shell' is ignored when 'args' is set "
                         '(exec form spawns the executable without a shell)',
                     )
@@ -17080,6 +17297,25 @@ def _build_hooks_json(
                 matcher_hooks_list = cast(list[object], matcher_hooks_raw)
                 matcher_hooks_list.append(hook_config)
 
+    return result, problems
+
+
+def _build_hooks_json(
+    hooks: dict[str, Any],
+    hooks_dir: Path,
+) -> dict[str, Any]:
+    """Build hooks JSON structure from YAML configuration, warning about each entry skipped.
+
+    Args:
+        hooks: Hooks configuration dictionary with optional 'events' key.
+        hooks_dir: Directory containing downloaded hook files.
+
+    Returns:
+        The hooks JSON _hooks_json_and_problems() builds.
+    """
+    result, problems = _hooks_json_and_problems(hooks, hooks_dir)
+    for problem in problems:
+        warning(problem)
     return result
 
 
@@ -17114,6 +17350,11 @@ def write_profile_settings_to_settings(
     - RFC 7396 null-as-delete for any key whose value is ``None``
       (top-level or nested).
     - Preservation for keys omitted from ``settings_delta``.
+    - The status line the delta declares replaces the file's whole
+      (``SETTINGS_OBJECTS_WRITTEN_WHOLE``): it is one display configuration,
+      so a member a later configuration leaves out, or one added to it by
+      hand, is gone after the write, and the file holds the object the
+      manifest records.
 
     The delta is expected to be the output of
     ``_build_profile_settings()``, which contains one entry per
@@ -17144,9 +17385,9 @@ def write_profile_settings_to_settings(
     info('Writing profile settings to settings.json...')
 
     # Delegate to the shared READ-MERGE-WRITE helper: every array at every
-    # depth is unioned with structural dedupe, and ensure_parent=True
-    # creates settings_dir if missing.
-    ok, _ = _write_merged_json(settings_file, settings_delta)
+    # depth is unioned with structural dedupe, the status line is written
+    # whole, and ensure_parent=True creates settings_dir if missing.
+    ok, _ = _write_merged_json(settings_file, settings_delta, written_whole=SETTINGS_OBJECTS_WRITTEN_WHOLE)
 
     if ok:
         success(f'Wrote profile settings to {settings_file}')
@@ -17211,14 +17452,50 @@ def _build_profile_settings(
         >>> _build_profile_settings({'statusLine': None}, Path('/tmp/hooks'))
         {'statusLine': None}
     """
+    build = _profile_settings_delta(profile_config, hooks_dir)
+    for note in build.notes:
+        info(note)
+    for problem in build.problems:
+        warning(problem)
+    return build.settings
+
+
+class ProfileSettingsBuild(NamedTuple):
+    """The settings delta _profile_settings_delta() builds and what it has to say about it.
+
+    Attributes:
+        settings: The delta, as _build_profile_settings() documents it.
+        notes: One informational line per status line set and per key a
+            YAML null deletes.
+        problems: One line per hook entry skipped or key ignored.
+    """
+
+    settings: dict[str, Any]
+    notes: list[str]
+    problems: list[str]
+
+
+def _profile_settings_delta(profile_config: dict[str, Any], hooks_dir: Path) -> ProfileSettingsBuild:
+    """Build the profile settings delta _build_profile_settings() returns, without printing.
+
+    Args:
+        profile_config: Dict of profile-owned keys (camelCase on-disk names).
+        hooks_dir: Absolute directory path where downloaded hook files reside.
+
+    Returns:
+        The delta with the notes and problems _build_profile_settings()
+        prints.
+    """
     settings: dict[str, Any] = {}
+    notes: list[str] = []
+    problems: list[str] = []
 
     # statusLine (command-string construction)
     if 'statusLine' in profile_config:
         status_line = profile_config['statusLine']
         if status_line is None:
             settings['statusLine'] = None
-            info('Deleting statusLine via explicit null')
+            notes.append('Deleting statusLine via explicit null')
         elif isinstance(status_line, dict):
             status_line_file = status_line.get('file')
             if status_line_file:
@@ -17244,20 +17521,21 @@ def _build_profile_settings(
                     status_line_built['refreshInterval'] = status_line['refresh-interval']
 
                 settings['statusLine'] = status_line_built
-                info(f'Setting statusLine: {filename}')
+                notes.append(f'Setting statusLine: {filename}')
 
     # hooks (delegates to _build_hooks_json for non-null, non-empty values)
     if 'hooks' in profile_config:
         hooks = profile_config['hooks']
         if hooks is None:
             settings['hooks'] = None
-            info('Deleting hooks via explicit null')
+            notes.append('Deleting hooks via explicit null')
         elif hooks:
-            hooks_json = _build_hooks_json(hooks, hooks_dir)
+            hooks_json, hook_problems = _hooks_json_and_problems(hooks, hooks_dir)
+            problems.extend(hook_problems)
             if hooks_json:
                 settings['hooks'] = hooks_json
 
-    return settings
+    return ProfileSettingsBuild(settings, notes, problems)
 
 
 def _strip_null_values(settings: dict[str, Any]) -> dict[str, Any]:
@@ -18173,17 +18451,20 @@ class DependentResult(NamedTuple):
         code: Its exit code.
         needs_elevation: Whether the run failed on a machine where its
             dependency commands need administrator rights the parent lacks.
+        remove_leftovers: Whether the child ran with --remove-leftovers, so
+            its retry runs with it too.
     """
 
     name: str
     code: int
     needs_elevation: bool
+    remove_leftovers: bool = False
 
     def line(self) -> str:
         """Render the result for the reports."""
         if self.code == 0:
             return f'{self.name}: ok'
-        remedy = f'retry with --profile {self.name}'
+        remedy = f'retry with --profile {self.name}' + (f' {REMOVE_LEFTOVERS_FLAG}' if self.remove_leftovers else '')
         if self.needs_elevation:
             remedy += ' from an elevated terminal (a global npm install needs administrator rights the run could not request)'
         return f'{self.name}: failed (exit code {self.code}); {remedy}'
@@ -18194,6 +18475,7 @@ def refresh_dependents(
     *,
     source_commands: frozenset[str] = frozenset(),
     run_all_commands: bool = False,
+    remove_leftovers: bool = False,
 ) -> list[DependentResult]:
     """Re-run every profile that links content from this one, each in its own child run.
 
@@ -18206,8 +18488,9 @@ def refresh_dependents(
     profile, so the child lists none as unrefreshed; ``--skip-install``
     because the source just installed the one binary; ``--no-admin`` so no
     child relaunches through UAC and exits 0 unobserved; ``--run-all-commands``
-    when this run was given it, because the child's environment lost the
-    twin. Every dependent runs whatever the others returned.
+    and ``--remove-leftovers`` when this run was given them, because the
+    child's environment lost their twins. Every dependent runs whatever the
+    others returned.
 
     Args:
         dependents: The profiles to refresh, from content_dependents().
@@ -18216,6 +18499,8 @@ def refresh_dependents(
             leaves out unless the flag is given; a failed dependent's
             elevation remedy is judged on the commands it runs itself.
         run_all_commands: Whether this run was given --run-all-commands.
+        remove_leftovers: Whether this run was given --remove-leftovers,
+            so each dependent removes its own leftovers in its Step 23.
 
     Returns:
         One result per dependent, in order.
@@ -18224,6 +18509,8 @@ def refresh_dependents(
     child_flags = ['--yes', CHILD_RUN_FLAG, '--skip-install', '--no-admin']
     if run_all_commands:
         child_flags.append(RUN_ALL_COMMANDS_FLAG)
+    if remove_leftovers:
+        child_flags.append(REMOVE_LEFTOVERS_FLAG)
     env = child_run_environment()
     results: list[DependentResult] = []
     for profile in dependents:
@@ -18238,7 +18525,7 @@ def refresh_dependents(
         if code != 0 and platform.system() == 'Windows' and not is_admin():
             snapshot = dependent_run_snapshot(profile, source_commands=None if run_all_commands else source_commands)
             needs_elevation = bool(admin_elevation_reasons(snapshot, argparse.Namespace(skip_install=True)))
-        results.append(DependentResult(profile.name, code, needs_elevation))
+        results.append(DependentResult(profile.name, code, needs_elevation, remove_leftovers))
     return results
 
 
@@ -18529,6 +18816,22 @@ def planned_profile_files(
     return sorted(files)
 
 
+def _hash_file(path: Path) -> str:
+    """Hash a file's content, letting the OSError of a failed read reach the caller.
+
+    Args:
+        path: The file to hash.
+
+    Returns:
+        The hex sha256.
+    """
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _sha256_of_file(path: Path) -> str | None:
     """Hash a file's content.
 
@@ -18538,14 +18841,50 @@ def _sha256_of_file(path: Path) -> str | None:
     Returns:
         The hex sha256, or None when the file cannot be read.
     """
-    digest = hashlib.sha256()
     try:
-        with path.open('rb') as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b''):
-                digest.update(chunk)
+        return _hash_file(path)
     except OSError:
         return None
-    return digest.hexdigest()
+
+
+def _is_inside_config_home(path: Path, claude_dir: Path) -> bool:
+    """Report whether a path is the base config home or lies below it.
+
+    Args:
+        path: An absolute path.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        True for claude_dir itself and anything inside it.
+    """
+    claude_key = _normalize_config_dir_key(str(claude_dir))
+    target_key = _normalize_config_dir_key(str(path))
+    return target_key == claude_key or target_key.startswith(claude_key + '/')
+
+
+def _download_targets_outside(
+    files_to_download: list[dict[str, Any]],
+    claude_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    """Pair each files-to-download entry that writes outside ~/.claude with its absolute target.
+
+    Args:
+        files_to_download: The resolved files-to-download list.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        (entry, absolute target) for every entry with a source and a
+        destination whose target lies outside claude_dir.
+    """
+    targets: list[tuple[dict[str, Any], Path]] = []
+    for entry in files_to_download:
+        source, dest = entry.get('source'), entry.get('dest')
+        if not source or not dest:
+            continue
+        target = Path(os.path.abspath(_download_destination(str(source), str(dest))))
+        if not _is_inside_config_home(target, claude_dir):
+            targets.append((entry, target))
+    return targets
 
 
 def machine_wide_download_records(
@@ -18567,149 +18906,103 @@ def machine_wide_download_records(
         the resolved source, and the sha256 of the file on disk (None when
         the file is absent or unreadable).
     """
-    claude_key = _normalize_config_dir_key(str(claude_dir))
     records: list[dict[str, str | None]] = []
-    for entry in files_to_download:
-        source, dest = entry.get('source'), entry.get('dest')
-        if not source or not dest:
-            continue
-        target = Path(os.path.abspath(_download_destination(str(source), str(dest))))
-        target_key = _normalize_config_dir_key(str(target))
-        if target_key == claude_key or target_key.startswith(claude_key + '/'):
-            continue
-        resolved_source, _ = resolve_resource_path(str(source), config_source, base_url)
+    for entry, target in _download_targets_outside(files_to_download, claude_dir):
+        resolved_source, _ = resolve_resource_path(str(entry['source']), config_source, base_url)
         records.append({'dest': str(target), 'source': resolved_source, 'sha256': _sha256_of_file(target)})
     return records
 
 
-# The prefix of a settings record that names one env entry instead of a
-# top-level key: 'env.FOO' is the FOO variable of the settings env object
-SETTINGS_ENV_ENTRY_PREFIX = 'env.'
-
-
-def written_settings_keys(
-    user_settings: dict[str, Any] | None,
-    status_line: object,
-    hooks: object,
-) -> list[str]:
-    """List the settings keys a run writes.
-
-    Args:
-        user_settings: The resolved user-settings section, or None.
-        status_line: The resolved status-line section, or None.
-        hooks: The resolved hooks section, or None.
-
-    Returns:
-        Sorted keys: every non-null top-level user-settings key except env,
-        one 'env.<VAR>' entry per non-null env variable, statusLine when a
-        status line is configured, hooks when events are.
-    """
-    keys: set[str] = set()
-    for key, value in (user_settings or {}).items():
-        if value is None:
-            continue
-        if key == 'env' and isinstance(value, dict):
-            keys.update(
-                f'{SETTINGS_ENV_ENTRY_PREFIX}{variable}'
-                for variable, entry in cast(dict[str, Any], value).items()
-                if entry is not None
-            )
-            continue
-        keys.add(key)
-    if status_line:
-        keys.add('statusLine')
-    if isinstance(hooks, dict) and cast(dict[str, Any], hooks).get('events'):
-        keys.add('hooks')
-    return sorted(keys)
-
-
 def _is_machine_wide_control_record(key: str) -> bool:
-    """Report whether a settings or OS record names a machine-wide binary control.
+    """Report whether an OS environment record names a machine-wide binary control.
 
     Args:
-        key: An os_env_written entry or a settings_keys_written entry.
+        key: An os_env_written entry.
 
     Returns:
-        True for a MACHINE_WIDE_ENV_CONTROLS variable, bare or as an env
-        entry. Those controls belong to the pin gate and the Step 16
-        sweep, never to the residue of a configuration switch.
+        True for a MACHINE_WIDE_ENV_CONTROLS variable. Those controls belong
+        to the pin gate and the Step 16 sweep, never to the leftovers of
+        earlier runs.
     """
-    return key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX) in MACHINE_WIDE_ENV_CONTROLS
+    return key in MACHINE_WIDE_ENV_CONTROLS
 
 
-def mcp_server_records(mcp_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Record the MCP servers a run registers with their scopes.
+def os_env_records(os_level_env: Mapping[str, str | None], *, isolated: bool) -> list[dict[str, str]]:
+    """Record the OS environment variables a base run set, as digests of their values.
+
+    Args:
+        os_level_env: What Step 7 handed to the OS environment writer; a
+            None value is a deletion and sets nothing.
+        isolated: Whether the run installs an isolated profile, which sets
+            only the machine-wide binary controls in the OS environment.
+
+    Returns:
+        One {name, sha256} record per variable set, the sha256 being
+        leftover_digest() of the value as written; none for an isolated run,
+        and never one for a machine-wide binary control, which belongs to
+        the pin gate and the Step 16 sweep.
+    """
+    if isolated:
+        return []
+    return [
+        {'name': name, 'sha256': leftover_digest(str(value))}
+        for name, value in os_level_env.items()
+        if value is not None and not _is_machine_wide_control_record(name)
+    ]
+
+
+def mcp_server_records(
+    mcp_servers: list[dict[str, Any]],
+    *,
+    live_entries: Callable[[str], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """Record the MCP servers a run registers with their scopes and the entry each CLI scope holds.
 
     Args:
         mcp_servers: The resolved mcp-servers list.
+        live_entries: Reads the entry stored for a server name at each CLI
+            scope, or None when the files holding them cannot be read (see
+            _read_live_mcp_entries()).
 
     Returns:
-        One record per named server: its name and normalized scopes.
+        One record per named server: its name, its normalized scopes, and per
+        CLI scope it names the leftover_digest() of the entry stored there.
+        The digest is recorded only for an entry equal to what the
+        configuration declares, so an entry Step 13 did not write (its
+        registration failed, the entry was made by hand) is never counted as
+        the setup's; None otherwise.
     """
     records: list[dict[str, Any]] = []
     for server in mcp_servers:
         name = str(server.get('name') or '').strip()
-        if name:
-            records.append({'name': name, 'scopes': _mcp_scopes_or_empty(server.get('scope', 'user'))})
+        if not name:
+            continue
+        scopes = _mcp_scopes_or_empty(server.get('scope', 'user'))
+        cli_scopes = [scope for scope in scopes if scope != 'profile']
+        live = live_entries(name) if cli_scopes else None
+        expected = _build_expected_mcp_entry(server) if cli_scopes else None
+        digests: dict[str, str | None] = {}
+        for scope in cli_scopes:
+            entry = live.get(scope) if live is not None else None
+            setup_wrote_it = entry is not None and expected is not None and _mcp_entries_equal(entry, expected)
+            digests[scope] = leftover_digest(entry) if setup_wrote_it else None
+        records.append({'name': name, 'scopes': scopes, 'sha256': digests})
     return records
 
 
-class ProfileResidue(NamedTuple):
-    """What a profile's previous configuration left that a new one does not install.
+def _declared_mcp_server_names(config: dict[str, Any]) -> frozenset[str]:
+    """Name every MCP server a configuration declares, at any scope: Step 13 manages each of these names."""
+    return frozenset(
+        str(cast(dict[str, Any], server).get('name') or '').strip()
+        for server in cast(list[object], config.get('mcp-servers') or [])
+        if isinstance(server, dict) and str(cast(dict[str, Any], server).get('name') or '').strip()
+    )
 
-    Attributes:
-        files: Absolute paths of recorded profile files the new
-            configuration does not install and that still exist.
-        mcp_servers: (name, scopes) of recorded MCP servers the new
-            configuration does not declare, non-profile scopes only.
-        os_env: OS environment variables the previous run set and the new
-            configuration does not, the machine-wide binary controls
-            excluded.
-        settings_keys: Settings keys of a base profile the previous run
-            wrote and the new configuration does not: top-level keys, and
-            'env.<VAR>' entries other than the machine-wide binary controls.
-        destinations: Recorded destinations outside ~/.claude the new
-            configuration does not install, whose file still holds the
-            recorded content and which no other installed profile records.
-        kept_destinations: (path, profile names) of recorded destinations
-            outside ~/.claude the new configuration does not install but
-            another installed profile still records; they are listed and
-            never removed.
-        scheduled_job: The daily update job the previous run registered
-            and the new configuration does not declare, or None.
-    """
 
-    files: list[Path]
-    mcp_servers: list[tuple[str, list[str]]]
-    os_env: list[str]
-    settings_keys: list[str]
-    destinations: list[Path]
-    kept_destinations: list[tuple[Path, list[str]]]
-    scheduled_job: str | None = None
-
-    def __bool__(self) -> bool:
-        return any((
-            self.files, self.mcp_servers, self.os_env, self.settings_keys, self.destinations, self.scheduled_job,
-        ))
-
-    def lines(self) -> list[str]:
-        """Render the residue one item per line, for a guard message."""
-        rendered = [f'file: {path}' for path in self.files]
-        if self.scheduled_job:
-            rendered.append(f'scheduled update job: {self.scheduled_job}')
-        rendered.extend(f'MCP server: {name} (scope: {", ".join(scopes)})' for name, scopes in self.mcp_servers)
-        rendered.extend(f'OS environment variable: {key}' for key in self.os_env)
-        for key in self.settings_keys:
-            if key.startswith(SETTINGS_ENV_ENTRY_PREFIX):
-                rendered.append(f'settings.json env variable: {key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX)}')
-            else:
-                rendered.append(f'settings.json key: {key}')
-        rendered.extend(f'file outside ~/.claude: {path}' for path in self.destinations)
-        rendered.extend(
-            f'file outside ~/.claude kept: {path} (recorded by profile {", ".join(names)})'
-            for path, names in self.kept_destinations
-        )
-        return rendered
+def _declared_os_env_names(config: dict[str, Any]) -> frozenset[str]:
+    """Name every OS environment variable a configuration declares, set or deleted: Step 7 manages each of these."""
+    variables = config.get('os-env-variables')
+    return frozenset(str(name) for name in cast(dict[str, Any], variables)) if isinstance(variables, dict) else frozenset()
 
 
 def _destinations_recorded_elsewhere(home_dir: Path, profile_dir: Path) -> dict[str, list[str]]:
@@ -18717,8 +19010,8 @@ def _destinations_recorded_elsewhere(home_dir: Path, profile_dir: Path) -> dict[
 
     Args:
         home_dir: User home directory.
-        profile_dir: The directory of the profile being switched, whose own
-            manifest is left out.
+        profile_dir: The directory of the profile whose leftovers are read,
+            whose own manifest is left out.
 
     Returns:
         Normalized destination path to the display names of the profiles
@@ -18753,141 +19046,2880 @@ def _under_directory_link(profile_dir: Path, relative: str) -> bool:
     return any(_is_directory_link(profile_dir.joinpath(*parts[:depth])) for depth in range(1, len(parts)))
 
 
-def profile_residue(
-    manifest: dict[str, Any],
-    profile_dir: Path,
-    config: dict[str, Any],
-    *,
-    isolated: bool,
-    config_source: str,
-    base_url: str | None,
-    claude_dir: Path,
-    reroot: ConfigHomeReroot | None = None,
-) -> ProfileResidue:
-    """Compute what switching a profile to another configuration leaves behind.
+# ---------------------------------------------------------------------------
+# Leftovers of earlier runs
+# ---------------------------------------------------------------------------
+#
+# A profile's manifest records every profile file and every destination
+# outside ~/.claude a run wrote, each with the sha256 of the bytes the run
+# left there, and for the base profile every value, list element and hook
+# group Steps 14 and 18 wrote into settings.json, each with the sha256 of
+# its JSON, and the sha256 of the value of every OS environment variable
+# Step 7 set; every run records, per CLI scope, the sha256 of the entry each
+# MCP server it registered holds. A re-run compares those records, and the
+# leftovers the previous run carried, with what the configuration installs
+# now: whatever it no
+# longer installs is a leftover of an earlier run. The installation summary,
+# --dry-run and the completion summary list every leftover, and the
+# manifest's leftovers field carries each one still in place to the next
+# run, so a leftover is listed until it is gone, changed by hand, linked
+# from another profile, installed again, or removed: a run given
+# --remove-leftovers removes in Step 23 each leftover that still holds what
+# the setup wrote and, for a hook file, that no settings file still wires.
+
+LEFTOVERS_MANIFEST_KEY = 'leftovers'
+REMOVE_LEFTOVERS_FLAG = '--remove-leftovers'
+LEFTOVER_FILE = 'file'
+LEFTOVER_DESTINATION = 'destination'
+# A value, a list element and a hook group of the base settings.json
+LEFTOVER_SETTING = 'setting'
+LEFTOVER_SETTING_ELEMENT = 'setting-element'
+LEFTOVER_HOOK_GROUP = 'hook-group'
+LEFTOVER_SETTINGS_KINDS = frozenset({LEFTOVER_SETTING, LEFTOVER_SETTING_ELEMENT, LEFTOVER_HOOK_GROUP})
+# An OS environment variable of the base profile, and an MCP server
+# registration at one CLI scope
+LEFTOVER_OS_ENV = 'os-env'
+LEFTOVER_MCP_SERVER = 'mcp-server'
+# A top-level entry of a content directory that a Step 6 dependency command
+# created or recreated, and the manifest field that records them per command
+LEFTOVER_DEPENDENCY_ENTRY = 'dependency-entry'
+DEPENDENCY_ENTRIES_KEY = 'dependency_entries'
+# The kinds whose leftover lies at a path of its own
+LEFTOVER_PATH_KINDS = frozenset({LEFTOVER_FILE, LEFTOVER_DESTINATION})
+SETTINGS_FILE_NAME = 'settings.json'
+# The manifest field of the base settings.json records
+SETTINGS_WRITTEN_KEY = 'settings_written'
+# What a re-run finds at a leftover's path
+LEFTOVER_REMOVABLE = 'removable'
+# A hook group changed since written that still holds some hooks the setup
+# wrote: those hooks are removable, the rest of the group stays
+LEFTOVER_PARTIAL = 'partial'
+LEFTOVER_HELD = 'held'
+LEFTOVER_REFERENCED = 'referenced'
+LEFTOVER_UNREADABLE = 'unreadable'
+LEFTOVER_CHANGED = 'changed'
+LEFTOVER_GONE = 'gone'
+LEFTOVER_LINKED = 'linked'
+# A dependency entry a Step 6 command of this run installed again
+LEFTOVER_RECREATED = 'recreated'
+# The states that keep a leftover recorded for the next run; a leftover in
+# any other state is reported once and dropped from the record
+_CARRIED_LEFTOVER_STATES = frozenset({
+    LEFTOVER_REMOVABLE, LEFTOVER_PARTIAL, LEFTOVER_HELD, LEFTOVER_REFERENCED, LEFTOVER_UNREADABLE,
+})
+# The states whose leftover --remove-leftovers removes, whole or in part
+_REMOVABLE_LEFTOVER_STATES = frozenset({LEFTOVER_REMOVABLE, LEFTOVER_PARTIAL})
+# The reason the manifest records for each dropped state
+_DROPPED_LEFTOVER_REASONS = {
+    LEFTOVER_CHANGED: 'changed', LEFTOVER_GONE: 'gone', LEFTOVER_LINKED: 'linked', LEFTOVER_RECREATED: 'recreated',
+}
+# A leftover this run's own steps wrote again is dropped before Step 23
+# removes anything
+LEFTOVER_WRITTEN_AGAIN = 'written again'
+# What Step 23 did with a leftover
+LEFTOVER_REMOVED = 'removed'
+LEFTOVER_FAILED = 'failed'
+LEFTOVER_KEPT = 'kept'
+LEFTOVER_DROPPED = 'dropped'
+# Why Step 23 removed nothing: a failed content download may have left the
+# files the configuration installs in place of the leftovers missing
+LEFTOVERS_SKIPPED_DOWNLOADS = 'content downloads failed'
+# Why a removal Step 23 carried out did not take: the state read again
+# afterwards still holds the leftover, or no command removes it
+LEFTOVER_VARIABLE_STILL_SET = 'the variable is still set'
+LEFTOVER_SERVER_STILL_REGISTERED = 'the server is still registered'
+LEFTOVER_NO_CLAUDE_COMMAND = 'claude command not found'
+# The top-level profile directory of the hook files a settings file can wire
+LEFTOVER_HOOKS_DIR = 'hooks'
+# The mark a files_written record and a file leftover carry for a hooks.helpers
+# module
+HOOK_HELPER_RECORD_KEY = 'hook_helper'
+LEFTOVERS_HEADING = 'Leftovers of earlier runs (this configuration no longer installs them):'
+LEFTOVERS_FOOTER = 'They stay in place.'
+LEFTOVERS_FLAG_FOOTER = (
+    f'Pass {REMOVE_LEFTOVERS_FLAG} (or set CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS=1) to remove the items marked '
+    '[leftover]; each is removed only while it still holds what the setup wrote.'
+)
+# Why a dependency entry stays: its command failed, so it may not have
+# finished installing it again
+LEFTOVER_COMMAND_FAILED = 'its dependency command failed in this run'
+# Why a dependency entry Step 6 listed stays: the run that lists one never
+# removes it
+LEFTOVER_LISTED_NOW = f'listed after Step 6 of this run; a later run with {REMOVE_LEFTOVERS_FLAG} removes it'
+
+
+def scheduled_leftovers_note(profile_name: str) -> str:
+    """Name the manual run that removes a profile's leftovers, which a scheduled run only lists.
 
     Args:
-        manifest: The profile's current manifest.
-        profile_dir: The profile directory.
-        config: The new resolved, component-selected configuration.
-        isolated: Whether the profile is isolated; the base profile's
-            settings.json and OS environment carry residue, an isolated
-            profile's config.json and env loaders are rebuilt each run.
-        config_source: Where the new configuration was loaded from.
-        base_url: The new configuration's base-url, or None.
-        claude_dir: The base ~/.claude directory.
-        reroot: The isolated run's rerooter, so the files the new
-            configuration installs are compared at their re-rooted paths,
-            which is how the previous run recorded them; None for a base
-            run.
+        profile_name: The profile's display name.
 
     Returns:
-        The residue; empty when the new configuration covers everything the
-        previous run recorded. A recorded file that lies under a directory
-        link on disk is never residue: it belongs to the link's target, so
-        removing it would edit another directory.
+        The note.
     """
-    def _strings(key: str) -> list[str]:
-        value = manifest.get(key)
-        return [str(item) for item in cast(list[object], value)] if isinstance(value, list) else []
+    return f'A scheduled run only lists leftovers; remove them with --profile {profile_name} {REMOVE_LEFTOVERS_FLAG}.'
 
-    planned = set(planned_profile_files(config, profile_dir, reroot=reroot))
-    files = [
-        profile_dir / relative
-        for relative in _strings('files_written')
-        if relative not in planned
-        and (profile_dir / relative).is_file()
-        and not _under_directory_link(profile_dir, relative)
-    ]
 
-    new_servers = {record['name'] for record in mcp_server_records(
-        [cast(dict[str, Any], s) for s in cast(list[object], config.get('mcp-servers') or []) if isinstance(s, dict)],
-    )}
-    servers: list[tuple[str, list[str]]] = []
-    for record in cast(list[object], manifest.get('mcp_servers') or []):
+def leftover_digest(value: object) -> str:
+    """Digest a recorded value in one canonical JSON form.
+
+    Args:
+        value: A JSON-serializable value.
+
+    Returns:
+        The hex sha256 of the value serialized with sorted keys, without
+        whitespace and with non-ASCII characters kept, so equal values give
+        equal digests whatever the order of their keys.
+    """
+    canonical = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+class LeftoverReadError(Exception):
+    """The live state of a leftover cannot be read, so the leftover cannot be checked."""
+
+
+def _file_key(path: str) -> str:
+    """Key a profile-relative file path for comparison.
+
+    Separators are unified and letter case is folded on every platform, so
+    a rename that changes only the case of a file name never reads as a
+    leftover where the file system is case-insensitive (Windows, and macOS
+    by default): there both names are the one file the run writes.
+
+    Args:
+        path: A profile-relative path.
+
+    Returns:
+        The comparison key.
+    """
+    return path.replace('\\', '/').casefold()
+
+
+def _content_entry_key(path: str) -> str:
+    """Key the top-level content directory entry a profile-relative path lies in, or is.
+
+    Args:
+        path: A profile-relative path.
+
+    Returns:
+        The _file_key() of its first two components, '<content
+        directory>/<name>' for a path inside a content directory.
+    """
+    return '/'.join(_file_key(path).split('/')[:2])
+
+
+def _destination_key(path: str) -> str:
+    """Key an absolute destination path for comparison, letter case folded as for profile files.
+
+    Args:
+        path: An absolute path.
+
+    Returns:
+        The comparison key.
+    """
+    return _normalize_config_dir_key(path).casefold()
+
+
+def _is_profile_relative(path: str) -> bool:
+    """Report whether a recorded file path stays inside the directory it is joined onto.
+
+    Args:
+        path: A recorded file path.
+
+    Returns:
+        False for an empty path, an absolute path, a drive or a root in
+        either the POSIX or the Windows reading, and any '..' component.
+    """
+    if not path:
+        return False
+    return all(
+        not flavor.anchor and '..' not in flavor.parts
+        for flavor in (PurePosixPath(path), PureWindowsPath(path))
+    )
+
+
+def _string_list(value: object) -> tuple[str, ...] | None:
+    """Read a JSON list of strings, or None for any other value."""
+    if not isinstance(value, list):
+        return None
+    items = cast(list[object], value)
+    if not all(isinstance(item, str) for item in items):
+        return None
+    return tuple(cast(list[str], items))
+
+
+@dataclass(frozen=True)
+class LeftoverItem:
+    """One thing an earlier run wrote that this configuration no longer installs.
+
+    Attributes:
+        kind: LEFTOVER_FILE for a profile file, LEFTOVER_DESTINATION for a
+            files-to-download destination outside ~/.claude, for the base
+            settings.json LEFTOVER_SETTING (a value),
+            LEFTOVER_SETTING_ELEMENT (an element of a list) or
+            LEFTOVER_HOOK_GROUP (a matcher group of a hook event),
+            LEFTOVER_OS_ENV for an OS environment variable of the base
+            profile, LEFTOVER_MCP_SERVER for an MCP server registered at one
+            CLI scope, and LEFTOVER_DEPENDENCY_ENTRY for a top-level entry
+            of a content directory that a dependency command installed.
+        path: The profile-relative POSIX path of a file or a dependency
+            entry, the absolute path of a destination, the keys of a
+            settings item joined with dots, the name of a variable or a
+            server.
+        sha256: The digest of the bytes the run wrote, or of the JSON of a
+            settings item, a variable's value or a server's entry
+            (leftover_digest()), or a dependency entry's identity
+            (entry_identity()); None when the run cannot vouch for what
+            sits there.
+        keys: The keys from the top of settings.json to a settings item; a
+            hook group's are 'hooks' and its event.
+        matcher: The digest of a hook group's matcher.
+        entries: The digests of a hook group's hooks.
+        scope: The CLI scope of an MCP server registration (user, local or
+            project); empty for every other item.
+        command: The dependency command that installed a dependency entry,
+            as the configuration spells it; empty for every other item.
+        hook_helper: Whether a profile file was installed as a hooks.helpers
+            module, which the hook scripts beside it import and no settings
+            file wires.
+    """
+
+    kind: str
+    path: str
+    sha256: str | None
+    keys: tuple[str, ...] = ()
+    matcher: str | None = None
+    entries: tuple[str, ...] = ()
+    scope: str = ''
+    command: str = ''
+    hook_helper: bool = False
+
+    @classmethod
+    def setting(
+        cls,
+        kind: str,
+        keys: Sequence[str],
+        sha256: str | None,
+        *,
+        matcher: str | None = None,
+        entries: Sequence[str] = (),
+    ) -> 'LeftoverItem':
+        """Build a settings item from its keys."""
+        return cls(kind, '.'.join(keys), sha256, tuple(keys), matcher, tuple(entries))
+
+    @classmethod
+    def os_env(cls, name: str, sha256: str | None) -> 'LeftoverItem':
+        """Build the item of an OS environment variable a base run set."""
+        return cls(LEFTOVER_OS_ENV, name, sha256)
+
+    @classmethod
+    def mcp_server(cls, name: str, scope: str, sha256: str | None) -> 'LeftoverItem':
+        """Build the item of an MCP server registered at one CLI scope."""
+        return cls(LEFTOVER_MCP_SERVER, name, sha256, scope=scope)
+
+    @classmethod
+    def dependency_entry(cls, path: str, command: str, identity: str) -> 'LeftoverItem':
+        """Build the item of a content directory entry a dependency command installed."""
+        return cls(LEFTOVER_DEPENDENCY_ENTRY, path, identity, command=command)
+
+    def is_setting(self) -> bool:
+        """Report whether the item lives in the base settings.json."""
+        return self.kind in LEFTOVER_SETTINGS_KINDS
+
+    def has_path(self) -> bool:
+        """Report whether the item lies at a path of its own: a profile file or a destination."""
+        return self.kind in LEFTOVER_PATH_KINDS
+
+    def key(self) -> tuple[str, str]:
+        """Return the identity two records of the same item share.
+
+        Returns:
+            The kind and a comparison key: a file and a destination are one
+            item per path, and so is a value of settings.json; a list
+            element and a hook group are one item per path and digest,
+            because a list holds many; a variable is one item per name,
+            letter case folded as for a file, so a rename that changes only
+            the case never removes the variable the run just set where
+            names are case-insensitive (Windows); a server is one item per
+            name and scope; a dependency entry is one item per path, as a
+            file is.
+        """
+        if self.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY):
+            return self.kind, _file_key(self.path)
+        if self.kind == LEFTOVER_DESTINATION:
+            return self.kind, _destination_key(self.path)
+        if self.kind == LEFTOVER_OS_ENV:
+            return self.kind, self.path.casefold()
+        if self.kind == LEFTOVER_MCP_SERVER:
+            return self.kind, f'{self.scope} {self.path}'
+        keys = json.dumps(list(self.keys), ensure_ascii=False)
+        if self.kind == LEFTOVER_SETTING:
+            return self.kind, keys
+        return self.kind, f'{keys} {self.sha256}'
+
+    def location(self, profile_dir: Path) -> Path:
+        """Return the absolute path of the item.
+
+        Args:
+            profile_dir: The profile directory the path of a file or a
+                dependency entry is joined onto.
+
+        Returns:
+            The path of a file, a dependency entry or a destination.
+
+        Raises:
+            ValueError: For an item at no path of its own: a settings item,
+                a variable or a server.
+        """
+        if self.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY):
+            return profile_dir.joinpath(*PurePosixPath(self.path).parts)
+        if self.kind == LEFTOVER_DESTINATION:
+            return Path(self.path)
+        raise ValueError(f'{self.label()} lies at no path of its own')
+
+    def _settings_part(self, shown: str) -> str:
+        """Render what a settings item is inside settings.json."""
+        if self.kind == LEFTOVER_SETTING_ELEMENT:
+            return f'{self.path} element {shown or (self.sha256 or "")[:12]}'
+        if self.kind == LEFTOVER_HOOK_GROUP:
+            return f'{self.path} group {shown or (self.sha256 or "")[:12]}'
+        return self.path
+
+    def label(self) -> str:
+        """Name the item by its identity, as the manifest records it; a value is never named."""
+        if self.kind == LEFTOVER_FILE:
+            return f'file: {self.path}'
+        if self.kind == LEFTOVER_DESTINATION:
+            return f'file outside ~/.claude: {self.path}'
+        if self.kind == LEFTOVER_OS_ENV:
+            return f'OS environment variable: {self.path}'
+        if self.kind == LEFTOVER_MCP_SERVER:
+            return f'MCP server: {self.path} (scope: {self.scope})'
+        if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            return f'dependency entry: {self.path}'
+        return f'{SETTINGS_FILE_NAME}: {self._settings_part("")}'
+
+    def display(self, profile_dir: Path, shown: str = '') -> str:
+        """Name the item by the absolute path a reader can open.
+
+        Args:
+            profile_dir: The profile directory.
+            shown: What a list element or a hook group holds now, as
+                settings_item_state() describes it; empty to name it by
+                its digest.
+
+        Returns:
+            The name.
+        """
+        if self.kind == LEFTOVER_FILE:
+            return f'file: {self.location(profile_dir)}'
+        if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            return f'dependency entry: {self.location(profile_dir)} (from: {self.command})'
+        if not self.is_setting():
+            return self.label()
+        return f'{profile_dir / SETTINGS_FILE_NAME}: {self._settings_part(shown)}'
+
+    def to_record(self) -> dict[str, Any]:
+        """Render the item as the manifest's leftovers field records it."""
+        if self.kind == LEFTOVER_OS_ENV:
+            return {'kind': self.kind, 'name': self.path, 'sha256': self.sha256}
+        if self.kind == LEFTOVER_MCP_SERVER:
+            return {'kind': self.kind, 'name': self.path, 'scope': self.scope, 'sha256': self.sha256}
+        if self.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            return {'kind': self.kind, 'path': self.path, 'command': self.command, 'identity': self.sha256}
+        if not self.is_setting():
+            path_record: dict[str, Any] = {'kind': self.kind, 'path': self.path, 'sha256': self.sha256}
+            if self.hook_helper:
+                path_record[HOOK_HELPER_RECORD_KEY] = True
+            return path_record
+        record: dict[str, Any] = {'kind': self.kind, 'path': list(self.keys), 'sha256': self.sha256}
+        if self.kind == LEFTOVER_HOOK_GROUP:
+            record['matcher'] = self.matcher
+            record['entries'] = list(self.entries)
+        return record
+
+    @classmethod
+    def from_record(cls, record: object, *, claude_dir: Path) -> 'LeftoverItem | None':
+        """Read an item from its record.
+
+        Args:
+            record: A record of the leftovers field or of settings_written.
+            claude_dir: The base ~/.claude directory.
+
+        Returns:
+            The item, or None for a record of any other shape: an unknown
+            kind, no sha256 entry or one that is neither a string nor null,
+            a file path that would leave the profile directory, a
+            destination that is relative or lies inside ~/.claude, a
+            settings path that is not a non-empty list of strings, a hook
+            group whose path is not hooks and an event or that lacks its
+            matcher digest and the list of its hook digests, a variable name
+            that is not one, a server without a name, with whitespace in
+            it, or at a scope that is no CLI scope, or a dependency entry
+            that is not one entry of a content directory, or lacks its
+            command or its identity; a hook_helper mark that is not a
+            boolean, or that marks anything but a file.
+        """
         if not isinstance(record, dict):
-            continue
+            return None
         record_dict = cast(dict[str, Any], record)
-        name = str(record_dict.get('name') or '')
-        scopes = [str(s) for s in cast(list[object], record_dict.get('scopes') or []) if str(s) != 'profile']
-        if name and name not in new_servers and scopes:
-            servers.append((name, scopes))
+        if record_dict.get('kind') == LEFTOVER_DEPENDENCY_ENTRY:
+            return cls._dependency_entry_from_record(record_dict)
+        kind, path, digest = record_dict.get('kind'), record_dict.get('path'), record_dict.get('sha256')
+        if 'sha256' not in record_dict or not (digest is None or isinstance(digest, str)):
+            return None
+        if kind in LEFTOVER_SETTINGS_KINDS:
+            return cls._settings_from_record(str(kind), record_dict, digest)
+        if kind in (LEFTOVER_OS_ENV, LEFTOVER_MCP_SERVER):
+            return cls._machine_from_record(str(kind), record_dict, digest)
+        hook_helper = record_dict.get(HOOK_HELPER_RECORD_KEY, False)
+        if not isinstance(path, str) or not isinstance(hook_helper, bool) or (hook_helper and kind != LEFTOVER_FILE):
+            return None
+        if kind == LEFTOVER_FILE and _is_profile_relative(path):
+            return cls(kind, path, digest, hook_helper=hook_helper)
+        if kind == LEFTOVER_DESTINATION and os.path.isabs(path) and not _is_inside_config_home(Path(path), claude_dir):
+            return cls(kind, path, digest)
+        return None
 
-    # The machine-wide binary controls are never residue: the pin gate and
-    # the Step 16 sweep decide their removal, and a run that drops a pin
-    # while another installed profile still pins must leave them in place
-    os_env: list[str] = []
-    settings_keys: list[str] = []
-    if not isolated:
-        new_env = {key for key, value in (config.get('os-env-variables') or {}).items() if value is not None}
-        os_env = [
-            key for key in _strings('os_env_written')
-            if key not in new_env and not _is_machine_wide_control_record(key)
-        ]
-        new_keys = set(written_settings_keys(config.get('user-settings'), config.get('status-line'), config.get('hooks')))
-        settings_keys = [
-            key for key in _strings('settings_keys_written')
-            if key not in new_keys and not _is_machine_wide_control_record(key)
-        ]
+    @classmethod
+    def _settings_from_record(cls, kind: str, record: dict[str, Any], digest: str | None) -> 'LeftoverItem | None':
+        """Read a settings item from its record, or None for any other shape (see from_record())."""
+        keys = _string_list(record.get('path'))
+        if not keys:
+            return None
+        if kind != LEFTOVER_HOOK_GROUP:
+            return cls.setting(kind, keys, digest)
+        matcher, entries = record.get('matcher'), _string_list(record.get('entries'))
+        if len(keys) != 2 or keys[0] != 'hooks' or not isinstance(matcher, str) or entries is None:
+            return None
+        return cls.setting(kind, keys, digest, matcher=matcher, entries=entries)
 
-    new_downloads = [
+    @classmethod
+    def _machine_from_record(cls, kind: str, record: dict[str, Any], digest: str | None) -> 'LeftoverItem | None':
+        """Read a variable or a server registration from its record, or None for any other shape (see from_record())."""
+        name, scope = record.get('name'), record.get('scope')
+        if kind == LEFTOVER_OS_ENV:
+            return cls.os_env(name, digest) if isinstance(name, str) and ENV_VAR_NAME_PATTERN.fullmatch(name) else None
+        if not isinstance(name, str) or not name or any(char.isspace() for char in name) or scope not in MCP_CLI_SCOPES:
+            return None
+        return cls.mcp_server(name, str(scope), digest)
+
+    @classmethod
+    def _dependency_entry_from_record(cls, record: dict[str, Any]) -> 'LeftoverItem | None':
+        """Read a dependency entry from its record, or None for any other shape (see from_record())."""
+        path, command, identity = record.get('path'), record.get('command'), record.get('identity')
+        if not _is_dependency_entry_path(path) or not isinstance(command, str):
+            return None
+        if not isinstance(identity, str) or not identity:
+            return None
+        return cls.dependency_entry(str(path), command, identity)
+
+
+def _is_dependency_entry_path(path: object) -> bool:
+    """Report whether a recorded path names one top-level entry of a content directory.
+
+    Args:
+        path: A recorded path.
+
+    Returns:
+        True for '<content directory>/<name>' in both the POSIX and the
+        Windows reading, so the path never leaves the profile directory
+        and never reaches below the entry.
+    """
+    if not isinstance(path, str) or not _is_profile_relative(path):
+        return False
+    return all(
+        len(parts) == 2 and parts[0] in CONTENT_PROFILE_DIRS
+        for parts in (PurePosixPath(path).parts, PureWindowsPath(path).parts)
+    )
+
+
+class LeftoverEntry(NamedTuple):
+    """A leftover and what a re-run found at its path.
+
+    Attributes:
+        item: The leftover.
+        state: LEFTOVER_REMOVABLE (still exactly as written),
+            LEFTOVER_PARTIAL (a hook group changed since written that still
+            holds some of the hooks the setup wrote), LEFTOVER_HELD (a
+            destination another profile records, a hook helper kept while a
+            hook file beside it is wired, or a dependency entry whose
+            command failed), LEFTOVER_REFERENCED (a hook file a settings
+            file still wires), LEFTOVER_UNREADABLE, LEFTOVER_CHANGED (other
+            bytes or another value, or no longer a regular file),
+            LEFTOVER_GONE, or LEFTOVER_LINKED (reached through a directory
+            link, so it belongs to the link's target).
+        detail: Who holds it, why it cannot be read, or which link reaches
+            it; empty for the other states.
+        shown: What a removable list element or hook group of settings.json
+            holds now, for the summary; empty for every other item.
+    """
+
+    item: LeftoverItem
+    state: str
+    detail: str = ''
+    shown: str = ''
+
+    def display(self, profile_dir: Path) -> str:
+        """Name the leftover for a reader, with what a settings element or hook group holds now."""
+        return self.item.display(profile_dir, self.shown)
+
+
+@dataclass(frozen=True)
+class PlannedRecords:
+    """What a configuration installs, compared with an earlier run's records.
+
+    Attributes:
+        files: The profile-relative paths of the profile files it installs.
+        destinations: The absolute paths of its destinations outside
+            ~/.claude.
+        settings: The values, list elements and hook groups it writes into
+            the base settings.json.
+        settings_deltas: What Steps 14 and 18 merge into the base
+            settings.json, in order, so the file can be read as the run
+            leaves it before the run writes it; empty when only the
+            records are known.
+        settings_deleted: The key paths of the base settings.json members
+            those deltas declare null: the write deletes each of them with
+            every value, list element and hook group below it.
+        rebuilt_settings: The hooks and status line Step 18 builds into an
+            isolated profile's config.json, which it rebuilds each run, so
+            the hook files are checked against them before the run writes
+            the file; None for the base profile.
+        os_env: The names of the OS environment variables it declares, set
+            or deleted: Step 7 manages each of them.
+        mcp_servers: The names of the MCP servers it declares, at any scope:
+            Step 13 manages every CLI scope of each of them.
+        dependency_entries: The profile-relative paths of the content
+            directory entries its dependency commands installed. A
+            dependency entry that holds one of the files, or is one, counts
+            as installed too, and so does a profile file that lies inside
+            one of these entries, or is one: the command installed it.
+    """
+
+    files: frozenset[str] = frozenset()
+    destinations: frozenset[str] = frozenset()
+    settings: tuple[LeftoverItem, ...] = ()
+    settings_deltas: tuple[dict[str, Any], ...] = ()
+    settings_deleted: frozenset[tuple[str, ...]] = frozenset()
+    rebuilt_settings: dict[str, Any] | None = None
+    os_env: frozenset[str] = frozenset()
+    mcp_servers: frozenset[str] = frozenset()
+    dependency_entries: frozenset[str] = frozenset()
+    _keys: frozenset[tuple[str, str]] = field(init=False, repr=False, compare=False)
+    _installed_entries: frozenset[str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        keys = {LeftoverItem(LEFTOVER_FILE, path, None).key() for path in self.files}
+        keys.update(
+            (LEFTOVER_DEPENDENCY_ENTRY, _content_entry_key(path)) for path in [*self.files, *self.dependency_entries]
+        )
+        keys.update(LeftoverItem(LEFTOVER_DESTINATION, path, None).key() for path in self.destinations)
+        keys.update(item.key() for item in self.settings)
+        keys.update(LeftoverItem.os_env(name, None).key() for name in self.os_env)
+        keys.update(
+            LeftoverItem.mcp_server(name, scope, None).key() for name in self.mcp_servers for scope in MCP_CLI_SCOPES
+        )
+        object.__setattr__(self, '_keys', frozenset(keys))
+        object.__setattr__(
+            self, '_installed_entries', frozenset(_content_entry_key(path) for path in self.dependency_entries),
+        )
+
+    def writes(self, item: LeftoverItem) -> bool:
+        """Report whether the configuration installs the item again, by the item's identity.
+
+        Args:
+            item: A leftover.
+
+        Returns:
+            True for an item of the same identity; for a settings item at or
+            below a member the configuration declares null, which its own
+            write deletes; and for a profile file inside a dependency entry
+            the commands installed, or that is one: it was installed again
+            with the entry. A planned file never makes another file of its
+            entry installed.
+        """
+        if item.key() in self._keys:
+            return True
+        if item.is_setting():
+            return any(item.keys[:len(deleted)] == deleted for deleted in self.settings_deleted)
+        return item.kind == LEFTOVER_FILE and _content_entry_key(item.path) in self._installed_entries
+
+    def writes_group(self, event: str, group: object) -> bool:
+        """Report whether the configuration writes a hook group, as it sits in settings.json, under an event."""
+        return self.writes(LeftoverItem.setting(LEFTOVER_HOOK_GROUP, ('hooks', event), leftover_digest(group)))
+
+
+def planned_records(
+    config: dict[str, Any],
+    profile_dir: Path,
+    *,
+    claude_dir: Path,
+    reroot: ConfigHomeReroot | None = None,
+    base: bool = False,
+) -> PlannedRecords:
+    """Collect the files, destinations, base settings, OS environment variables and MCP servers a configuration installs.
+
+    Args:
+        config: The resolved configuration, taken before component
+            selection, so the files of a component deselected this run are
+            planned and stay rows of the removal plan instead of leftovers.
+        profile_dir: The profile directory the run installs into.
+        claude_dir: The base ~/.claude directory.
+        reroot: The isolated run's rerooter, as planned_profile_files()
+            takes it; None for a base run.
+        base: Whether the run installs the base profile, whose settings.json
+            Steps 14 and 18 write; an isolated profile's config.json is
+            rebuilt each run and leaves nothing behind, and only its hooks
+            and status line are planned, for the hook files.
+
+    Returns:
+        The planned records.
+    """
+    downloads = [
         cast(dict[str, Any], entry)
         for entry in cast(list[object], config.get('files-to-download') or [])
         if isinstance(entry, dict)
     ]
-    new_destinations = {
-        _normalize_config_dir_key(str(record['dest']))
-        for record in machine_wide_download_records(new_downloads, config_source, base_url, claude_dir)
-        if record['dest']
-    }
-    # A destination another installed profile records is that profile's
-    # file too, so a switch lists it as kept instead of removing it
-    recorded_elsewhere = _destinations_recorded_elsewhere(claude_dir.parent, profile_dir)
-    destinations: list[Path] = []
-    kept_destinations: list[tuple[Path, list[str]]] = []
-    for record in cast(list[object], manifest.get('machine_wide_destinations') or []):
-        if not isinstance(record, dict):
-            continue
-        record_dict = cast(dict[str, Any], record)
-        dest = record_dict.get('dest')
-        if not isinstance(dest, str) or _normalize_config_dir_key(dest) in new_destinations:
-            continue
-        path = Path(dest)
-        if not path.is_file():
-            continue
-        holders = recorded_elsewhere.get(_normalize_config_dir_key(dest))
-        if holders:
-            kept_destinations.append((path, holders))
-        elif _sha256_of_file(path) == record_dict.get('sha256'):
-            destinations.append(path)
-
-    # The daily update job of the previous configuration, when the new one
-    # declares no auto-update (a declared key re-registers the job instead)
-    scheduled_job: str | None = None
-    recorded_job = manifest.get('auto_update')
-    if isinstance(recorded_job, dict) and config.get(AUTO_UPDATE_SCHEDULE_KEY) is None:
-        job_name = cast(dict[str, Any], recorded_job).get('job')
-        scheduled_job = str(job_name) if job_name else None
-    return ProfileResidue(files, servers, os_env, settings_keys, destinations, kept_destinations, scheduled_job)
+    deltas = planned_settings_deltas(config, claude_dir) if base else ()
+    return PlannedRecords(
+        files=frozenset(planned_profile_files(config, profile_dir, reroot=reroot)),
+        destinations=frozenset(str(target) for _entry, target in _download_targets_outside(downloads, claude_dir)),
+        settings=tuple(_settings_items_of(_settings_records_of_deltas(*deltas))),
+        settings_deltas=deltas,
+        settings_deleted=frozenset(keys for delta in deltas for keys in _settings_delta_deletions(delta)),
+        rebuilt_settings=None if base else _planned_profile_settings(config, profile_dir / LEFTOVER_HOOKS_DIR),
+        os_env=_declared_os_env_names(config),
+        mcp_servers=_declared_mcp_server_names(config),
+    )
 
 
-def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude_dir: Path) -> None:
-    """Remove what a profile's previous configuration left behind.
+def _is_machine_wide_setting(keys: Sequence[str]) -> bool:
+    """Report whether a settings item is a machine-wide binary control in the env object.
 
     Args:
-        residue: The residue profile_residue() computed.
-        profile_dir: The profile directory.
-        claude_dir: The base ~/.claude directory, whose settings.json holds
-            a base profile's settings residue.
+        keys: The keys from the top of settings.json to the item.
+
+    Returns:
+        True for a MACHINE_WIDE_ENV_CONTROLS variable of the env object.
+        Those controls belong to the pin gate and the Step 16 sweep, so they
+        are never recorded as written and never become leftovers.
     """
-    for path in [*residue.files, *residue.destinations]:
+    return len(keys) == 2 and keys[0] == 'env' and keys[1] in MACHINE_WIDE_ENV_CONTROLS
+
+
+def _without_null_members(value: object) -> object:
+    """Return a written value as the merge leaves it: every null member, at every depth, deleted."""
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _without_null_members(member)
+        for key, member in cast(dict[str, Any], value).items() if member is not None
+    }
+
+
+def _settings_delta_items(delta: Mapping[str, Any]) -> list[LeftoverItem]:
+    """List the settings items a settings delta writes, one per value, list element and hook group.
+
+    Args:
+        delta: What a step merges into settings.json; a null member is a
+            deletion request and writes nothing.
+
+    Returns:
+        One item per non-null scalar and per empty object (a value), per
+        element of a list (a list element), per matcher group under
+        hooks.<Event> (a hook group, with its matcher and hook digests), and
+        one for the status line, an object recorded whole as one value
+        without its null members (SETTINGS_OBJECTS_WRITTEN_WHOLE); one item
+        per identity, the machine-wide binary controls left out.
+    """
+    items: dict[tuple[str, str], LeftoverItem] = {}
+
+    def _add(item: LeftoverItem) -> None:
+        if not _is_machine_wide_setting(item.keys):
+            items.setdefault(item.key(), item)
+
+    def _walk(value: object, keys: tuple[str, ...]) -> None:
+        if value is None:
+            return
+        if isinstance(value, dict) and len(keys) == 1 and keys[0] in SETTINGS_OBJECTS_WRITTEN_WHOLE:
+            _add(LeftoverItem.setting(LEFTOVER_SETTING, keys, leftover_digest(_without_null_members(value))))
+            return
+        if isinstance(value, dict):
+            members = cast(dict[str, Any], value)
+            if not members and keys:
+                _add(LeftoverItem.setting(LEFTOVER_SETTING, keys, leftover_digest(members)))
+            for key, member in members.items():
+                _walk(member, (*keys, str(key)))
+        elif isinstance(value, list):
+            for element in cast(list[object], value):
+                if len(keys) == 2 and keys[0] == 'hooks' and isinstance(element, dict):
+                    group = cast(dict[str, Any], element)
+                    hooks = group.get('hooks')
+                    _add(LeftoverItem.setting(
+                        LEFTOVER_HOOK_GROUP, keys, leftover_digest(group),
+                        matcher=leftover_digest(group.get('matcher', '')),
+                        entries=[leftover_digest(hook) for hook in cast(list[object], hooks)]
+                        if isinstance(hooks, list) else [],
+                    ))
+                else:
+                    _add(LeftoverItem.setting(LEFTOVER_SETTING_ELEMENT, keys, leftover_digest(element)))
+        elif keys:
+            _add(LeftoverItem.setting(LEFTOVER_SETTING, keys, leftover_digest(value)))
+
+    _walk(dict(delta), ())
+    return list(items.values())
+
+
+def _settings_delta_deletions(delta: Mapping[str, Any]) -> list[tuple[str, ...]]:
+    """List the key paths of the members a settings delta declares null.
+
+    Args:
+        delta: What a step merges into settings.json, whose null members
+            the merge deletes from the file (a null inside a list is data).
+
+    Returns:
+        The keys from the top of settings.json to each null member.
+    """
+    deletions: list[tuple[str, ...]] = []
+
+    def _walk(members: Mapping[str, Any], keys: tuple[str, ...]) -> None:
+        for key, member in members.items():
+            if member is None:
+                deletions.append((*keys, str(key)))
+            elif isinstance(member, dict):
+                _walk(cast(dict[str, Any], member), (*keys, str(key)))
+
+    _walk(delta, ())
+    return deletions
+
+
+def settings_write_records(delta: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Record what a settings delta writes into settings.json, as digests only.
+
+    Args:
+        delta: What a step merges into settings.json.
+
+    Returns:
+        One record per value, list element and hook group (see
+        _settings_delta_items()).
+    """
+    return [item.to_record() for item in _settings_delta_items(delta)]
+
+
+def written_settings_records(
+    user_settings: Mapping[str, Any] | None,
+    profile_delta: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Record what Steps 14 and 18 of a base run write into settings.json.
+
+    Args:
+        user_settings: The user-settings section Step 14 writes, or None
+            when Step 14 writes nothing; its command keys are expanded as
+            Step 14 expands them, so a record holds what lands in the file.
+        profile_delta: The status line and hooks delta Step 18 writes.
+
+    Returns:
+        The records, one per identity.
+    """
+    return _settings_records_of_deltas(
+        _expand_tilde_keys_in_settings(dict(user_settings)) if user_settings else {}, profile_delta,
+    )
+
+
+def _settings_records_of_deltas(*deltas: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Record what settings deltas merged in order write, one record per identity."""
+    items: dict[tuple[str, str], LeftoverItem] = {}
+    for delta in deltas:
+        for item in _settings_delta_items(delta):
+            items.setdefault(item.key(), item)
+    return [item.to_record() for item in items.values()]
+
+
+def planned_settings_deltas(config: dict[str, Any], claude_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build what Steps 14 and 18 of a base run of a configuration merge into settings.json, printing nothing.
+
+    Args:
+        config: The configuration.
+        claude_dir: The base ~/.claude directory, whose hooks/ the hook
+            commands name.
+
+    Returns:
+        The user-settings section as Step 14 merges it, with the update
+        controls a pinned run injects and its command keys expanded as
+        Step 14 expands them, and the status line and hooks delta Step 18
+        builds.
+    """
+    user_settings = config.get('user-settings')
+    section = deepcopy(cast(dict[str, Any], user_settings)) if isinstance(user_settings, dict) else {}
+    if normalized_claude_code_version(config.get('claude-code-version')) is not None:
+        section = _inject_auto_update_controls(None, section, None, [], [])[1] or {}
+        section = _inject_ide_extension_controls(None, section, None, [], [])[1] or {}
+    return _expand_tilde_keys_in_settings(section), _planned_profile_settings(config, claude_dir / 'hooks')
+
+
+def _planned_profile_settings(config: dict[str, Any], hooks_dir: Path) -> dict[str, Any]:
+    """Build the status line and hooks Step 18 writes for a configuration, printing nothing.
+
+    Args:
+        config: The configuration.
+        hooks_dir: The profile's hooks/ directory, which the hook commands
+            name.
+
+    Returns:
+        The delta _build_profile_settings() returns.
+    """
+    profile_config = {
+        camel_key: config[yaml_key] for yaml_key, camel_key in _YAML_TO_CAMEL_PROFILE_KEYS.items() if yaml_key in config
+    }
+    return _profile_settings_delta(profile_config, hooks_dir).settings
+
+
+def planned_settings_records(config: dict[str, Any], claude_dir: Path) -> list[dict[str, Any]]:
+    """Record what a base run of a configuration would write into settings.json, printing nothing.
+
+    Args:
+        config: The configuration.
+        claude_dir: The base ~/.claude directory, whose hooks/ the hook
+            commands name.
+
+    Returns:
+        The records written_settings_records() would return for the run.
+    """
+    return _settings_records_of_deltas(*planned_settings_deltas(config, claude_dir))
+
+
+def _settings_items_of(records: Iterable[object]) -> list[LeftoverItem]:
+    """Read the settings items of a record list, leaving out every other shape and the machine-wide controls."""
+    items = (LeftoverItem.from_record(record, claude_dir=Path()) for record in records)
+    return [
+        item for item in items
+        if item is not None and item.is_setting() and not _is_machine_wide_setting(item.keys)
+    ]
+
+
+def _read_settings_object(settings_file: Path) -> dict[str, Any] | None:
+    """Read a settings file a leftover is checked against.
+
+    Args:
+        settings_file: The file.
+
+    Returns:
+        Its JSON object, an empty one for a blank file, or None when the
+        file does not exist.
+
+    Raises:
+        LeftoverReadError: When the file cannot be read or holds no JSON
+            object.
+    """
+    try:
+        text = settings_file.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise LeftoverReadError(f'{settings_file} cannot be read: {e}') from e
+    if not text.strip():
+        return {}
+    try:
+        content = json.loads(text)
+    except ValueError as e:
+        raise LeftoverReadError(f'{settings_file} cannot be read: {e}') from e
+    if not isinstance(content, dict):
+        raise LeftoverReadError(f'{settings_file} is not a JSON object')
+    return cast(dict[str, Any], content)
+
+
+def _value_at(content: Mapping[str, Any], keys: Sequence[str]) -> tuple[bool, object]:
+    """Find the value at a key path: (True, value), or (False, None) when a key is absent or a parent is no object."""
+    node: object = content
+    for key in keys:
+        if not isinstance(node, dict) or key not in node:
+            return False, None
+        node = cast(dict[str, Any], node)[key]
+    return True, node
+
+
+def _hooks_count(count: int) -> str:
+    return f'{count} hook' if count == 1 else f'{count} hooks'
+
+
+def _shown_element(element: object) -> str:
+    """Describe a list element for the summary: its JSON, cut to a readable length."""
+    rendered = json.dumps(element, ensure_ascii=False)
+    return rendered if len(rendered) <= 80 else f'{rendered[:77]}...'
+
+
+def _partial_groups(
+    item: LeftoverItem,
+    groups: list[object],
+    written: PlannedRecords,
+) -> list[dict[str, Any]]:
+    """List the groups of an event a changed hook group's recorded hooks are looked for in.
+
+    Args:
+        item: The hook group leftover.
+        groups: The event's groups as settings.json holds them.
+        written: What this run writes; a group this run writes is never
+            touched, whatever hooks it shares with the leftover.
+
+    Returns:
+        The groups with the leftover's matcher that this run does not write.
+    """
+    event = item.keys[1]
+    return [
+        cast(dict[str, Any], group) for group in groups
+        if isinstance(group, dict)
+        and leftover_digest(cast(dict[str, Any], group).get('matcher', '')) == item.matcher
+        and not written.writes_group(event, group)
+    ]
+
+
+def _recorded_hooks_in(item: LeftoverItem, group: dict[str, Any]) -> list[object]:
+    """List the hooks of a group that the setup wrote as part of a recorded hook group."""
+    hooks = group.get('hooks')
+    recorded = set(item.entries)
+    return [hook for hook in cast(list[object], hooks) if leftover_digest(hook) in recorded] if isinstance(
+        hooks, list,
+    ) else []
+
+
+def settings_item_state(
+    item: LeftoverItem,
+    content: Mapping[str, Any] | None,
+    *,
+    written: PlannedRecords,
+) -> LeftoverEntry:
+    """Find what sits at a settings leftover's place in settings.json now.
+
+    Args:
+        item: The settings leftover.
+        content: The settings.json object, or None when the file is absent.
+        written: What this run writes, whose hook groups are never matched
+            in part.
+
+    Returns:
+        A value is removable while it equals what the setup wrote, changed
+        while it holds another value, gone when absent or reached through
+        something that is not an object. A list element is removable while
+        the list holds it, gone otherwise. A hook group is removable while
+        the event holds it whole; partial while a group with its matcher
+        that this run does not write holds some of its hooks; gone
+        otherwise.
+    """
+    if content is None:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    found, value = _value_at(content, item.keys)
+    if item.kind == LEFTOVER_SETTING:
+        if not found:
+            return LeftoverEntry(item, LEFTOVER_GONE)
+        return LeftoverEntry(item, LEFTOVER_REMOVABLE if leftover_digest(value) == item.sha256 else LEFTOVER_CHANGED)
+    elements = cast(list[object], value) if found and isinstance(value, list) else []
+    if item.kind == LEFTOVER_SETTING_ELEMENT:
+        matches = [element for element in elements if leftover_digest(element) == item.sha256]
+        if not matches:
+            return LeftoverEntry(item, LEFTOVER_GONE)
+        return LeftoverEntry(item, LEFTOVER_REMOVABLE, shown=_shown_element(matches[0]))
+    whole = next((group for group in elements if leftover_digest(group) == item.sha256), None)
+    if isinstance(whole, dict):
+        group = cast(dict[str, Any], whole)
+        hooks = group.get('hooks')
+        count = len(cast(list[object], hooks)) if isinstance(hooks, list) else 0
+        return LeftoverEntry(
+            item, LEFTOVER_REMOVABLE,
+            shown=f'matcher {json.dumps(group.get("matcher", ""), ensure_ascii=False)} ({_hooks_count(count)})',
+        )
+    partial = [(group, _recorded_hooks_in(item, group)) for group in _partial_groups(item, elements, written)]
+    found_hooks = sum(len(hooks) for _group, hooks in partial)
+    if not found_hooks:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    matcher = next(group for group, hooks in partial if hooks).get('matcher', '')
+    return LeftoverEntry(
+        item, LEFTOVER_PARTIAL,
+        shown=(
+            f'matcher {json.dumps(matcher, ensure_ascii=False)} '
+            f'({_hooks_count(found_hooks)} inside a group changed since written)'
+        ),
+    )
+
+
+def _prune_emptied(content: dict[str, Any], keys: Sequence[str]) -> None:
+    """Remove each container along a key path that a removal emptied, deepest first.
+
+    Every container on the path held what was removed, so one that is empty
+    now was emptied by the removal; containers off the path are untouched.
+    """
+    for depth in range(len(keys), 0, -1):
+        found, value = _value_at(content, keys[:depth])
+        if not found or value not in ({}, []):
+            return
+        _found, parent = _value_at(content, keys[:depth - 1])
+        cast(dict[str, Any], parent).pop(keys[depth - 1])
+
+
+def _apply_settings_removal(content: dict[str, Any], entry: LeftoverEntry, written: PlannedRecords) -> None:
+    """Remove one settings leftover, found removable or partial an instant before, from a settings object.
+
+    A value leaves its object; a list element leaves its list, every copy
+    of it; a hook group leaves its event whole, every copy of it, or, in
+    part, its recorded hooks leave the groups with its matcher this run does
+    not write. Each container the removal empties is removed too.
+
+    Args:
+        content: The settings object, changed in place.
+        entry: The leftover with its state.
+        written: What this run writes.
+    """
+    item = entry.item
+    _found, value = _value_at(content, item.keys)
+    if item.kind == LEFTOVER_SETTING:
+        _found, parent = _value_at(content, item.keys[:-1])
+        cast(dict[str, Any], parent).pop(item.keys[-1])
+        _prune_emptied(content, item.keys[:-1])
+        return
+    elements = cast(list[object], value)
+    if item.kind == LEFTOVER_SETTING_ELEMENT or entry.state == LEFTOVER_REMOVABLE:
+        elements[:] = [element for element in elements if leftover_digest(element) != item.sha256]
+    else:
+        for group in _partial_groups(item, list(elements), written):
+            recorded = {id(hook) for hook in _recorded_hooks_in(item, group)}
+            if not recorded:
+                continue
+            hooks = cast(list[object], group['hooks'])
+            hooks[:] = [hook for hook in hooks if id(hook) not in recorded]
+            if not hooks:
+                elements[:] = [element for element in elements if element is not group]
+    _prune_emptied(content, item.keys)
+
+
+def remove_settings_leftovers(
+    settings_path: Path,
+    entries: Sequence[LeftoverEntry],
+    *,
+    written: PlannedRecords,
+) -> list['LeftoverOutcome']:
+    """Remove settings leftovers from a settings file with one read and one atomic write.
+
+    Each leftover is looked at again in the content as read, after the
+    removals before it, and removed only while it still holds what the
+    setup wrote; never through _write_merged_json(), whose list union could
+    never remove anything. The write replaces the file the path resolves
+    to, so a settings.json that is a symlink, such as one a dotfiles
+    manager links into ~/.claude, keeps its link and its target is edited
+    where it lives, as every other settings write edits it.
+
+    Args:
+        settings_path: The base settings.json.
+        entries: The leftovers to remove.
+        written: What this run writes, whose hook groups are never touched.
+
+    Returns:
+        One outcome per entry, in order: removed; dropped as changed or
+        gone; kept when the file cannot be read; failed, with the reason,
+        when the file cannot be written.
+    """
+    try:
+        content = _read_settings_object(settings_path)
+    except LeftoverReadError as e:
+        return [
+            LeftoverOutcome(LeftoverEntry(entry.item, LEFTOVER_UNREADABLE, str(e)), LEFTOVER_KEPT, str(e))
+            for entry in entries
+        ]
+    outcomes: list[LeftoverOutcome] = []
+    for entry in entries:
+        fresh = settings_item_state(entry.item, content, written=written)
+        if content is None or fresh.state not in _REMOVABLE_LEFTOVER_STATES:
+            outcomes.append(LeftoverOutcome(fresh, LEFTOVER_DROPPED, _DROPPED_LEFTOVER_REASONS[fresh.state]))
+            continue
+        _apply_settings_removal(content, fresh, written)
+        outcomes.append(LeftoverOutcome(fresh, LEFTOVER_REMOVED))
+    removed = [outcome for outcome in outcomes if outcome.result == LEFTOVER_REMOVED]
+    if not removed:
+        return outcomes
+    rendered = json.dumps(content, indent=2, ensure_ascii=False) + '\n'
+    try:
+        _write_file_atomic(
+            Path(os.path.realpath(settings_path)),
+            lambda temporary: temporary.write_text(rendered, encoding='utf-8'),
+        )
+    except OSError as e:
+        reason = e.strerror or str(e)
+        for outcome in removed:
+            warning(f'Cannot remove {outcome.entry.display(settings_path.parent)}: {reason}')
+        return [
+            LeftoverOutcome(outcome.entry, LEFTOVER_FAILED, reason) if outcome.result == LEFTOVER_REMOVED else outcome
+            for outcome in outcomes
+        ]
+    for outcome in removed:
+        success(f'Removed leftover {outcome.entry.display(settings_path.parent)}')
+    return outcomes
+
+
+def _live_file_digest(path: Path) -> str | None:
+    """Read what sits at a leftover's path now.
+
+    Args:
+        path: The absolute path.
+
+    Returns:
+        The sha256 of the regular file at the path, an empty string when
+        something other than a regular file sits there, and None when
+        nothing does.
+
+    Raises:
+        LeftoverReadError: When the path cannot be examined or the file
+            cannot be read.
+    """
+    try:
+        os.lstat(path)
+        if not path.is_file():
+            return ''
+        return _hash_file(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise LeftoverReadError(e.strerror or str(e)) from e
+
+
+def _read_user_environment_value(name: str) -> str | None:
+    """Read a variable of the Windows user environment (HKCU\\Environment), where Step 7 sets it.
+
+    The registry's OSError reaches the caller when the user environment
+    cannot be read.
+
+    Args:
+        name: The variable name.
+
+    Returns:
+        The value as stored, or None when the variable is absent and on any
+        other platform, which keeps no user environment.
+    """
+    if sys.platform != 'win32':
+        return None
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
         try:
-            path.unlink()
-            success(f'Removed {path}')
+            value, _kind = winreg.QueryValueEx(key, name)
+        except FileNotFoundError:
+            return None
+    return str(value)
+
+
+def _read_shell_export_values(config_files: Sequence[Path], name: str) -> tuple[str, ...]:
+    """Read the values a variable holds in the toolbox block of shell configuration files.
+
+    add_export_to_file() writes one line per variable, in each file's own
+    syntax, inside the block between ENV_VAR_MARKER_START and
+    ENV_VAR_MARKER_END; a line outside the block is not the setup's.
+
+    Args:
+        config_files: The shell configuration files Step 7 writes.
+        name: The variable name.
+
+    Returns:
+        The distinct values the blocks hold, in file order: none when no
+        block sets the variable, one when every block that sets it agrees,
+        several when they disagree. A file that does not exist, or whose
+        block does not set the variable, does not count.
+
+    Raises:
+        LeftoverReadError: When a file exists and cannot be read as text.
+    """
+    values: list[str] = []
+    for config_file in config_files:
+        try:
+            content = config_file.read_text(encoding='utf-8')
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeDecodeError) as e:
+            raise LeftoverReadError(f'{config_file} cannot be read: {e}') from e
+        start = content.find(ENV_VAR_MARKER_START)
+        if start == -1:
+            continue
+        end = content.find(ENV_VAR_MARKER_END)
+        block = content[start:end + len(ENV_VAR_MARKER_END)] if end != -1 else content[start:]
+        prefix = _get_export_prefix(config_file, name)
+        for line in block.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                value = stripped[len(prefix):]
+                quoted = len(value) >= 2 and value.startswith('"') and value.endswith('"')
+                values.append(value[1:-1] if quoted else value)
+    return tuple(dict.fromkeys(values))
+
+
+def read_os_env_variable(name: str) -> tuple[str, ...]:
+    """Read the values an OS environment variable holds where Step 7 writes it.
+
+    Windows keeps one value in the user environment; Linux and macOS keep a
+    line in the toolbox block of every shell configuration file
+    (get_all_shell_config_files()).
+
+    Args:
+        name: The variable name.
+
+    Returns:
+        The distinct values found: none when the variable is absent, one when
+        it is set, several when shell files disagree.
+
+    Raises:
+        LeftoverReadError: When the user environment or a shell file cannot
+            be read.
+    """
+    if sys.platform == 'win32':
+        try:
+            value = _read_user_environment_value(name)
         except OSError as e:
-            warning(f'Cannot remove {path}: {e}')
-    skills_dir = profile_dir / 'skills'
-    for path in residue.files:
+            raise LeftoverReadError(f'the user environment cannot be read: {e.strerror or e}') from e
+        return () if value is None else (value,)
+    return _read_shell_export_values(get_all_shell_config_files(), name)
+
+
+def _live_mcp_registrations(name: str, config_dir: Path | None) -> dict[str, Any]:
+    """Read the entry each CLI scope holds for an MCP server name.
+
+    Args:
+        name: The server name.
+        config_dir: The isolated profile directory whose .claude.json holds
+            the profile's user- and local-scope servers, or None for the
+            base profile.
+
+    Returns:
+        Scope to entry; a scope that does not hold the name maps to None.
+
+    Raises:
+        LeftoverReadError: When the .claude.json or the working directory's
+            .mcp.json cannot be read as a JSON object.
+    """
+    entries = _read_live_mcp_entries(name, config_dir)
+    if entries is None:
+        raise LeftoverReadError(
+            f'{_claude_global_config_file(config_dir)} or {Path.cwd() / ".mcp.json"} cannot be read as a JSON object',
+        )
+    return entries
+
+
+@dataclass(frozen=True)
+class LiveLeftoverState:
+    """The readers that tell what an earlier run's records find on disk now.
+
+    Attributes:
+        file_digest: Reads the path of a leftover as _live_file_digest()
+            does.
+        under_link: Reports whether a profile-relative path is reached
+            through a directory link.
+        destination_holders: Names the other installed profiles whose
+            manifests record a destination.
+        hook_references: Says where a settings file a session reads still
+            wires a profile-relative file under hooks/, or None when none
+            does (see _hook_file_references()); a settings file the view
+            given with it holds is read from the view.
+        hook_files_wired: Names the first file on disk under the profile's
+            hooks/ -- not among the profile-relative paths the run installs
+            -- that a settings file a session reads still wires, or None
+            (see _first_wired_hook_file()).
+        settings: Reads the base settings.json a settings leftover is
+            checked against, as _read_settings_object() does.
+        settings_after: The settings files as a run with --remove-leftovers
+            leaves them before Step 23 looks at the hook files: the base
+            settings.json with what Steps 14 and 18 merge in and the
+            settings leftovers that Step 23 removes gone, or the config.json
+            Step 18 rebuilds for an isolated profile, so the summary of every
+            run reads the wiring a flagged Step 23 reads.
+        os_env: Reads the values an OS environment variable holds, as
+            read_os_env_variable() does.
+        mcp: Reads the entry each CLI scope holds for an MCP server name,
+            as _live_mcp_registrations() does.
+        identity: Reads the identity of a dependency entry, as
+            entry_identity() does.
+    """
+
+    file_digest: Callable[[Path], str | None]
+    under_link: Callable[[str], bool]
+    destination_holders: Callable[[str], list[str]]
+    hook_references: Callable[[str, Mapping[Path, dict[str, Any]]], str | None] = field(
+        default=lambda _relative, _view: None,
+    )
+    hook_files_wired: Callable[[Iterable[str], Mapping[Path, dict[str, Any]]], str | None] = field(
+        default=lambda _installed, _view: None,
+    )
+    settings: Callable[[Path], dict[str, Any] | None] = field(default=lambda _path: None)
+    settings_after: tuple[tuple[Path, dict[str, Any]], ...] = ()
+    os_env: Callable[[str], tuple[str, ...]] = field(default=lambda _name: ())
+    mcp: Callable[[str], Mapping[str, Any]] = field(default=lambda _name: {})
+    identity: Callable[[Path], str | None] = field(default=lambda _path: None)
+
+    def wiring(self, relative: str) -> str | None:
+        """Say where a hook file is still wired, reading the settings files through the view this state holds."""
+        return self.hook_references(relative, dict(self.settings_after))
+
+    def wired_hook_file(self, installed: Iterable[str]) -> str | None:
+        """Name a wired file of the hooks folder the run does not install, reading the settings through this view."""
+        return self.hook_files_wired(installed, dict(self.settings_after))
+
+    @classmethod
+    def for_profile(
+        cls,
+        profile_dir: Path,
+        home_dir: Path,
+        *,
+        settings_files: Sequence[Path] = (),
+        dependents: Sequence['InstalledProfile'] = (),
+        isolated: bool = False,
+    ) -> 'LiveLeftoverState':
+        """Read the live state of one profile from the file system, the installed manifests and the OS.
+
+        Args:
+            profile_dir: The profile directory.
+            home_dir: User home directory.
+            settings_files: The profile's own settings files a hook file is
+                checked against (see leftover_settings_files()).
+            dependents: The profiles that link content from this one; those
+                whose links hold hooks/ wire this profile's hook files too.
+            isolated: Whether the profile is isolated, whose MCP servers the
+                CLI keeps in the profile's own .claude.json.
+
+        Returns:
+            The readers; the holders of a destination, the wiring of a hook
+            file, a variable and a server are read as they are at each call.
+        """
+        def _holders(dest: str) -> list[str]:
+            return _destinations_recorded_elsewhere(home_dir, profile_dir).get(_normalize_config_dir_key(dest), [])
+
+        def _references(relative: str, view: Mapping[Path, dict[str, Any]]) -> str | None:
+            return _hook_file_references(
+                relative, profile_dir=profile_dir, home_dir=home_dir, settings_files=settings_files,
+                dependents=dependents, view=view,
+            )
+
+        def _wired(installed: Iterable[str], view: Mapping[Path, dict[str, Any]]) -> str | None:
+            return _first_wired_hook_file(
+                installed, profile_dir=profile_dir, home_dir=home_dir, settings_files=settings_files,
+                dependents=dependents, view=view,
+            )
+
+        return cls(
+            file_digest=_live_file_digest,
+            under_link=lambda relative: _under_directory_link(profile_dir, relative),
+            destination_holders=_holders,
+            hook_references=_references,
+            hook_files_wired=_wired,
+            settings=_read_settings_object,
+            os_env=read_os_env_variable,
+            mcp=lambda name: _live_mcp_registrations(name, profile_dir if isolated else None),
+            identity=entry_identity,
+        )
+
+
+def _stat_identity(status: os.stat_result) -> str:
+    """Digest the identity of a file system entry from its lstat result.
+
+    Args:
+        status: The entry's os.lstat() result.
+
+    Returns:
+        The digest of its device, its file ID and its birth time, or its
+        inode change time where the platform carries no birth time (Linux).
+        An entry deleted and created again under the same name gets a new
+        file ID while the old one still exists, and a new birth or change
+        time otherwise.
+    """
+    born = next(
+        (
+            value for value in (getattr(status, name, None) for name in ('st_birthtime_ns', 'st_birthtime', 'st_ctime_ns'))
+            if value is not None
+        ),
+        None,
+    )
+    return leftover_digest([status.st_dev, status.st_ino, born])
+
+
+def entry_identity(path: Path) -> str | None:
+    """Read the identity of a top-level entry of a content directory, without following a link.
+
+    Args:
+        path: The entry: a directory, a file, or a directory link (a
+            junction or symlink), which is read as itself.
+
+    Returns:
+        The identity _stat_identity() digests, or None when nothing is at
+        the path.
+
+    Raises:
+        LeftoverReadError: When the path cannot be examined.
+    """
+    try:
+        status = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise LeftoverReadError(e.strerror or str(e)) from e
+    return _stat_identity(status)
+
+
+def entry_fingerprint(path: Path) -> tuple[object, ...] | None:
+    """Fingerprint a top-level entry of a content directory, to tell whether one command touched it.
+
+    Args:
+        path: The entry.
+
+    Returns:
+        Its identity with, for a directory link, the target it names; for a
+        real directory, the name, file ID, modification time and size of
+        each direct child; for a file, its modification time and size. None
+        when nothing is at the path.
+
+    Raises:
+        LeftoverReadError: When the entry cannot be examined.
+    """
+    import stat as stat_module
+
+    try:
+        status = os.lstat(path)
+        identity = _stat_identity(status)
+        if _is_directory_link(path):
+            return identity, 'link', os.readlink(path)
+        if stat_module.S_ISDIR(status.st_mode):
+            children: list[tuple[str, int, int, int]] = []
+            with os.scandir(path) as listing:
+                for child in listing:
+                    child_status = child.stat(follow_symlinks=False)
+                    children.append((child.name, child.inode(), child_status.st_mtime_ns, child_status.st_size))
+            return identity, 'directory', tuple(sorted(children))
+        return identity, 'file', status.st_mtime_ns, status.st_size
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise LeftoverReadError(e.strerror or str(e)) from e
+
+
+class DependencyRun(NamedTuple):
+    """What one Step 6 dependency command did to the profile's content directories.
+
+    Attributes:
+        command: The command as the configuration spells it.
+        succeeded: Whether it exited with status 0.
+        created: The profile-relative paths of the top-level entries it
+            created, sorted.
+        touched: The paths of the entries that existed before it ran and
+            that it changed or replaced, sorted.
+    """
+
+    command: str
+    succeeded: bool
+    created: tuple[str, ...] = ()
+    touched: tuple[str, ...] = ()
+
+    def credited(self) -> tuple[str, ...]:
+        """Return the entries the command is credited with: the ones it created and the ones it touched."""
+        return (*self.created, *self.touched)
+
+
+class DependencyEntryObserver:
+    """Watch the top-level entries of a profile's content directories around each dependency command.
+
+    Attributes:
+        profile_dir: The profile directory.
+        names: The content directories it watches.
+        runs: What each command run so far did, in order.
+    """
+
+    def __init__(self, profile_dir: Path, names: Sequence[str]) -> None:
+        self.profile_dir = profile_dir
+        self.names = tuple(names)
+        self.runs: list[DependencyRun] = []
+
+    def _snapshot(self) -> dict[str, tuple[object, ...]]:
+        """Fingerprint every top-level entry of the watched directories, keyed by its profile-relative path."""
+        snapshot: dict[str, tuple[object, ...]] = {}
+        for name in self.names:
+            directory = self.profile_dir / name
+            try:
+                with os.scandir(directory) as listing:
+                    children = [child.name for child in listing]
+            except OSError:
+                continue
+            for child in children:
+                try:
+                    fingerprint = entry_fingerprint(directory / child)
+                except LeftoverReadError:
+                    continue
+                if fingerprint is not None:
+                    snapshot[f'{name}/{child}'] = fingerprint
+        return snapshot
+
+    def around(self, command: str, run: Callable[[], bool]) -> bool:
+        """Run one dependency command and record the entries it created and touched.
+
+        Args:
+            command: The command as the configuration spells it.
+            run: Runs the command and reports whether it succeeded.
+
+        Returns:
+            What run returned.
+        """
+        before = self._snapshot()
+        succeeded = run()
+        after = self._snapshot()
+        self.runs.append(DependencyRun(
+            command,
+            succeeded,
+            created=tuple(sorted(path for path in after if path not in before)),
+            touched=tuple(sorted(path for path in after if path in before and after[path] != before[path])),
+        ))
+        return succeeded
+
+
+def dependency_entry_observer(profile_dir: Path, linked_entries: frozenset[str]) -> DependencyEntryObserver:
+    """Build the observer of the Step 6 dependency commands for one profile.
+
+    Args:
+        profile_dir: The profile directory.
+        linked_entries: The entries this run's link plan made links.
+
+    Returns:
+        An observer of every content directory that is no link, in this
+        run's plan or on disk: what a command writes through a link belongs
+        to the link's target.
+    """
+    linked = {entry.casefold() for entry in linked_entries}
+    return DependencyEntryObserver(
+        profile_dir,
+        [
+            name for name in CONTENT_PROFILE_DIRS
+            if name.casefold() not in linked and not _is_directory_link(profile_dir / name)
+        ],
+    )
+
+
+def _dependency_entry_records(value: object) -> list[tuple[str, str, str]]:
+    """Read the dependency_entries records of a manifest.
+
+    Args:
+        value: The manifest's dependency_entries value.
+
+    Returns:
+        (command, path, identity) per entry, in record order, read only in
+        the current shape: a command string, a path naming one top-level
+        entry of a content directory, and a non-empty identity.
+    """
+    entries: list[tuple[str, str, str]] = []
+    for record in cast(list[object], value) if isinstance(value, list) else []:
+        if not isinstance(record, dict):
+            continue
+        command, listed = cast(dict[str, Any], record).get('command'), cast(dict[str, Any], record).get('entries')
+        if not isinstance(command, str) or not isinstance(listed, list):
+            continue
+        for entry in cast(list[object], listed):
+            item = LeftoverItem.from_record(
+                {**cast(dict[str, Any], entry), 'kind': LEFTOVER_DEPENDENCY_ENTRY, 'command': command}
+                if isinstance(entry, dict) else None,
+                claude_dir=Path(),
+            )
+            if item is not None and item.sha256 is not None:
+                entries.append((command, item.path, item.sha256))
+    return entries
+
+
+class DependencyAttribution(NamedTuple):
+    """The dependency entries of a run, as attribute_dependency_entries() credits them.
+
+    Attributes:
+        records: The manifest's dependency_entries records: one
+            {command, entries} record per command with entries, in run
+            order, each entry a {path, identity} record, sorted by path.
+        listed_now: The entries of earlier runs that no command installs
+            any more, still holding their recorded identity.
+        credited: The comparison keys (_file_key()) of the entries the
+            records hold.
+    """
+
+    records: list[dict[str, Any]]
+    listed_now: tuple[LeftoverItem, ...]
+    credited: frozenset[str]
+
+
+def attribute_dependency_entries(
+    previous: object,
+    runs: Sequence[DependencyRun],
+    *,
+    profile_dir: Path,
+    planned_files: Iterable[str],
+    linked_entries: frozenset[str],
+    identity: Callable[[Path], str | None] = entry_identity,
+) -> DependencyAttribution:
+    """Credit each dependency command of this run with its entries, and list the earlier entries none installs.
+
+    Every command that ran is credited with the entries it created or
+    touched; a later command wins an entry two of them touched. A command
+    that failed, or that touched no entry existing before it ran, keeps the
+    entries an earlier run recorded for it, by the command's text: it may
+    install only what is missing. A command that touched an existing entry
+    recreates what it installs, so its earlier entries it did not touch are
+    no longer its. An earlier entry no command credits, still holding its
+    recorded identity, is listed; one changed or gone is forgotten. An entry
+    under a linked entry, or holding a file the configuration installs, is
+    neither recorded nor listed.
+
+    Args:
+        previous: The previous manifest's dependency_entries value.
+        runs: What each command of this run did, in order.
+        profile_dir: The profile directory.
+        planned_files: The profile-relative paths of the files the
+            configuration installs.
+        linked_entries: The entries of the profile that are links.
+        identity: Reads an entry's identity now.
+
+    Returns:
+        The records, the entries listed now and the keys credited.
+    """
+    planned = PlannedRecords(files=frozenset(planned_files))
+    linked = {entry.casefold() for entry in linked_entries}
+
+    def _excluded(path: str) -> bool:
+        return _file_key(path).split('/')[0] in linked or planned.writes(LeftoverItem.dependency_entry(path, '', ''))
+
+    def _current(path: str) -> str | None:
+        try:
+            return identity(profile_dir.joinpath(*PurePosixPath(path).parts))
+        except LeftoverReadError:
+            return None
+
+    def _path_key(entry: dict[str, str]) -> str:
+        return _file_key(entry['path'])
+
+    owners: dict[str, tuple[str, str]] = {}
+    for run in runs:
+        for path in run.credited():
+            owners.pop(_file_key(path), None)
+            owners[_file_key(path)] = (run.command, path)
+    keeping = {
+        command for command in {run.command for run in runs}
+        if any(not run.succeeded for run in runs if run.command == command)
+        or not any(run.touched for run in runs if run.command == command)
+    }
+    previous_entries = _dependency_entry_records(previous)
+    kept: dict[str, tuple[str, str]] = {}
+    for command, path, _recorded in previous_entries:
+        if command in keeping and _file_key(path) not in owners:
+            kept.setdefault(_file_key(path), (command, path))
+
+    by_command: dict[str, list[dict[str, str]]] = {run.command: [] for run in runs}
+    credited: set[str] = set()
+    for key, (command, path) in [*kept.items(), *owners.items()]:
+        current = None if _excluded(path) else _current(path)
+        if current is not None:
+            by_command[command].append({'path': path, 'identity': current})
+            credited.add(key)
+    records: list[dict[str, Any]] = [
+        {'command': command, 'entries': sorted(entries, key=_path_key)}
+        for command, entries in by_command.items() if entries
+    ]
+
+    listed: dict[str, LeftoverItem] = {}
+    for command, path, recorded in previous_entries:
+        key = _file_key(path)
+        if key in owners or key in kept or key in listed or _excluded(path):
+            continue
+        if _current(path) == recorded:
+            listed[key] = LeftoverItem.dependency_entry(path, command, recorded)
+    return DependencyAttribution(
+        records=records,
+        listed_now=tuple(listed[key] for key in sorted(listed)),
+        credited=frozenset(credited),
+    )
+
+
+def leftover_settings_files(profile_dir: Path, *, isolated: bool, before_consent: bool) -> list[Path]:
+    """List the settings files of a profile whose hooks and status line can run its hook files.
+
+    Args:
+        profile_dir: The profile directory.
+        isolated: Whether the profile is isolated. A session of the base
+            profile reads settings.json and settings.local.json; a session
+            of an isolated profile reads its config.json and settings.json.
+        before_consent: Whether the run has not installed anything yet.
+            Step 18 rebuilds an isolated profile's config.json from the
+            configuration, so before consent the file on disk is what this
+            run replaces and is left off the list: the rebuilt one is read
+            from the view _settings_after_this_run() gives.
+
+    Returns:
+        The files, in the order a reader names them.
+    """
+    if not isolated:
+        return [profile_dir / 'settings.json', profile_dir / 'settings.local.json']
+    if before_consent:
+        return [profile_dir / 'settings.json']
+    return [profile_dir / 'config.json', profile_dir / 'settings.json']
+
+
+def _text_names_path(text: str, path: str, *, windows: bool, home: str) -> bool:
+    """Report whether a command string or argument names a path.
+
+    A path that opens with a home token (~, $HOME, ${HOME}, "$HOME",
+    $env:USERPROFILE, %USERPROFILE%, the spellings ConfigHomeReroot
+    recognizes) names the path below the home, as the shell that runs the
+    command resolves it, so a hook wired by hand as uv run
+    ~/.claude/hooks/a.py names the file as its absolute spelling does.
+
+    Args:
+        text: A hook command, one of its arguments, or a status line command.
+        path: The forward-slash spelling of an absolute path.
+        windows: Whether paths compare as Windows paths: without letter case
+            and with either separator. Elsewhere a path compares as
+            spelled, so a backslash spelling names no file there.
+        home: The forward-slash spelling of the home folder a home token
+            stands for.
+
+    Returns:
+        True when the path occurs in the text and the character after it
+        cannot continue a file name, so a.py never matches a.pyc.
+    """
+    text = _HOME_PATH_PREFIX_PATTERN.sub(lambda _token: home, text)
+    if windows:
+        text, path = text.replace('\\', '/').casefold(), path.casefold()
+    start = text.find(path)
+    while start != -1:
+        end = start + len(path)
+        if end == len(text) or not (text[end].isalnum() or text[end] in '._-'):
+            return True
+        start = text.find(path, start + 1)
+    return False
+
+
+def _wired_commands(settings: dict[str, Any]) -> list[tuple[str, str]]:
+    """List every command string a settings object runs, with where it is wired.
+
+    Args:
+        settings: A settings file's content.
+
+    Returns:
+        (where, text) pairs: 'hooks.<Event>' for each hook command and each
+        element of its args, 'statusLine' for the status line command.
+    """
+    wired: list[tuple[str, str]] = []
+    hooks = settings.get('hooks')
+    for event, groups in (cast(dict[str, Any], hooks).items() if isinstance(hooks, dict) else []):
+        for group in cast(list[object], groups) if isinstance(groups, list) else []:
+            entries = cast(dict[str, Any], group).get('hooks') if isinstance(group, dict) else None
+            for entry in cast(list[object], entries) if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                entry_dict = cast(dict[str, Any], entry)
+                args = entry_dict.get('args')
+                texts = [entry_dict.get('command'), *(cast(list[object], args) if isinstance(args, list) else [])]
+                wired.extend((f'hooks.{event}', text) for text in texts if isinstance(text, str))
+    status_line = settings.get('statusLine')
+    if isinstance(status_line, dict):
+        command = cast(dict[str, Any], status_line).get('command')
+        if isinstance(command, str):
+            wired.append(('statusLine', command))
+    return wired
+
+
+def _settings_file_wiring(
+    settings_file: Path,
+    path: str,
+    *,
+    home: str,
+    view: Mapping[Path, dict[str, Any]] | None = None,
+) -> str | None:
+    """Name where a settings file wires a path.
+
+    A file that exists and cannot be read or is not a JSON object leaves
+    unknown whether it wires the path, and _read_settings_object() raises
+    LeftoverReadError for it.
+
+    Args:
+        settings_file: The settings file.
+        path: The forward-slash spelling of the absolute path.
+        home: The forward-slash spelling of the home folder a home token in
+            a command stands for (see _text_names_path()).
+        view: Settings files to read from this mapping instead of the disk.
+
+    Returns:
+        'hooks.<Event>' or 'statusLine' for the first place that names the
+        path, or None when the file is absent or names it nowhere.
+    """
+    content = _settings_content(settings_file, view)
+    if content is None:
+        return None
+    windows = sys.platform == 'win32'
+    for where, text in _wired_commands(content):
+        if _text_names_path(text, path, windows=windows, home=home):
+            return where
+    return None
+
+
+def _settings_content(settings_file: Path, view: Mapping[Path, dict[str, Any]] | None) -> dict[str, Any] | None:
+    """Read a settings file from the view when it holds the file, from the disk otherwise (_read_settings_object())."""
+    return view[settings_file] if view and settings_file in view else _read_settings_object(settings_file)
+
+
+class _WiringSource(NamedTuple):
+    """A settings file whose hooks and status line can run a profile's hook files.
+
+    Attributes:
+        settings_file: The file.
+        directory: The profile directory its commands name the hook files
+            below: the profile's own, or that of a profile linking hooks/
+            from it.
+        dependent: The name of that linking profile, or None for one of the
+            profile's own files.
+    """
+
+    settings_file: Path
+    directory: Path
+    dependent: str | None
+
+
+def _hook_wiring_sources(
+    profile_dir: Path,
+    settings_files: Sequence[Path],
+    dependents: Sequence['InstalledProfile'],
+    view: Mapping[Path, dict[str, Any]] | None,
+) -> list[_WiringSource]:
+    """List the settings files a session of the profile, or of a profile linking its hooks/, reads.
+
+    Args:
+        profile_dir: The profile directory.
+        settings_files: The profile's own settings files.
+        dependents: The profiles that link content from this one; those
+            whose links hold hooks/ run this profile's hook files through
+            their own config.json and settings.json.
+        view: Settings files as the run leaves them; one the list does not
+            name, such as the config.json Step 18 rebuilds, is read too.
+
+    Returns:
+        The profile's own files first, then the linking profiles' files.
+    """
+    own = [*settings_files, *(file for file in (view or {}) if file not in settings_files)]
+    sources = [_WiringSource(settings_file, profile_dir, None) for settings_file in own]
+    for dependent in dependents:
+        link = manifest_link(dependent.manifest)
+        dirs = [str(entry).casefold() for entry in cast(list[object], link['dirs'])] if link else []
+        if LEFTOVER_HOOKS_DIR in dirs:
+            sources.extend(
+                _WiringSource(settings_file, dependent.directory, dependent.name)
+                for settings_file in (dependent.directory / 'config.json', dependent.directory / 'settings.json')
+            )
+    return sources
+
+
+def _hook_file_references(
+    relative: str,
+    *,
+    profile_dir: Path,
+    home_dir: Path,
+    settings_files: Sequence[Path],
+    dependents: Sequence['InstalledProfile'],
+    view: Mapping[Path, dict[str, Any]] | None = None,
+) -> str | None:
+    """Say where a hook file of a profile is still wired.
+
+    A session runs a hook file when a hook command, one of its args or the
+    status line command names its path, absolute or below a home token. The
+    profile's own settings files name it below the profile directory; a
+    profile that links hooks/ from this one names it below its own
+    directory, in its config.json and its settings.json, until its next run
+    rebuilds them. A settings file that cannot be read leaves the answer
+    unknown, and _settings_file_wiring() raises LeftoverReadError for it.
+
+    Args:
+        relative: The profile-relative path of the file.
+        profile_dir: The profile directory.
+        home_dir: User home directory, which a home token in a command
+            stands for.
+        settings_files: The profile's own settings files to read.
+        dependents: The profiles that link content from this one.
+        view: Own settings files to read from this mapping instead of the
+            disk.
+
+    Returns:
+        Where the file is wired, for the summary, or None when nothing
+        wires it or it does not lie under hooks/.
+    """
+    parts = PurePosixPath(relative).parts
+    if len(parts) < 2 or parts[0].casefold() != LEFTOVER_HOOKS_DIR:
+        return None
+    home = home_dir.as_posix()
+    for source in _hook_wiring_sources(profile_dir, settings_files, dependents, view):
+        where = _settings_file_wiring(
+            source.settings_file, source.directory.joinpath(*parts).as_posix(), home=home, view=view,
+        )
+        if where is None:
+            continue
+        if source.dependent is None:
+            return f'still wired in {source.settings_file} {where}'
+        return (
+            f'still wired in profile {source.dependent} ({source.settings_file} {where}) until that profile is '
+            f'refreshed; a later run with {REMOVE_LEFTOVERS_FLAG} removes it'
+        )
+    return None
+
+
+def _hook_folder_files(hooks_dir: Path) -> list[str]:
+    """List the files below a profile's hooks/ directory as profile-relative POSIX paths.
+
+    Args:
+        hooks_dir: The directory.
+
+    Returns:
+        The paths; none when the directory does not exist.
+
+    Raises:
+        LeftoverReadError: When the directory cannot be listed.
+    """
+    errors: list[OSError] = []
+    files: list[str] = []
+    for directory, _subdirectories, names in os.walk(hooks_dir, onerror=errors.append):
+        relative = Path(directory).relative_to(hooks_dir)
+        files.extend(PurePosixPath(LEFTOVER_HOOKS_DIR, *relative.parts, name).as_posix() for name in names)
+    failure = next((error for error in errors if not isinstance(error, FileNotFoundError)), None)
+    if failure is not None:
+        raise LeftoverReadError(f'{hooks_dir} cannot be listed: {failure.strerror or failure}') from failure
+    return files
+
+
+def _first_wired_hook_file(
+    installed: Iterable[str],
+    *,
+    profile_dir: Path,
+    home_dir: Path,
+    settings_files: Sequence[Path],
+    dependents: Sequence['InstalledProfile'],
+    view: Mapping[Path, dict[str, Any]] | None = None,
+) -> str | None:
+    """Name a file of a profile's hooks/ folder that the run does not install and a settings file still wires.
+
+    The files are those on disk under hooks/ that the run does not install:
+    a script edited by hand after the setup wrote it, a leftover script, a
+    file the setup never wrote. A file the run installs is left out,
+    because Steps 4 and 17 write it as the configuration ships it, over an
+    edit too; before component selection the run installs the files of the
+    deselected components as well, which Step 23 deletes before it looks at
+    the leftovers. Each settings file is read
+    once, and a file is wired when a hook command, one of its args or the
+    status line command names it, as _hook_file_references() reads them. A
+    folder or a settings file that cannot be read leaves the answer
+    unknown, and _hook_folder_files() or _read_settings_object() raises
+    LeftoverReadError for it.
+
+    Args:
+        installed: Profile-relative paths the run installs.
+        profile_dir: The profile directory.
+        home_dir: User home directory, which a home token stands for.
+        settings_files: The profile's own settings files to read.
+        dependents: The profiles that link content from this one.
+        view: Own settings files to read from this mapping instead of the
+            disk.
+
+    Returns:
+        The first such file in path order, as a profile-relative path, or
+        None when no settings file wires any.
+    """
+    skipped = {_file_key(path) for path in installed}
+    files = {
+        _file_key(relative): relative
+        for relative in _hook_folder_files(profile_dir / LEFTOVER_HOOKS_DIR)
+        if _file_key(relative) not in skipped
+    }
+    if not files:
+        return None
+    readers: list[tuple[Path, list[str]]] = []
+    for source in _hook_wiring_sources(profile_dir, settings_files, dependents, view):
+        content = _settings_content(source.settings_file, view)
+        if content is not None:
+            readers.append((source.directory, [text for _where, text in _wired_commands(content)]))
+    home, windows = home_dir.as_posix(), sys.platform == 'win32'
+    for key in sorted(files):
+        parts = PurePosixPath(files[key]).parts
+        for directory, texts in readers:
+            target = directory.joinpath(*parts).as_posix()
+            if any(_text_names_path(text, target, windows=windows, home=home) for text in texts):
+                return files[key]
+    return None
+
+
+def _removable_marker(*, remove: bool, dry_run: bool) -> str:
+    """Name what a run does with a leftover that still holds what the setup wrote."""
+    if not remove:
+        return 'leftover'
+    return 'would be removed in Step 23' if dry_run else 'remove'
+
+
+def _leftover_marker(entry: LeftoverEntry, *, remove: bool = False, dry_run: bool = False) -> str:
+    """Render the bracketed marker of a leftover row in the installation summary."""
+    markers = {
+        LEFTOVER_REMOVABLE: _removable_marker(remove=remove, dry_run=dry_run),
+        LEFTOVER_PARTIAL: _removable_marker(remove=remove, dry_run=dry_run),
+        LEFTOVER_HELD: f'kept: {entry.detail}',
+        LEFTOVER_REFERENCED: f'kept: {entry.detail}',
+        LEFTOVER_UNREADABLE: f'cannot check: {entry.detail}',
+        LEFTOVER_CHANGED: 'changed since written: left in place, no longer tracked',
+        LEFTOVER_GONE: 'already gone: no longer tracked',
+        LEFTOVER_LINKED: f'{entry.detail}: no longer tracked',
+        LEFTOVER_RECREATED: 'installed again by a dependency command: no longer tracked',
+    }
+    return markers[entry.state]
+
+
+def _leftover_note(entry: LeftoverEntry) -> str:
+    """Say why a leftover is not simply one the flag removes, empty for a plain leftover."""
+    notes = {
+        LEFTOVER_REMOVABLE: '',
+        LEFTOVER_PARTIAL: '',
+        LEFTOVER_HELD: f'kept: {entry.detail}',
+        LEFTOVER_REFERENCED: f'kept: {entry.detail}',
+        LEFTOVER_UNREADABLE: f'cannot check: {entry.detail}',
+        LEFTOVER_CHANGED: 'changed since written',
+        LEFTOVER_GONE: 'already gone',
+        LEFTOVER_LINKED: entry.detail,
+        LEFTOVER_RECREATED: 'installed again by a dependency command',
+    }
+    return notes[entry.state]
+
+
+def _held_for_failed_command(entry: LeftoverEntry, failed_commands: frozenset[str]) -> LeftoverEntry:
+    """Keep a removable dependency entry whose command failed in this run.
+
+    Args:
+        entry: The leftover with its state.
+        failed_commands: The dependency commands that failed in this run.
+
+    Returns:
+        The entry held with the reason, or unchanged.
+    """
+    if (
+        entry.item.kind == LEFTOVER_DEPENDENCY_ENTRY and entry.state in _REMOVABLE_LEFTOVER_STATES
+        and entry.item.command in failed_commands
+    ):
+        return LeftoverEntry(entry.item, LEFTOVER_HELD, LEFTOVER_COMMAND_FAILED)
+    return entry
+
+
+def _after_dependency_commands(
+    entry: LeftoverEntry,
+    *,
+    credited: frozenset[str],
+    failed_commands: frozenset[str],
+) -> LeftoverEntry:
+    """Fold what the Step 6 dependency commands did into one carried leftover.
+
+    Args:
+        entry: The leftover with the state found before consent.
+        credited: The comparison keys of the entries this run's commands are
+            credited with.
+        failed_commands: The dependency commands that failed in this run.
+
+    Returns:
+        A carried dependency entry a command installed again as recreated,
+        and so a carried profile file inside such an entry, or that is one;
+        a dependency entry whose command failed as held; every other entry
+        unchanged.
+    """
+    if entry.item.kind not in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY) or entry.state not in _CARRIED_LEFTOVER_STATES:
+        return entry
+    if _content_entry_key(entry.item.path) in credited:
+        return LeftoverEntry(entry.item, LEFTOVER_RECREATED)
+    return _held_for_failed_command(entry, failed_commands)
+
+
+def _leftover_completion_detail(entry: LeftoverEntry) -> str:
+    """Render the parenthesized note of a leftover in the completion summary, empty for a plain leftover."""
+    note = _leftover_note(entry)
+    return f' ({note})' if note else ''
+
+
+class LeftoverOutcome(NamedTuple):
+    """What Step 23 did with one leftover.
+
+    Attributes:
+        entry: The leftover as Step 23 found it.
+        result: LEFTOVER_REMOVED, LEFTOVER_FAILED (the removal raised; the
+            leftover stays recorded), LEFTOVER_KEPT (it stays recorded) or
+            LEFTOVER_DROPPED (no longer tracked).
+        detail: Why a removal failed, why a leftover is kept, or the reason
+            a dropped one is no longer tracked.
+    """
+
+    entry: LeftoverEntry
+    result: str
+    detail: str = ''
+
+
+class LeftoverRemoval(NamedTuple):
+    """The outcome of Step 23 for a profile's leftovers.
+
+    Attributes:
+        outcomes: One outcome per leftover Step 23 looked at.
+        skipped: Why Step 23 removed nothing, or None.
+    """
+
+    outcomes: tuple[LeftoverOutcome, ...] = ()
+    skipped: str | None = None
+
+    def failed(self) -> list[LeftoverOutcome]:
+        """Return the outcomes of the removals that failed."""
+        return [outcome for outcome in self.outcomes if outcome.result == LEFTOVER_FAILED]
+
+
+@dataclass(frozen=True)
+class LeftoverReport:
+    """The leftovers of a profile's earlier runs, as a re-run finds them.
+
+    Attributes:
+        profile_name: The profile's display name.
+        profile_dir: The profile directory.
+        entries: Every leftover with its state, profile files first, each
+            kind sorted by path.
+        untracked_note: Whether the manifest has no leftovers field, so the
+            run says once that tracking starts with it.
+        listed_now: The dependency entries Step 6 of this run found that no
+            command installs any more: recorded for the next run, which
+            removes them with --remove-leftovers, never removed by this one.
+    """
+
+    profile_name: str
+    profile_dir: Path
+    entries: tuple[LeftoverEntry, ...]
+    untracked_note: bool
+    listed_now: tuple[LeftoverEntry, ...] = ()
+
+    def has_content(self) -> bool:
+        """Report whether the summary has anything to show."""
+        return bool(self.entries) or self.untracked_note
+
+    def removable_destinations(self) -> list[str]:
+        """Return the destinations outside ~/.claude that still hold what the setup wrote."""
+        return [
+            entry.item.path for entry in self.entries
+            if entry.item.kind == LEFTOVER_DESTINATION and entry.state == LEFTOVER_REMOVABLE
+        ]
+
+    def removable_project_mcp_servers(self) -> list[str]:
+        """Return the project-scope MCP servers, registered in the working directory, still as registered."""
+        return [
+            entry.item.path for entry in self.entries
+            if entry.item.kind == LEFTOVER_MCP_SERVER and entry.item.scope == 'project'
+            and entry.state == LEFTOVER_REMOVABLE
+        ]
+
+    def refined(
+        self,
+        *,
+        linked_entries: frozenset[str],
+        link_source: str,
+        selected: PlannedRecords | None = None,
+    ) -> 'LeftoverReport':
+        """Mark the files and dependency entries under the entries this run links, and leave out its hook groups.
+
+        From Step 3 on a path under a linked entry is reached through the
+        link, so the file there belongs to the source profile: the leftover
+        is reported once and dropped, never touched. The report was
+        computed from the configuration before component selection, whose
+        hook groups differ from the selected ones when a selection splits a
+        matcher group; a group the selected configuration writes is no
+        leftover. The hold on the hook helpers stands as computed: the files
+        the configuration installs before component selection are those of
+        the selected components, which Step 17 writes as the configuration
+        ships them, and those of the deselected components, which Step 23
+        deletes before it looks at the leftovers, so neither holds a helper.
+
+        Args:
+            linked_entries: The entries this run's link plan makes links.
+            link_source: The display name of the profile they link from.
+            selected: What the component-selected configuration installs,
+                or None when it installs what the report was computed from.
+
+        Returns:
+            The refined report.
+        """
+        linked = {entry.casefold() for entry in linked_entries}
+        entries = [
+            entry for entry in self.entries
+            if selected is None or entry.item.kind != LEFTOVER_HOOK_GROUP or not selected.writes(entry.item)
+        ]
+        entries = [
+            LeftoverEntry(entry.item, LEFTOVER_LINKED, f'now linked from profile {link_source}')
+            if entry.item.kind in (LEFTOVER_FILE, LEFTOVER_DEPENDENCY_ENTRY)
+            and _file_key(entry.item.path).split('/')[0] in linked
+            else entry
+            for entry in entries
+        ]
+        return replace(self, entries=tuple(entries))
+
+    def after_dependency_commands(
+        self,
+        *,
+        credited: frozenset[str],
+        failed_commands: frozenset[str],
+        listed_now: Sequence[LeftoverItem],
+    ) -> 'LeftoverReport':
+        """Fold in what the Step 6 dependency commands of this run did.
+
+        A dependency entry an earlier run listed that a command of this run
+        installed again is no longer a leftover, and neither is a profile
+        file an earlier run wrote inside such an entry, or at its path: the
+        command owns it now. A dependency entry whose command failed stays,
+        because the command may not have finished installing it again. The
+        entries no command installs any more are listed now: recorded for
+        the next run and never removed by this one.
+
+        Args:
+            credited: The comparison keys of the entries this run's
+                commands are credited with (DependencyAttribution.credited).
+            failed_commands: The commands that failed.
+            listed_now: The entries listed now.
+
+        Returns:
+            The report with those states and the entries listed now.
+        """
+        known = {entry.item.key() for entry in self.entries}
+        return replace(
+            self,
+            entries=tuple(
+                _after_dependency_commands(entry, credited=credited, failed_commands=failed_commands)
+                for entry in self.entries
+            ),
+            listed_now=tuple(LeftoverEntry(item, LEFTOVER_REMOVABLE) for item in listed_now if item.key() not in known),
+        )
+
+    def listed_now_heading(self) -> str:
+        """Name the dependency entries Step 6 listed and the later run that removes them."""
+        return (
+            f'Dependency entries listed now ({len(self.listed_now)}; {REMOVE_LEFTOVERS_FLAG} removes them on a '
+            'later run):'
+        )
+
+    def listed_now_lines(self) -> list[str]:
+        """Render what Step 6 prints about the dependency entries it listed: the heading and one line each."""
+        if not self.listed_now:
+            return []
+        return [self.listed_now_heading(), *(f'  {entry.display(self.profile_dir)}' for entry in self.listed_now)]
+
+    def carried(self) -> list[LeftoverItem]:
+        """Return the leftovers the manifest keeps recorded for the next run."""
+        return [entry.item for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES]
+
+    def dropped(self) -> list[LeftoverEntry]:
+        """Return the leftovers reported once and dropped from the record."""
+        return [entry for entry in self.entries if entry.state not in _CARRIED_LEFTOVER_STATES]
+
+    def rows(self, *, remove: bool = False, dry_run: bool = False) -> list[str]:
+        """Render one row per leftover, marked with what the run does with it.
+
+        Args:
+            remove: Whether Step 23 removes the leftovers: the run was given
+                --remove-leftovers, or an accepted configuration switch
+                removes them.
+            dry_run: Whether the run is a dry run, which removes nothing.
+
+        Returns:
+            The rows.
+        """
+        return [
+            f'[{_leftover_marker(entry, remove=remove, dry_run=dry_run)}] {entry.display(self.profile_dir)}'
+            for entry in self.entries
+        ]
+
+    def notes(self, *, remove: bool = False, dry_run: bool = False, scheduled: bool = False) -> list[str]:
+        """Render the notes below the rows: what stays, what Step 23 removes or how to have it removed.
+
+        Args:
+            remove: Whether Step 23 removes the leftovers (see rows()).
+            dry_run: Whether the run is a dry run, which removes nothing.
+            scheduled: Whether the run is a scheduled run, which only lists
+                leftovers: the note names the manual run that removes them.
+
+        Returns:
+            The notes, then the one-time note of a manifest that recorded no
+            leftovers.
+        """
+        rendered: list[str] = []
+        carried = [entry for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES]
+        removable = [entry for entry in self.entries if entry.state in _REMOVABLE_LEFTOVER_STATES]
+        if remove and removable:
+            others = '; the others stay in place.' if len(carried) > len(removable) else '.'
+            rendered.append(
+                f'Step 23 removes each item marked [{_removable_marker(remove=True, dry_run=dry_run)}] only while '
+                f'it still holds what the setup wrote{others}',
+            )
+        elif carried:
+            rendered.append(LEFTOVERS_FOOTER)
+            if removable and scheduled:
+                rendered.append(scheduled_leftovers_note(self.profile_name))
+            elif removable:
+                rendered.append(LEFTOVERS_FLAG_FOOTER)
+        if self.untracked_note:
+            rendered.append(
+                f'Profile "{self.profile_name}" was installed by a release that recorded no leftovers; '
+                'they are tracked from this run on.',
+            )
+        return rendered
+
+    def lines(self, *, remove: bool = False, dry_run: bool = False, scheduled: bool = False) -> list[str]:
+        """Render the installation summary's leftovers block: the rows, then the notes.
+
+        Args:
+            remove: Whether Step 23 removes the leftovers (see rows()).
+            dry_run: Whether the run is a dry run, which removes nothing.
+            scheduled: Whether the run is a scheduled run (see notes()).
+
+        Returns:
+            The block's lines.
+        """
+        return [
+            *self.rows(remove=remove, dry_run=dry_run),
+            *self.notes(remove=remove, dry_run=dry_run, scheduled=scheduled),
+        ]
+
+    def completion_sections(self, removal: 'LeftoverRemoval | None' = None) -> list[tuple[str, list[str]]]:
+        """Render the completion summary's leftovers headlines, each with its items.
+
+        Args:
+            removal: What Step 23 did with the leftovers, or None when the
+                run removed nothing (no --remove-leftovers and no accepted
+                configuration switch).
+
+        Returns:
+            (headline, items) pairs: what Step 23 removed, what stays in
+            place with why, and what is no longer tracked.
+        """
+        def _row(entry: LeftoverEntry, detail: str | None = None) -> str:
+            suffix = _leftover_completion_detail(entry) if detail is None else f' ({detail})'
+            return f'{entry.display(self.profile_dir)}{suffix}'
+
+        outcomes = removal.outcomes if removal is not None else ()
+        looked_at = {outcome.entry.item.key() for outcome in outcomes}
+        dropped = [_row(entry) for entry in self.dropped() if entry.item.key() not in looked_at]
+        sections: list[tuple[str, list[str]]] = []
+        if outcomes:
+            removed = [o.entry.display(self.profile_dir) for o in outcomes if o.result == LEFTOVER_REMOVED]
+            left = [
+                _row(o.entry, f'could not be removed: {o.detail}') if o.result == LEFTOVER_FAILED else _row(o.entry)
+                for o in outcomes if o.result in (LEFTOVER_KEPT, LEFTOVER_FAILED)
+            ]
+            removable_left = any(
+                o.result == LEFTOVER_KEPT and o.entry.state in _REMOVABLE_LEFTOVER_STATES for o in outcomes
+            )
+            dropped.extend(
+                _row(o.entry, 'written again by this run') if o.detail == LEFTOVER_WRITTEN_AGAIN else _row(o.entry)
+                for o in outcomes if o.result == LEFTOVER_DROPPED
+            )
+            if removed:
+                sections.append((f'Leftovers removed ({len(removed)}):', removed))
+        else:
+            carried = [entry for entry in self.entries if entry.state in _CARRIED_LEFTOVER_STATES]
+            left = [_row(entry) for entry in carried]
+            removable_left = any(entry.state in _REMOVABLE_LEFTOVER_STATES for entry in carried)
+        if left:
+            if removable_left:
+                headline = f'Leftovers left in place ({len(left)}; {REMOVE_LEFTOVERS_FLAG} removes them):'
+            else:
+                headline = f'Leftovers left in place ({len(left)}):'
+            sections.append((headline, left))
+        if self.listed_now:
+            sections.append((self.listed_now_heading(), [entry.display(self.profile_dir) for entry in self.listed_now]))
+        if dropped:
+            sections.append(('No longer tracked:', dropped))
+        return sections
+
+
+def _recorded_leftover_candidates(manifest: dict[str, Any], claude_dir: Path) -> list[LeftoverItem]:
+    """List what a manifest records as written or carried, written records first.
+
+    Args:
+        manifest: The profile's manifest.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        The items of files_written, machine_wide_destinations,
+        settings_written, os_env_written, mcp_servers and the leftovers
+        field's items, each read only in its current shape; a machine-wide
+        binary control, in the settings env object or in the OS
+        environment, is never one.
+    """
+    records: list[object] = [
+        {'kind': LEFTOVER_FILE, **{
+            key: value for key, value in cast(dict[str, Any], record).items()
+            if key in ('path', 'sha256', HOOK_HELPER_RECORD_KEY)
+        }}
+        for record in cast(list[object], manifest.get('files_written') or [])
+        if isinstance(record, dict)
+    ]
+    records.extend(
+        {'kind': LEFTOVER_DESTINATION, 'path': cast(dict[str, Any], record).get('dest'),
+         'sha256': cast(dict[str, Any], record).get('sha256')}
+        for record in cast(list[object], manifest.get('machine_wide_destinations') or [])
+        if isinstance(record, dict)
+    )
+    records.extend(cast(list[object], manifest.get(SETTINGS_WRITTEN_KEY) or []))
+    records.extend(_os_env_record_items(manifest))
+    records.extend(_mcp_server_record_items(manifest))
+    leftovers = manifest.get(LEFTOVERS_MANIFEST_KEY)
+    if isinstance(leftovers, dict):
+        records.extend(cast(list[object], cast(dict[str, Any], leftovers).get('items') or []))
+    items = (LeftoverItem.from_record(record, claude_dir=claude_dir) for record in records)
+    return [item for item in items if item is not None and not _is_machine_wide_item(item)]
+
+
+def _is_machine_wide_item(item: LeftoverItem) -> bool:
+    """Report whether an item is a machine-wide binary control, in the settings env object or the OS environment."""
+    return _is_machine_wide_setting(item.keys) or (
+        item.kind == LEFTOVER_OS_ENV and _is_machine_wide_control_record(item.path.upper())
+    )
+
+
+def _dict_records(manifest: dict[str, Any], field_name: str) -> list[dict[str, Any]]:
+    """Return the object records of a manifest field, leaving out anything else."""
+    return [
+        cast(dict[str, Any], record) for record in cast(list[object], manifest.get(field_name) or [])
+        if isinstance(record, dict)
+    ]
+
+
+def _os_env_record_items(manifest: dict[str, Any]) -> list[object]:
+    """Read the os_env_written records as leftover records, one per variable."""
+    return [
+        {'kind': LEFTOVER_OS_ENV, 'name': record.get('name'), 'sha256': record.get('sha256')}
+        for record in _dict_records(manifest, 'os_env_written')
+    ]
+
+
+def _mcp_server_record_items(manifest: dict[str, Any]) -> list[object]:
+    """Read the mcp_servers records as leftover records, one per server and CLI scope with a recorded entry."""
+    items: list[object] = []
+    for record in _dict_records(manifest, 'mcp_servers'):
+        digests = record.get('sha256')
+        if isinstance(digests, dict):
+            items.extend(
+                {'kind': LEFTOVER_MCP_SERVER, 'name': record.get('name'), 'scope': scope, 'sha256': digest}
+                for scope, digest in cast(dict[str, Any], digests).items()
+            )
+    return items
+
+
+def _machine_leftover_entry(item: LeftoverItem, live: LiveLeftoverState) -> LeftoverEntry:
+    """Find what an OS environment variable or an MCP server registration holds now.
+
+    Args:
+        item: The variable or the registration.
+        live: The live readers.
+
+    Returns:
+        Removable while the variable holds exactly the value the setup
+        wrote, or the scope holds exactly the entry the setup registered;
+        changed for another value or entry, and for shell files that
+        disagree; gone when absent; unreadable when its state cannot be
+        read.
+    """
+    try:
+        if item.kind == LEFTOVER_OS_ENV:
+            found = [leftover_digest(value) for value in live.os_env(item.path)]
+        else:
+            entry = live.mcp(item.path).get(item.scope)
+            found = [] if entry is None else [leftover_digest(entry)]
+    except LeftoverReadError as e:
+        return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+    if not found:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    return LeftoverEntry(item, LEFTOVER_REMOVABLE if found == [item.sha256] else LEFTOVER_CHANGED)
+
+
+def _dependency_leftover_entry(item: LeftoverItem, profile_dir: Path, live: LiveLeftoverState) -> LeftoverEntry:
+    """Find what sits at a dependency entry's path now.
+
+    Args:
+        item: The dependency entry.
+        profile_dir: The profile directory.
+        live: The live readers.
+
+    Returns:
+        Linked when a directory link reaches the path, which is checked
+        before anything is read there, so a source profile's entry of the
+        same name is never taken for this one; unreadable, gone, changed for
+        another identity; removable while the entry keeps the identity the
+        run that listed it recorded.
+    """
+    if live.under_link(item.path):
+        return LeftoverEntry(item, LEFTOVER_LINKED, 'now reached through a directory link')
+    try:
+        identity = live.identity(item.location(profile_dir))
+    except LeftoverReadError as e:
+        return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+    if identity is None:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    return LeftoverEntry(item, LEFTOVER_REMOVABLE if identity == item.sha256 else LEFTOVER_CHANGED)
+
+
+def _leftover_entry(
+    item: LeftoverItem,
+    profile_dir: Path,
+    live: LiveLeftoverState,
+    *,
+    written: PlannedRecords | None = None,
+) -> LeftoverEntry:
+    """Find what sits at a leftover's path now.
+
+    Args:
+        item: The leftover.
+        profile_dir: The profile directory.
+        live: The live readers.
+        written: What this run writes, whose hook groups a changed hook
+            group leftover is never matched in; None when it writes none.
+
+    Returns:
+        The entry: for a dependency entry what
+        _dependency_leftover_entry() finds; for a variable or a server what
+        _machine_leftover_entry() finds; for a settings item what
+        settings_item_state() finds, unreadable when settings.json cannot be
+        read; for a file or a
+        destination linked for a profile file reached through a directory
+        link, unreadable, gone, changed for other bytes or another kind of
+        entry, held for an unchanged destination another profile records,
+        referenced for an unchanged hook file a settings file still wires,
+        removable otherwise.
+    """
+    if item.is_setting():
+        try:
+            content = live.settings(profile_dir / SETTINGS_FILE_NAME)
+        except LeftoverReadError as e:
+            return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+        return settings_item_state(item, content, written=written or PlannedRecords())
+    if item.kind == LEFTOVER_DEPENDENCY_ENTRY:
+        return _dependency_leftover_entry(item, profile_dir, live)
+    if not item.has_path():
+        return _machine_leftover_entry(item, live)
+    if item.kind == LEFTOVER_FILE and live.under_link(item.path):
+        return LeftoverEntry(item, LEFTOVER_LINKED, 'now reached through a directory link')
+    try:
+        digest = live.file_digest(item.location(profile_dir))
+        wired = live.wiring(item.path) if item.kind == LEFTOVER_FILE and digest == item.sha256 else None
+    except LeftoverReadError as e:
+        return LeftoverEntry(item, LEFTOVER_UNREADABLE, str(e))
+    if digest is None:
+        return LeftoverEntry(item, LEFTOVER_GONE)
+    if digest != item.sha256:
+        return LeftoverEntry(item, LEFTOVER_CHANGED)
+    if wired is not None:
+        return LeftoverEntry(item, LEFTOVER_REFERENCED, wired)
+    if item.kind == LEFTOVER_DESTINATION:
+        holders = live.destination_holders(item.path)
+        if holders:
+            return LeftoverEntry(item, LEFTOVER_HELD, f'recorded by profile {", ".join(holders)}')
+    return LeftoverEntry(item, LEFTOVER_REMOVABLE)
+
+
+def _under_hooks(item: LeftoverItem) -> bool:
+    """Report whether a leftover is a file under the profile's hooks/ directory."""
+    return item.kind == LEFTOVER_FILE and _file_key(item.path).split('/')[0] == LEFTOVER_HOOKS_DIR
+
+
+def _holdable_helper(entry: LeftoverEntry) -> bool:
+    """Report whether a leftover is a hooks.helpers module that holds what the setup wrote and nothing wires."""
+    return entry.state == LEFTOVER_REMOVABLE and entry.item.hook_helper and _under_hooks(entry.item)
+
+
+def _hold_with_wired_hook_files(
+    entries: Sequence[LeftoverEntry],
+    live: LiveLeftoverState,
+    *,
+    installed: Iterable[str],
+) -> list[LeftoverEntry]:
+    """Keep every dropped hook helper while a hook file the run does not install is still wired.
+
+    A helper module is imported by the hook scripts beside it and wired
+    nowhere. The configuration's own scripts, which the run installs as
+    the configuration ships them, import no helper it dropped; a script
+    edited by hand after the setup wrote it, a leftover script still wired
+    and a file the setup never wrote may. So a dropped helper stays while a
+    settings file a session reads wires such a file of the folder, and the
+    summary, --dry-run and Step 23 read the folder alike.
+
+    Args:
+        entries: The leftovers with their states.
+        live: The live readers.
+        installed: The profile-relative paths the run installs.
+
+    Returns:
+        The entries, each removable hook helper held while such a hook file
+        is wired, or unreadable when the wiring cannot be read.
+    """
+    if not any(_holdable_helper(entry) for entry in entries):
+        return list(entries)
+    try:
+        wired = live.wired_hook_file(installed)
+    except LeftoverReadError as e:
+        return [LeftoverEntry(entry.item, LEFTOVER_UNREADABLE, str(e)) if _holdable_helper(entry) else entry
+                for entry in entries]
+    if wired is None:
+        return list(entries)
+    return [
+        LeftoverEntry(entry.item, LEFTOVER_HELD, f'stays with {wired}, which is still wired')
+        if _holdable_helper(entry) else entry
+        for entry in entries
+    ]
+
+
+def _leftover_order(entry: LeftoverEntry) -> tuple[int, str]:
+    """Order leftovers for the summary: files, destinations, settings.json items, variables, servers, dependency entries."""
+    kinds = {
+        LEFTOVER_FILE: 0, LEFTOVER_DESTINATION: 1, LEFTOVER_OS_ENV: 3, LEFTOVER_MCP_SERVER: 4, LEFTOVER_DEPENDENCY_ENTRY: 5,
+    }
+    return kinds.get(entry.item.kind, 2), entry.item.key()[1]
+
+
+def _settings_after_this_run(
+    live: LiveLeftoverState,
+    profile_dir: Path,
+    removing: Sequence[LeftoverEntry],
+    planned: PlannedRecords,
+) -> LiveLeftoverState:
+    """Read the settings files, for the hook files, as they will be when a flagged Step 23 checks them.
+
+    An isolated profile's config.json is the one Step 18 rebuilds from the
+    configuration. Into the base settings.json Steps 14 and 18 merge what
+    the run writes first (merge_settings_delta(), as Step 18 writes it),
+    which keeps every hook group and replaces the status line whole, and a
+    run with --remove-leftovers removes the settings leftovers in Step 23
+    before it looks at the hook files. Every run reads the hook files
+    against this view, so the leftovers it marks are what the flag removes.
+
+    Args:
+        live: The live readers.
+        profile_dir: The profile directory.
+        removing: The settings leftovers a flagged Step 23 removes.
+        planned: What the run writes, with the deltas Steps 14 and 18 merge
+            or the hooks and status line Step 18 rebuilds.
+
+    Returns:
+        The readers with that view, or unchanged for a base run that neither
+        writes into the file nor removes from it, or whose file cannot be
+        read.
+    """
+    if planned.rebuilt_settings is not None:
+        return replace(live, settings_after=((profile_dir / 'config.json', planned.rebuilt_settings),))
+    settings_file = profile_dir / SETTINGS_FILE_NAME
+    if not planned.settings_deltas and not removing:
+        return live
+    try:
+        content = live.settings(settings_file)
+    except LeftoverReadError:
+        return live
+    view = content or {}
+    for delta in planned.settings_deltas:
+        view = merge_settings_delta(view, delta, written_whole=SETTINGS_OBJECTS_WRITTEN_WHOLE)
+    view = deepcopy(view)
+    for entry in removing:
+        fresh = settings_item_state(entry.item, view, written=planned)
+        if fresh.state in _REMOVABLE_LEFTOVER_STATES:
+            _apply_settings_removal(view, fresh, planned)
+    return replace(live, settings_after=((settings_file, view),))
+
+
+def compute_profile_leftovers(
+    manifest: dict[str, Any],
+    profile_dir: Path,
+    *,
+    profile_name: str,
+    planned: PlannedRecords,
+    live: LiveLeftoverState,
+    claude_dir: Path,
+) -> LeftoverReport:
+    """List what a profile's earlier runs wrote and its configuration no longer installs.
+
+    The candidates are the files, destinations, settings.json items, OS
+    environment variables and MCP server registrations the previous run
+    recorded and the leftovers it carried, one per identity,
+    the written record first. A record without a digest is never a
+    leftover, and neither is anything the configuration installs again,
+    nor a settings.json item it deletes (PlannedRecords.writes()).
+
+    A hook file is checked against the settings files as a run with
+    --remove-leftovers leaves them (_settings_after_this_run()): Step 23
+    removes the settings.json leftovers before it looks at the hook files,
+    so a hook file only a leftover wires is itself a leftover that the
+    flag removes with it, in a run without the flag as well.
+
+    Args:
+        manifest: The profile's manifest.
+        profile_dir: The profile directory.
+        profile_name: The profile's display name.
+        planned: What the configuration installs.
+        live: The live readers.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        The report.
+    """
+    candidates: dict[tuple[str, str], LeftoverItem] = {}
+    for item in _recorded_leftover_candidates(manifest, claude_dir):
+        if item.sha256 is not None and not planned.writes(item):
+            candidates.setdefault(item.key(), item)
+    settings_entries = [
+        _leftover_entry(item, profile_dir, live, written=planned) for item in candidates.values() if item.is_setting()
+    ]
+    live = _settings_after_this_run(
+        live,
+        profile_dir,
+        [entry for entry in settings_entries if entry.state in _REMOVABLE_LEFTOVER_STATES],
+        planned,
+    )
+    entries = _hold_with_wired_hook_files(sorted(
+        [
+            *(_leftover_entry(item, profile_dir, live) for item in candidates.values() if not item.is_setting()),
+            *settings_entries,
+        ],
+        key=_leftover_order,
+    ), live, installed=planned.files)
+    return LeftoverReport(
+        profile_name=profile_name,
+        profile_dir=profile_dir,
+        entries=tuple(entries),
+        untracked_note=LEFTOVERS_MANIFEST_KEY not in manifest,
+    )
+
+
+def leftovers_manifest_record(
+    report: LeftoverReport | None,
+    *,
+    run_at: str,
+    removal: LeftoverRemoval | None = None,
+) -> dict[str, Any]:
+    """Render the manifest's leftovers field.
+
+    Args:
+        report: The run's leftovers report, or None for a first install.
+        run_at: The ISO time the record is written.
+        removal: What Step 23 did with the leftovers, or None before Step
+            23 and in a run that removes nothing.
+
+    Returns:
+        The record: the items carried to the next run, the removed and
+        failed labels, the labels dropped with their reasons, the labels
+        kept for a reason with that reason (so a report that reads the
+        manifest, such as the --profile all report, can say why each stays),
+        and why the run skipped removal, if it did. The dependency entries
+        Step 6 listed are carried with the reason they stay.
+    """
+    if report is None:
+        return {
+            'run_at': run_at, 'items': [], 'removed': [], 'dropped': [], 'skipped': None, 'failed': [], 'kept': [],
+        }
+    outcomes = removal.outcomes if removal is not None else ()
+    looked_at = {outcome.entry.item.key() for outcome in outcomes}
+    dropped = [
+        {'label': entry.item.label(), 'reason': _DROPPED_LEFTOVER_REASONS[entry.state]}
+        for entry in report.dropped() if entry.item.key() not in looked_at
+    ]
+    dropped.extend(
+        {'label': outcome.entry.item.label(), 'reason': outcome.detail}
+        for outcome in outcomes if outcome.result == LEFTOVER_DROPPED
+    )
+    carried = [
+        entry for entry in report.entries
+        if entry.state in _CARRIED_LEFTOVER_STATES and entry.item.key() not in looked_at
+    ]
+    items = [entry.item for entry in carried]
+    items.extend(
+        outcome.entry.item for outcome in outcomes if outcome.result in (LEFTOVER_KEPT, LEFTOVER_FAILED)
+    )
+    carried.extend(outcome.entry for outcome in outcomes if outcome.result == LEFTOVER_KEPT)
+    items.extend(entry.item for entry in report.listed_now)
+    kept = [{'label': entry.item.label(), 'reason': _leftover_note(entry)} for entry in carried if _leftover_note(entry)]
+    kept.extend({'label': entry.item.label(), 'reason': LEFTOVER_LISTED_NOW} for entry in report.listed_now)
+    return {
+        'run_at': run_at,
+        'items': [item.to_record() for item in items],
+        'removed': [outcome.entry.item.label() for outcome in outcomes if outcome.result == LEFTOVER_REMOVED],
+        'dropped': dropped,
+        'skipped': removal.skipped if removal is not None else None,
+        'failed': [outcome.entry.item.label() for outcome in outcomes if outcome.result == LEFTOVER_FAILED],
+        'kept': kept,
+    }
+
+
+def _record_manifest_leftovers(manifest_path: Path, record: dict[str, Any]) -> bool:
+    """Replace the ``leftovers`` field of a written manifest with Step 23's outcome.
+
+    Args:
+        manifest_path: The manifest Step 20 wrote.
+        record: The field's new value, as leftovers_manifest_record() renders it.
+
+    Returns:
+        True when the manifest was rewritten; False when it cannot be read.
+    """
+    try:
+        content = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(content, dict):
+        return False
+    manifest = cast(dict[str, Any], content)
+    manifest[LEFTOVERS_MANIFEST_KEY] = record
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    return True
+
+
+def leftovers_step_runs(report: LeftoverReport | None, *, remove: bool) -> bool:
+    """Report whether Step 23 has leftovers to look at: carried ones, in a run that removes leftovers."""
+    if report is None:
+        return False
+    return remove and bool(report.carried())
+
+
+def _remove_dependency_entry(path: Path) -> None:
+    """Remove a dependency entry: a link without its target, a directory with its content, or a file.
+
+    The link test comes first, because a junction is a directory too and
+    removing its content would delete the files of its target.
+
+    Args:
+        path: The entry.
+    """
+    import stat as stat_module
+
+    if _is_directory_link(path):
+        if getattr(os.lstat(path), 'st_file_attributes', 0) & stat_module.FILE_ATTRIBUTE_DIRECTORY:
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    elif path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _remove_leftover(entry: LeftoverEntry, profile_dir: Path) -> str | None:
+    """Remove one leftover file, destination or dependency entry.
+
+    Args:
+        entry: The leftover, found removable an instant before.
+        profile_dir: The profile directory its path is relative to.
+
+    Returns:
+        None when it is removed, else why the removal failed.
+    """
+    path = entry.item.location(profile_dir)
+    try:
+        if entry.item.kind == LEFTOVER_DEPENDENCY_ENTRY:
+            _remove_dependency_entry(path)
+        else:
+            path.unlink()
+    except OSError as e:
+        return e.strerror or str(e)
+    return None
+
+
+def _prune_emptied_skill_directories(removed: list[Path], skills_dir: Path) -> None:
+    """Remove each skill directory a removal emptied, up to but never including skills/.
+
+    Args:
+        removed: The absolute paths of the files removed.
+        skills_dir: The profile's skills directory.
+    """
+    for path in removed:
         parent = path.parent
         while _relative_inside(parent, skills_dir) is not None:
             try:
@@ -18897,46 +21929,508 @@ def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude
             except OSError:
                 break
             parent = parent.parent
-    if residue.mcp_servers:
-        claude_cmd = find_command('claude')
-        if claude_cmd:
-            for name, scopes in residue.mcp_servers:
-                _remove_mcp_server_from_cli_scopes(
-                    claude_cmd, name, scopes, None, profile_dir if profile_dir != claude_dir else None,
-                )
-        else:
-            warning('Cannot remove the previous MCP servers: claude command not found')
-    if residue.os_env:
-        set_all_os_env_variables(dict.fromkeys(residue.os_env))
-    if residue.settings_keys:
-        # One null-as-delete write: top-level keys, and each recorded env
-        # entry on its own, so the env object keeps every other variable
-        settings_path = claude_dir / 'settings.json'
-        deletions: dict[str, Any] = {}
-        env_deletions: dict[str, None] = {}
-        for key in residue.settings_keys:
-            if key.startswith(SETTINGS_ENV_ENTRY_PREFIX):
-                env_deletions[key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX)] = None
-            else:
-                deletions[key] = None
-        if env_deletions:
-            deletions['env'] = env_deletions
-        written, merged = _write_merged_json(settings_path, deletions)
-        if written and merged.get('env') == {}:
-            merged.pop('env')
-            try:
-                settings_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-            except OSError as e:
-                warning(f'Cannot drop the emptied env object of {settings_path}: {e}')
-        if written:
-            success(f'Removed settings.json key(s): {", ".join(residue.settings_keys)}')
-        else:
-            warning(f'Cannot remove settings.json key(s): {", ".join(residue.settings_keys)}')
-    if residue.scheduled_job:
-        # The job is removed by Step 25, which checks the rights the removal
-        # needs, reports a refused removal and keeps the job recorded until
-        # it is gone; here the residue only names it
-        info(f'The scheduled update job {residue.scheduled_job} is removed in Step 25')
+
+
+def _leftover_step_decision(entry: LeftoverEntry, *, written: PlannedRecords) -> LeftoverOutcome | None:
+    """Decide what Step 23 does with one leftover, as found an instant before.
+
+    Args:
+        entry: The leftover with the state Step 23 found.
+        written: What this run's own steps wrote.
+
+    Returns:
+        The outcome, or None when Step 23 removes the leftover.
+    """
+    if written.writes(entry.item):
+        return LeftoverOutcome(entry, LEFTOVER_DROPPED, LEFTOVER_WRITTEN_AGAIN)
+    if entry.state not in _CARRIED_LEFTOVER_STATES:
+        return LeftoverOutcome(entry, LEFTOVER_DROPPED, _DROPPED_LEFTOVER_REASONS[entry.state])
+    if entry.state not in _REMOVABLE_LEFTOVER_STATES:
+        return LeftoverOutcome(entry, LEFTOVER_KEPT, entry.detail)
+    return None
+
+
+def _not_removable_outcome(fresh: LeftoverEntry) -> LeftoverOutcome | None:
+    """Say what becomes of a leftover found anything but removable an instant before its removal.
+
+    Args:
+        fresh: The leftover with the state just read.
+
+    Returns:
+        None for a removable leftover; kept for one that stays recorded,
+        such as one that cannot be read; dropped, with the reason, for one
+        changed or gone.
+    """
+    if fresh.state in _REMOVABLE_LEFTOVER_STATES:
+        return None
+    if fresh.state in _CARRIED_LEFTOVER_STATES:
+        return LeftoverOutcome(fresh, LEFTOVER_KEPT, fresh.detail)
+    return LeftoverOutcome(fresh, LEFTOVER_DROPPED, _DROPPED_LEFTOVER_REASONS[fresh.state])
+
+
+def _removal_outcome(entry: LeftoverEntry, failure: str | None) -> LeftoverOutcome:
+    """Report one removal of a variable or a server registration: removed, or failed with why."""
+    if failure is not None:
+        warning(f'Cannot remove {entry.item.label()}: {failure}')
+        return LeftoverOutcome(entry, LEFTOVER_FAILED, failure)
+    success(f'Removed leftover {entry.item.label()}')
+    return LeftoverOutcome(entry, LEFTOVER_REMOVED)
+
+
+def remove_os_env_leftovers(entries: Sequence[LeftoverEntry], live: LiveLeftoverState) -> list[LeftoverOutcome]:
+    """Remove OS environment variable leftovers with one call of the deleter of what the setup set.
+
+    Each variable is looked at again first and handed to
+    delete_toolbox_os_env_variables() only while it still holds the value
+    the setup wrote, so on Linux and macOS only the line in the toolbox block
+    of each shell file goes and a line the user wrote outside the block
+    stays. Afterwards each one is read again, so the outcome says whether it
+    is gone, whatever the deleter reported.
+
+    Args:
+        entries: The variables.
+        live: The live readers.
+
+    Returns:
+        One outcome per entry, in order: removed; failed when the variable
+        is still set or cannot be read after the deletion; kept when it
+        cannot be read before; dropped as changed or gone.
+    """
+    fresh = [_machine_leftover_entry(entry.item, live) for entry in entries]
+    decided = [_not_removable_outcome(entry) for entry in fresh]
+    names = [entry.item.path for entry, outcome in zip(fresh, decided, strict=True) if outcome is None]
+    if names:
+        delete_toolbox_os_env_variables(names)
+    outcomes: list[LeftoverOutcome] = []
+    for entry, outcome in zip(fresh, decided, strict=True):
+        if outcome is not None:
+            outcomes.append(outcome)
+            continue
+        try:
+            failure = LEFTOVER_VARIABLE_STILL_SET if live.os_env(entry.item.path) else None
+        except LeftoverReadError as e:
+            failure = str(e)
+        outcomes.append(_removal_outcome(entry, failure))
+    return outcomes
+
+
+def remove_mcp_leftovers(
+    entries: Sequence[LeftoverEntry],
+    live: LiveLeftoverState,
+    *,
+    config_dir: Path | None,
+) -> list[LeftoverOutcome]:
+    """Remove MCP server leftovers through the claude command, one CLI scope each.
+
+    Each registration is looked at again first and removed only while its
+    scope still holds the entry the setup registered. Afterwards the scope
+    is read again, so the outcome says whether the registration is gone;
+    the command's exit code cannot, because it fails for a scope that lacks
+    the name.
+
+    Args:
+        entries: The server registrations.
+        live: The live readers.
+        config_dir: The isolated profile directory whose .claude.json holds
+            the profile's registrations (the command runs with it as
+            CLAUDE_CONFIG_DIR), or None for the base profile.
+
+    Returns:
+        One outcome per entry, in order: removed; failed when the scope
+        still holds the server, cannot be read after the removal, or no
+        claude command is found; kept when it cannot be read before;
+        dropped as changed or gone.
+    """
+    claude_cmd = find_command('claude') if entries else None
+    outcomes: list[LeftoverOutcome] = []
+    for entry in entries:
+        fresh = _machine_leftover_entry(entry.item, live)
+        decided = _not_removable_outcome(fresh)
+        if decided is not None:
+            outcomes.append(decided)
+            continue
+        if claude_cmd is None:
+            outcomes.append(_removal_outcome(fresh, LEFTOVER_NO_CLAUDE_COMMAND))
+            continue
+        name, scope = fresh.item.path, fresh.item.scope
+        _remove_mcp_server_from_cli_scopes(claude_cmd, name, [scope], None, config_dir)
+        try:
+            failure = LEFTOVER_SERVER_STILL_REGISTERED if live.mcp(name).get(scope) is not None else None
+        except LeftoverReadError as e:
+            failure = str(e)
+        outcomes.append(_removal_outcome(fresh, failure))
+    return outcomes
+
+
+def _leftover_step_outcome(
+    entry: LeftoverEntry,
+    *,
+    written: PlannedRecords,
+    profile_dir: Path,
+) -> LeftoverOutcome:
+    """Decide and carry out what Step 23 does with one leftover file or destination, as found an instant before.
+
+    Args:
+        entry: The leftover with the state Step 23 found.
+        written: What this run's own steps wrote.
+        profile_dir: The profile directory.
+
+    Returns:
+        The outcome.
+    """
+    decided = _leftover_step_decision(entry, written=written)
+    if decided is not None:
+        return decided
+    failure = _remove_leftover(entry, profile_dir)
+    if failure is not None:
+        warning(f'Cannot remove {entry.item.display(profile_dir)}: {failure}')
+        return LeftoverOutcome(entry, LEFTOVER_FAILED, failure)
+    success(f'Removed leftover {entry.item.display(profile_dir)}')
+    return LeftoverOutcome(entry, LEFTOVER_REMOVED)
+
+
+def _batched_step_outcomes(
+    entries: Sequence[LeftoverEntry],
+    *,
+    written: PlannedRecords,
+    remover: Callable[[list[LeftoverEntry]], list[LeftoverOutcome]],
+) -> list[LeftoverOutcome]:
+    """Decide what Step 23 does with leftovers of one kind and remove the removable ones in one batch.
+
+    Args:
+        entries: The leftovers with the states Step 23 found.
+        written: What this run's own steps wrote.
+        remover: Removes the leftovers Step 23 decided to remove and returns
+            one outcome for each, in order: the settings.json remover (one
+            write for all), the OS environment remover (one writer call for
+            all) or the MCP remover.
+
+    Returns:
+        One outcome per entry, in order.
+    """
+    decided = [_leftover_step_decision(entry, written=written) for entry in entries]
+    to_remove = [entry for entry, outcome in zip(entries, decided, strict=True) if outcome is None]
+    removed = iter(remover(to_remove) if to_remove else [])
+    return [outcome if outcome is not None else next(removed) for outcome in decided]
+
+
+def written_leftover_records(records: dict[str, Any]) -> PlannedRecords:
+    """Read what Step 20 recorded as written, for the leftovers Step 23 drops as written again.
+
+    Args:
+        records: The files_written, machine_wide_destinations,
+            settings_written, os_env_written, mcp_servers and
+            dependency_entries records Step 20 wrote.
+
+    Returns:
+        The written paths, destinations, settings.json items, variables,
+        servers and dependency entries.
+    """
+    return PlannedRecords(
+        files=frozenset(str(record['path']) for record in records['files_written']),
+        destinations=frozenset(str(record['dest']) for record in records['machine_wide_destinations']),
+        settings=tuple(_settings_items_of(records.get(SETTINGS_WRITTEN_KEY) or [])),
+        os_env=frozenset(str(record.get('name')) for record in _dict_records(records, 'os_env_written')),
+        mcp_servers=frozenset(str(record.get('name')) for record in _dict_records(records, 'mcp_servers')),
+        dependency_entries=frozenset(
+            path for _command, path, _identity in _dependency_entry_records(records.get(DEPENDENCY_ENTRIES_KEY))
+        ),
+    )
+
+
+def step_23_heading(*, deselection: bool, leftovers: bool) -> str | None:
+    """Name what Step 23 does: remove deselected components, leftovers, both, or nothing (None)."""
+    if deselection and leftovers:
+        return 'Step 23: Removing deselected components and leftovers...'
+    if deselection:
+        return 'Step 23: Removing deselected components...'
+    if leftovers:
+        return 'Step 23: Removing leftovers...'
+    return None
+
+
+def run_leftovers_step(
+    report: LeftoverReport | None,
+    *,
+    remove: bool,
+    download_failed: bool,
+    written: PlannedRecords,
+    live: LiveLeftoverState,
+    profile_dir: Path,
+    claude_dir: Path,
+    manifest_path: Path,
+    run_at: str,
+    failed_commands: frozenset[str] = frozenset(),
+) -> LeftoverRemoval | None:
+    """Remove the leftovers of earlier runs in Step 23 and record the outcome in the manifest.
+
+    Every leftover the manifest carries is looked at again first, as the
+    files and manifests are now: a path a link reaches since the summary,
+    a destination another profile records since, a hook file a settings
+    file wires since, an edit, a removal. A leftover this run's own steps
+    wrote again is dropped before anything is removed. The settings.json
+    leftovers go before the files, so a hook file is checked against
+    settings.json as their removal leaves it: a hook file and the hook group
+    wiring it leave together. The OS environment variables follow, with one
+    call of the OS environment writer for all, then the MCP server
+    registrations, and the dependency entries an earlier run listed last; a
+    dependency entry whose command failed in this run stays, and the ones
+    Step 6 of this run listed are never removed by it.
+
+    Args:
+        report: The leftovers the run found before consent, or None for a
+            first install.
+        remove: Whether the run removes leftovers: it was given
+            --remove-leftovers, or it accepted a configuration switch.
+        download_failed: Whether a content download of this run failed;
+            then nothing is removed, because the files the configuration
+            installs in place of the leftovers may be missing.
+        written: What this run's own steps wrote (Step 20's records).
+        live: The live readers, reading the settings files as Step 18 left
+            them.
+        profile_dir: The profile directory.
+        claude_dir: The base ~/.claude directory.
+        manifest_path: The manifest Step 20 wrote.
+        run_at: The ISO time of the record.
+        failed_commands: The Step 6 dependency commands that failed.
+
+    Returns:
+        The outcome, or None when Step 23 has nothing to look at (see
+        leftovers_step_runs()).
+    """
+    if report is None or not leftovers_step_runs(report, remove=remove):
+        return None
+    if download_failed:
+        warning(f'Leftovers not removed: {LEFTOVERS_SKIPPED_DOWNLOADS}; they stay recorded')
+        removal = LeftoverRemoval(skipped=LEFTOVERS_SKIPPED_DOWNLOADS)
+    else:
+        looked_at = [entry for entry in report.entries if entry.state in _CARRIED_LEFTOVER_STATES]
+        config_dir = profile_dir if profile_dir != claude_dir else None
+
+        def _batch(
+            kinds: frozenset[str], remover: Callable[[list[LeftoverEntry]], list[LeftoverOutcome]],
+        ) -> list[LeftoverOutcome]:
+            return _batched_step_outcomes(
+                [
+                    _leftover_entry(entry.item, profile_dir, live, written=written)
+                    for entry in looked_at if entry.item.kind in kinds
+                ],
+                written=written,
+                remover=remover,
+            )
+
+        settings_outcomes = _batch(
+            LEFTOVER_SETTINGS_KINDS,
+            lambda entries: remove_settings_leftovers(profile_dir / SETTINGS_FILE_NAME, entries, written=written),
+        )
+        path_entries = [_leftover_entry(entry.item, profile_dir, live) for entry in looked_at if entry.item.has_path()]
+        path_outcomes = [
+            _leftover_step_outcome(entry, written=written, profile_dir=profile_dir)
+            for entry in _hold_with_wired_hook_files(path_entries, live, installed=written.files)
+        ]
+        _prune_emptied_skill_directories(
+            [o.entry.item.location(profile_dir) for o in path_outcomes if o.result == LEFTOVER_REMOVED],
+            profile_dir / 'skills',
+        )
+        os_env_outcomes = _batch(frozenset({LEFTOVER_OS_ENV}), lambda entries: remove_os_env_leftovers(entries, live))
+        mcp_outcomes = _batch(
+            frozenset({LEFTOVER_MCP_SERVER}),
+            lambda entries: remove_mcp_leftovers(entries, live, config_dir=config_dir),
+        )
+        dependency_outcomes = [
+            _leftover_step_outcome(
+                _held_for_failed_command(_leftover_entry(entry.item, profile_dir, live), failed_commands),
+                written=written,
+                profile_dir=profile_dir,
+            )
+            for entry in looked_at if entry.item.kind == LEFTOVER_DEPENDENCY_ENTRY
+        ]
+        removal = LeftoverRemoval(
+            outcomes=(*settings_outcomes, *path_outcomes, *os_env_outcomes, *mcp_outcomes, *dependency_outcomes),
+        )
+    _record_manifest_leftovers(manifest_path, leftovers_manifest_record(report, run_at=run_at, removal=removal))
+    return removal
+
+
+def _previous_digests(
+    manifest: dict[str, Any] | None,
+    field_name: str,
+    path_key: str,
+    key_of: Callable[[str], str],
+) -> dict[str, str | None]:
+    """Map each path an earlier run recorded in a field to the digest it recorded.
+
+    Args:
+        manifest: The previous manifest, or None.
+        field_name: files_written or machine_wide_destinations.
+        path_key: The record key holding the path.
+        key_of: The comparison key of a path.
+
+    Returns:
+        Path key to recorded digest, read from records of the current shape.
+    """
+    digests: dict[str, str | None] = {}
+    for record in cast(list[object], (manifest or {}).get(field_name) or []):
+        if not isinstance(record, dict):
+            continue
+        record_dict = cast(dict[str, Any], record)
+        path, digest = record_dict.get(path_key), record_dict.get('sha256')
+        if isinstance(path, str):
+            digests[key_of(path)] = digest if isinstance(digest, str) else None
+    return digests
+
+
+def _trusted_digest(digest: str | None, previous: str | None, *, download_failed: bool) -> str | None:
+    """Keep a digest only for bytes the setup is known to have written.
+
+    Args:
+        digest: The digest of the file on disk now.
+        previous: The digest the previous manifest recorded for the path.
+        download_failed: Whether a content download of this run failed.
+
+    Returns:
+        The digest; after a failed download only when it equals the one
+        the previous run recorded, because the bytes at the path may be
+        what the failure left, and those must never count as the setup's.
+    """
+    if download_failed and digest != previous:
+        return None
+    return digest
+
+
+def file_records(
+    profile_dir: Path,
+    planned_paths: list[str],
+    previous_manifest: dict[str, Any] | None,
+    *,
+    download_failed: bool,
+    hook_helpers: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Record the profile files a run installed with the digest of each.
+
+    Args:
+        profile_dir: The profile directory.
+        planned_paths: The profile-relative paths the run installs.
+        previous_manifest: The profile's previous manifest, or None.
+        download_failed: Whether a content download of this run failed.
+        hook_helpers: The paths among them installed as hooks.helpers
+            modules (planned_hook_helpers()).
+
+    Returns:
+        One {path, sha256} record per path, with hook_helper: true for a
+        helper module; the digest is None for a file that is absent or
+        unreadable, and after a failed download for one whose bytes differ
+        from what the previous run recorded.
+    """
+    previous = _previous_digests(previous_manifest, 'files_written', 'path', _file_key)
+    helpers = {_file_key(helper) for helper in hook_helpers}
+    return [
+        {
+            'path': path,
+            'sha256': _trusted_digest(
+                _sha256_of_file(profile_dir.joinpath(*PurePosixPath(path).parts)),
+                previous.get(_file_key(path)),
+                download_failed=download_failed,
+            ),
+            **({HOOK_HELPER_RECORD_KEY: True} if _file_key(path) in helpers else {}),
+        }
+        for path in planned_paths
+    ]
+
+
+def planned_hook_helpers(config: dict[str, Any]) -> frozenset[str]:
+    """List the profile-relative paths of the hooks.helpers modules a configuration declares.
+
+    Args:
+        config: The resolved, component-selected configuration.
+
+    Returns:
+        The paths, as planned_profile_files() spells them.
+    """
+    hooks = config.get('hooks')
+    helpers = cast(dict[str, Any], hooks).get('helpers') if isinstance(hooks, dict) else None
+    return frozenset(
+        f'{LEFTOVER_HOOKS_DIR}/{_installed_resource_name(item)}' for item in cast(list[object], helpers or [])
+    )
+
+
+def destination_records(
+    files_to_download: list[dict[str, Any]],
+    config_source: str,
+    base_url: str | None,
+    claude_dir: Path,
+    previous_manifest: dict[str, Any] | None,
+    *,
+    download_failed: bool,
+) -> list[dict[str, str | None]]:
+    """Record the destinations outside ~/.claude a run wrote, with the failed-download rule of file_records().
+
+    Args:
+        files_to_download: The resolved files-to-download list.
+        config_source: Where the configuration was loaded from.
+        base_url: The configuration's base-url, or None.
+        claude_dir: The base ~/.claude directory.
+        previous_manifest: The profile's previous manifest, or None.
+        download_failed: Whether a content download of this run failed.
+
+    Returns:
+        The records machine_wide_download_records() builds.
+    """
+    previous = _previous_digests(previous_manifest, 'machine_wide_destinations', 'dest', _destination_key)
+    records = machine_wide_download_records(files_to_download, config_source, base_url, claude_dir)
+    for record in records:
+        record['sha256'] = _trusted_digest(
+            record['sha256'], previous.get(_destination_key(str(record['dest']))), download_failed=download_failed,
+        )
+    return records
+
+
+def written_profile_records(
+    config: dict[str, Any],
+    profile_dir: Path,
+    *,
+    linked_entries: frozenset[str],
+    files_to_download: list[object],
+    config_source: str,
+    base_url: str | None,
+    claude_dir: Path,
+    previous_manifest: dict[str, Any] | None,
+    download_failed: bool,
+    settings_written: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the files_written, machine_wide_destinations and settings_written records Step 20 writes.
+
+    Args:
+        config: The resolved, component-selected configuration the run installed.
+        profile_dir: The profile directory.
+        linked_entries: The entries of the profile that are links.
+        files_to_download: The files-to-download entries the run processed.
+        config_source: Where the configuration was loaded from.
+        base_url: The configuration's base-url, or None.
+        claude_dir: The base ~/.claude directory.
+        previous_manifest: The profile's previous manifest, or None.
+        download_failed: Whether a content download of this run failed.
+        settings_written: What Steps 14 and 18 wrote into the base
+            settings.json (written_settings_records()); empty for an
+            isolated profile.
+
+    Returns:
+        The records, keyed by their manifest field.
+    """
+    downloads = [cast(dict[str, Any], entry) for entry in files_to_download if isinstance(entry, dict)]
+    return {
+        'files_written': file_records(
+            profile_dir,
+            planned_profile_files(config, profile_dir, linked_entries=linked_entries),
+            previous_manifest,
+            download_failed=download_failed,
+            hook_helpers=planned_hook_helpers(config),
+        ),
+        'machine_wide_destinations': destination_records(
+            downloads, config_source, base_url, claude_dir, previous_manifest, download_failed=download_failed,
+        ),
+        SETTINGS_WRITTEN_KEY: settings_written,
+    }
 
 
 def write_manifest(
@@ -18954,12 +22448,14 @@ def write_manifest(
     components: dict[str, str | None] | None = None,
     yaml_values: dict[str, Any] | None = None,
     machine_wide_destinations: list[dict[str, str | None]] | None = None,
-    os_env_written: list[str] | None = None,
-    settings_keys_written: list[str] | None = None,
+    os_env_written: list[dict[str, str]] | None = None,
+    settings_written: list[dict[str, Any]] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
-    files_written: list[str] | None = None,
+    files_written: list[dict[str, str | None]] | None = None,
+    dependency_entries: list[dict[str, Any]] | None = None,
     link: dict[str, Any] | None = None,
     auto_update: dict[str, Any] | None = None,
+    leftovers: dict[str, Any] | None = None,
 ) -> bool:
     """Write the installation manifest of a profile.
 
@@ -18967,15 +22463,20 @@ def write_manifest(
     (None for the base profile), the configuration version, source and
     identity, the digest of the resolved configuration, all command names
     and the component delta with their origins, the configuration's own
-    values at install time, the Claude Code version the profile pins, and
-    what the run wrote: destinations outside ~/.claude with their source
-    and content hash, OS environment variables, settings keys, MCP servers,
-    and the profile files. A re-run reads the names, the delta and the
-    identity; the switch guard reads the written records to list the
-    residue another configuration would leave; _other_profile_pins() reads
-    the pin to decide whether the machine-global update controls are still
-    needed. When resolved_config is given, resolved-config.yaml is written
-    beside the manifest and config_digest is its sha256.
+    values at install time, the Claude Code version the profile pins, what
+    the run wrote (destinations outside ~/.claude with their source and
+    content hash, the OS environment variables of a base run with the hash
+    of each value, the values, list elements and hook groups of the base
+    settings.json with the hash of each, MCP servers with the hash of the
+    entry each CLI scope holds, and the profile files with their content
+    hash), and the
+    leftovers of earlier runs it carries. A re-run reads the names, the delta and the identity,
+    and lists as leftovers what the written records and the carried
+    leftovers hold and its configuration no longer installs, which the
+    switch guard lists too; _other_profile_pins() reads the pin to decide
+    whether the machine-global update controls are still needed. When
+    resolved_config is given, resolved-config.yaml is written beside the
+    manifest and config_digest is its sha256.
 
     Args:
         config_base_dir: Path to the profile directory -- ~/.claude/{cmd}/
@@ -18999,10 +22500,22 @@ def write_manifest(
             component names at install time
         machine_wide_destinations: files-to-download destinations outside
             ~/.claude, each with its source and sha256
-        os_env_written: OS environment variables this run set
-        settings_keys_written: Top-level settings keys this run wrote
-        mcp_servers: MCP servers this run registered, with their scopes
-        files_written: Profile-relative paths of the files this run installs
+        os_env_written: The OS environment variables a base run set, each a
+            {name, sha256} record of its name and the digest of its value
+            (os_env_records()); empty for an isolated profile
+        settings_written: What Steps 14 and 18 wrote into the base
+            settings.json, one record per value, list element and hook
+            group (written_settings_records()); empty for an isolated
+            profile, whose config.json is rebuilt each run
+        mcp_servers: MCP servers this run registered, with their scopes and
+            the digest of the entry each CLI scope holds
+            (mcp_server_records())
+        files_written: The files this run installs, each a {path, sha256}
+            record of its profile-relative path and content hash
+        dependency_entries: The content directory entries this run's
+            dependency commands installed, one {command, entries} record per
+            command, each entry a {path, identity} record
+            (attribute_dependency_entries())
         link: The profile's links as LinkSpec.record() renders them (the
             linked entries, the source profile, and the origin of each; an
             empty entry list for a typed or environment none, which a re-run
@@ -19012,6 +22525,8 @@ def write_manifest(
             auto_update_manifest_record() renders it (the time, the
             configured command and the job name), or None when the profile
             has no job
+        leftovers: The leftovers field as leftovers_manifest_record()
+            renders it; None records no leftover, as a first install does
 
     Returns:
         True if manifest was written successfully, False otherwise.
@@ -19023,6 +22538,7 @@ def write_manifest(
         rendered_config = render_resolved_config(resolved_config)
         config_digest = config_digest_of(rendered_config)
 
+    installed_at = datetime.now(UTC).isoformat()
     manifest: dict[str, Any] = {
         'name': command_name,
         'version': config_version,
@@ -19032,7 +22548,7 @@ def write_manifest(
         'config_source_type': config_source_type,
         'config_identity': config_identity_of(config_source),
         'config_digest': config_digest,
-        'installed_at': datetime.now(UTC).isoformat(),
+        'installed_at': installed_at,
         'command_names': command_names,
         'components': components,
         'link': link,
@@ -19043,10 +22559,14 @@ def write_manifest(
         'yaml_values': yaml_values if yaml_values is not None else {},
         'machine_wide_destinations': machine_wide_destinations or [],
         'os_env_written': os_env_written or [],
-        'settings_keys_written': settings_keys_written or [],
+        SETTINGS_WRITTEN_KEY: settings_written or [],
         'mcp_servers': mcp_servers or [],
         'files_written': files_written or [],
+        DEPENDENCY_ENTRIES_KEY: dependency_entries or [],
         'auto_update': auto_update,
+        LEFTOVERS_MANIFEST_KEY: leftovers if leftovers is not None else leftovers_manifest_record(
+            None, run_at=installed_at,
+        ),
     }
 
     try:
@@ -20486,6 +24006,26 @@ def scheduled_custom_command(profile_name: str, home_dir: Path) -> str | None:
         return None
     command = cast(dict[str, Any], record).get('command')
     return str(command) if command else None
+
+
+def switch_off_scheduled_removal(args: argparse.Namespace) -> None:
+    """Keep a scheduled run from removing leftovers, whatever its environment sets.
+
+    The job runs unattended, so nobody reads its summary before Step 23
+    would remove anything: it lists the leftovers in its log, and a run
+    started by hand removes them. A CLAUDE_CODE_TOOLBOX_REMOVE_LEFTOVERS=1
+    in the environment the scheduler hands the job is switched off with a
+    warning naming that run.
+
+    Args:
+        args: Arguments after resolve_args(); changed in place.
+    """
+    if args.scheduled_run and args.remove_leftovers:
+        warning(
+            'Leftovers are only listed in a scheduled run; remove them with '
+            f'--profile {args.profile} {REMOVE_LEFTOVERS_FLAG}.',
+        )
+        args.remove_leftovers = False
 
 
 def run_scheduled_update(
@@ -22454,6 +25994,28 @@ def guard_environment_name_change(
     )
 
 
+def dropped_scheduled_job(manifest: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """Name the daily update job a profile keeps that a configuration no longer declares.
+
+    The job is no leftover: Step 25 removes it, with the rights check the
+    removal needs and the job record kept until it is gone.
+
+    Args:
+        manifest: The profile's manifest.
+        config: The configuration this run installs.
+
+    Returns:
+        The job the manifest records when the configuration declares no
+        auto-update (a declared key registers the job again instead), else
+        None.
+    """
+    recorded = manifest.get('auto_update')
+    if not isinstance(recorded, dict) or config.get(AUTO_UPDATE_SCHEDULE_KEY) is not None:
+        return None
+    job = cast(dict[str, Any], recorded).get('job')
+    return str(job) if job else None
+
+
 def guard_configuration_switch(
     args: argparse.Namespace,
     *,
@@ -22462,9 +26024,13 @@ def guard_configuration_switch(
     old_identity: str,
     new_identity: str,
     new_source: str,
-    residue: ProfileResidue,
+    leftovers: LeftoverReport,
+    dropped_job: str | None,
 ) -> bool:
     """Hold a run back when a different configuration would re-provision a profile.
+
+    An accepted switch removes the leftovers in Step 23 the way
+    --remove-leftovers does, so the guard lists them as that run would.
 
     Args:
         args: Arguments after resolve_args().
@@ -22473,10 +26039,13 @@ def guard_configuration_switch(
         old_identity: The configuration identity the manifest records.
         new_identity: The identity of the configuration this run was given.
         new_source: The resolved source of that configuration.
-        residue: What the previous configuration leaves behind.
+        leftovers: What the profile's earlier runs wrote and the new
+            configuration does not install.
+        dropped_job: The daily update job the new configuration drops
+            (see dropped_scheduled_job()), which Step 25 removes, or None.
 
     Returns:
-        True when the run switches the profile (and removes the residue
+        True when the run switches the profile (and removes its leftovers
         after consent); False when both identities match.
     """
     if old_identity == new_identity:
@@ -22484,11 +26053,14 @@ def guard_configuration_switch(
     from_environment = args.origins.get('config') == 'env'
     given = 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if from_environment else 'the configuration argument'
     old_source = manifest.get('config_source')
-    rendered = [f'  {line}' for line in residue.lines()]
-    lines = (
-        ['The previous configuration leaves behind:', *rendered] if residue
-        else ['The previous configuration leaves nothing behind.', *rendered]
+    rows = leftovers.rows(remove=True, dry_run=bool(args.dry_run))
+    job = [f'scheduled update job: {dropped_job} (removed in Step 25)'] if dropped_job else []
+    notes = leftovers.notes(remove=True, dry_run=bool(args.dry_run))
+    heading = (
+        'The previous configuration leaves behind:' if rows or job
+        else 'The previous configuration leaves nothing behind.'
     )
+    lines = [heading, *(f'  {line}' for line in [*rows, *job, *notes])]
     accepted = '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1' if args.switch_config else None
     # The remedy undoes the source the configuration came from
     if from_environment:
@@ -22684,6 +26256,7 @@ def run_dependent_refresh_step(
     for_dependent: str | None = None,
     source_commands: frozenset[str] = frozenset(),
     run_all_commands: bool = False,
+    remove_leftovers: bool = False,
 ) -> list[DependentResult]:
     """Run Step 24: refresh every profile that links content from this one.
 
@@ -22701,6 +26274,8 @@ def run_dependent_refresh_step(
             platform (see refresh_dependents()).
         run_all_commands: Whether this run was given --run-all-commands,
             which every child receives in argv.
+        remove_leftovers: Whether this run was given --remove-leftovers,
+            which every child receives in argv.
 
     Returns:
         One result per dependent refreshed; empty when none ran.
@@ -22714,7 +26289,10 @@ def run_dependent_refresh_step(
             return []
         names = ', '.join(profile.name for profile in others)
         print(f'{Colors.CYAN}Step 24: Refreshing {len(others)} other dependent profile(s): {names} {note}...{Colors.NC}')
-        return refresh_dependents(others, source_commands=source_commands, run_all_commands=run_all_commands)
+        return refresh_dependents(
+            others, source_commands=source_commands, run_all_commands=run_all_commands,
+            remove_leftovers=remove_leftovers,
+        )
     if child_run:
         print(f'{Colors.CYAN}Step 24: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
         return []
@@ -22723,7 +26301,10 @@ def run_dependent_refresh_step(
         return []
     names = ', '.join(profile.name for profile in dependents)
     print(f'{Colors.CYAN}Step 24: Refreshing {len(dependents)} dependent profile(s): {names}...{Colors.NC}')
-    return refresh_dependents(dependents, source_commands=source_commands, run_all_commands=run_all_commands)
+    return refresh_dependents(
+        dependents, source_commands=source_commands, run_all_commands=run_all_commands,
+        remove_leftovers=remove_leftovers,
+    )
 
 
 def child_run_environment() -> dict[str, str]:
@@ -23143,6 +26724,9 @@ class SourceRefresh(NamedTuple):
         run_all_commands: Whether this run was given --run-all-commands,
             forwarded to the source's run, whose Step 24 hands it to every
             other dependent.
+        remove_leftovers: Whether this run was given --remove-leftovers,
+            forwarded to the source's run, which removes the source's
+            leftovers and whose Step 24 hands it to every other dependent.
         snapshot: The resolved-config.yaml the source's run records for the
             configuration this run was given (replay_source_snapshot()), the
             snapshot whose digest is ``digest``; the commands this run leaves
@@ -23157,6 +26741,7 @@ class SourceRefresh(NamedTuple):
     dependents: list[str]
     skip_install: bool
     run_all_commands: bool
+    remove_leftovers: bool
     snapshot: dict[str, Any]
 
     def covered_profiles(self) -> list[str]:
@@ -23179,13 +26764,27 @@ class SourceRefresh(NamedTuple):
         Returns:
             ``--profile SOURCE --yes --child-run --for-dependent THIS``, the
             parent's ``--skip-install`` when it has one, ``--no-admin``, and
-            the parent's ``--run-all-commands`` when it has one.
+            the parent's ``--run-all-commands`` and ``--remove-leftovers``
+            when it has them.
         """
         return [
             '--profile', self.source, '--yes', CHILD_RUN_FLAG, FOR_DEPENDENT_FLAG, this_profile,
             *(['--skip-install'] if self.skip_install else []), '--no-admin',
             *([RUN_ALL_COMMANDS_FLAG] if self.run_all_commands else []),
+            *([REMOVE_LEFTOVERS_FLAG] if self.remove_leftovers else []),
         ]
+
+    def retry_command(self, profile: str) -> str:
+        """Name the command that retries the source, or a dependent its run left behind, as the refresh ran it.
+
+        Args:
+            profile: The source's or the dependent's display name.
+
+        Returns:
+            ``--profile NAME``, with ``--remove-leftovers`` when the refresh
+            ran with it, so the retry removes the leftovers too.
+        """
+        return f'--profile {profile}' + (f' {REMOVE_LEFTOVERS_FLAG}' if self.remove_leftovers else '')
 
     def elevation_reasons(
         self, home_dir: Path, profile_names: Iterable[str], *, node_upgrade: 'NodeUpgradePlan | None' = None,
@@ -23220,6 +26819,7 @@ class SourceRefresh(NamedTuple):
         command = (
             f'--profile {self.source} --yes' + (' --skip-install' if self.skip_install else '') + ' --no-admin'
             + (f' {RUN_ALL_COMMANDS_FLAG}' if self.run_all_commands else '')
+            + (f' {REMOVE_LEFTOVERS_FLAG}' if self.remove_leftovers else '')
         )
         others = (
             f'other profiles its run refreshes: {", ".join(self.dependents)}' if self.dependents
@@ -23308,6 +26908,7 @@ def resolve_dependent_configuration(
         [profile.name for profile in dependents_except(content_dependents(home_dir, source.name), profile_name)],
         bool(args.skip_install),
         bool(args.run_all_commands),
+        bool(args.remove_leftovers),
         candidate,
     )
     warning(f'Profile "{source.name}" is stale: {refresh.reason_text()}; it is refreshed before this profile installs')
@@ -23323,17 +26924,19 @@ def refresh_source_profile(refresh: SourceRefresh, this_profile: str) -> int:
     """Re-run a stale source in its own child run and return its exit code.
 
     The child runs ``--profile SOURCE --yes --child-run --for-dependent
-    THIS [--skip-install] --no-admin [--run-all-commands]`` through the same
-    program this run started from, with the environment
-    child_run_environment() builds: ``--child-run`` because this run reports
-    on the profiles the refresh covers, ``--for-dependent`` so the source's
-    Step 24 refreshes its other dependents and leaves this profile to
-    install itself, the parent's ``--skip-install`` so the binary is
-    installed where the parent would install it, ``--no-admin`` because the
-    parent decided elevation for both runs (SourceRefresh.elevation_reasons()),
-    and the parent's ``--run-all-commands``, which the child's environment
-    lost with its twin, so the other dependents the source's Step 24
-    refreshes receive it too.
+    THIS [--skip-install] --no-admin [--run-all-commands]
+    [--remove-leftovers]`` through the same program this run started from,
+    with the environment child_run_environment() builds: ``--child-run``
+    because this run reports on the profiles the refresh covers,
+    ``--for-dependent`` so the source's Step 24 refreshes its other
+    dependents and leaves this profile to install itself, the parent's
+    ``--skip-install`` so the binary is installed where the parent would
+    install it, ``--no-admin`` because the parent decided elevation for
+    both runs (SourceRefresh.elevation_reasons()), and the parent's
+    ``--run-all-commands`` and ``--remove-leftovers``, which the child's
+    environment lost with their twins, so the source removes its own
+    leftovers and the other dependents the source's Step 24 refreshes
+    receive both too.
 
     Args:
         refresh: The refresh to perform.
@@ -23568,6 +27171,114 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     return reasons
 
 
+def _recorded_since(run_at: object, since: datetime) -> bool:
+    """Report whether a leftovers record was written at or after a moment.
+
+    Args:
+        run_at: The record's run_at value.
+        since: An aware moment.
+
+    Returns:
+        True for an aware ISO time at or after ``since``; False for an
+        earlier one and for any value that cannot be placed against it.
+    """
+    if not isinstance(run_at, str):
+        return False
+    try:
+        recorded = datetime.fromisoformat(run_at)
+    except ValueError:
+        return False
+    return recorded.tzinfo is not None and recorded >= since
+
+
+def profile_leftovers_lines(
+    profile: InstalledProfile, *, since: datetime, remove: bool, claude_dir: Path,
+) -> list[str]:
+    """Render what a profile's manifest records about its leftovers, for the --profile all report.
+
+    The child run of each profile writes the leftovers field in Step 20 and
+    replaces it after Step 23, so the parent reads the outcome from the
+    manifest once the child has exited. A record written before the parent
+    started (the child stopped before Step 20) speaks for an earlier run: it
+    counts only as the list of leftovers still recorded, never as removals.
+
+    Without the flag the record still says why each kept leftover stays, as
+    that profile's run found it: the command is named for the leftovers it
+    removes, those with no kept reason (a failed removal included) and the
+    dependency entries Step 6 listed, and the kept ones are listed with
+    their reasons instead, so a profile whose only leftovers are kept gets
+    no advice its command would not follow.
+
+    Args:
+        profile: The profile, as the parent listed it.
+        since: When the parent started its first child.
+        remove: Whether the run was given --remove-leftovers.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        With the flag, what the run removed and what is left with why each
+        stays; without it, a line naming how many leftovers the command
+        removes and the command, then the kept ones with why each stays.
+        Empty when the manifest records none or cannot be read.
+    """
+    try:
+        manifest = read_profile_manifest(profile.manifest_path)
+    except ValueError:
+        return []
+    record = manifest.get(LEFTOVERS_MANIFEST_KEY) if manifest is not None else None
+    if not isinstance(record, dict):
+        return []
+    record_dict = cast(dict[str, Any], record)
+
+    def _entries(key: str) -> list[object]:
+        value = record_dict.get(key)
+        return cast(list[object], value) if isinstance(value, list) else []
+
+    left = [
+        item.label() for item in (LeftoverItem.from_record(entry, claude_dir=claude_dir) for entry in _entries('items'))
+        if item is not None
+    ]
+    reasons: dict[str, str] = {}
+    for entry in _entries('kept'):
+        if isinstance(entry, dict):
+            label, reason = cast(dict[str, Any], entry).get('label'), cast(dict[str, Any], entry).get('reason')
+            if isinstance(label, str) and isinstance(reason, str):
+                reasons[label] = reason
+    if not remove:
+        removable: list[str] = []
+        kept: list[str] = []
+        for label in left:
+            reason = reasons.get(label, LEFTOVER_LISTED_NOW)
+            (removable if reason == LEFTOVER_LISTED_NOW else kept).append(label)
+        unflagged: list[str] = []
+        if removable:
+            unflagged.append(
+                f'- {len(removable)} leftover(s); remove them with --profile {profile.name} {REMOVE_LEFTOVERS_FLAG}',
+            )
+        if kept:
+            unflagged.append(f'- leftovers kept ({len(kept)}):')
+            unflagged.extend(f'    {label} ({reasons[label]})' for label in kept)
+        return unflagged
+    if not _recorded_since(record_dict.get('run_at'), since):
+        if not left:
+            return []
+        return [f'- leftovers left ({len(left)}; recorded by an earlier run):', *(f'    {label}' for label in left)]
+    removed = [label for label in _entries('removed') if isinstance(label, str)]
+    failed = {label for label in _entries('failed') if isinstance(label, str)}
+    lines: list[str] = []
+    if removed:
+        lines.append(f'- leftovers removed ({len(removed)}):')
+        lines.extend(f'    {label}' for label in removed)
+    if left:
+        skipped = record_dict.get('skipped')
+        why = f'; not removed: {skipped}' if isinstance(skipped, str) and skipped else ''
+        lines.append(f'- leftovers left ({len(left)}{why}):')
+        for label in left:
+            note = 'could not be removed' if label in failed else reasons.get(label, '')
+            lines.append(f'    {label} ({note})' if note else f'    {label}')
+    return lines
+
+
 def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = False) -> int:
     """Re-run every installed profile, the base first, each in its own child run.
 
@@ -23575,14 +27286,19 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
     administrator rights the parent lacks, it relaunches itself through UAC
     before asking for consent, so every child inherits the rights and none
     opens a window of its own. The parent then asks for consent once (or
-    takes --yes); every child runs with --yes, --child-run, the parent's
-    --dry-run and --skip-install, and --no-admin (a dry run
-    forwards the parent's --no-admin instead, so each child still prints
-    what a real run would elevate for). The report at the end names each
+    takes --yes), naming the removal of leftovers when the run was given
+    --remove-leftovers, because no child asks again; every child runs with
+    --yes, --child-run, the parent's --dry-run and --skip-install, and
+    --no-admin (a dry run forwards the parent's --no-admin instead, so each
+    child still prints what a real run would elevate for), then the
+    parent's --run-all-commands and --remove-leftovers, which the child's
+    environment lost with their twins. The report at the end names each
     profile with its result and the --profile command that retries a
-    failed one; a parent relaunched through UAC then holds its window
-    under the success or errors banner until Enter, because that window
-    closes when the process exits.
+    failed one, and, except after a dry run, what the profile's manifest
+    records about its leftovers (profile_leftovers_lines()); a parent
+    relaunched through UAC then holds its window under the success or
+    errors banner until Enter, because that window closes when the process
+    exits.
 
     Args:
         args: Arguments after resolve_args().
@@ -23660,7 +27376,16 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
                  'or --dry-run to preview each one.')
             return 1
         print()
-        if not _ask_yes_no(f'{Colors.YELLOW}Refresh these {len(profiles)} profile(s)? [y/N]: {Colors.NC}'):
+        question = f'Refresh these {len(profiles)} profile(s)? [y/N]: '
+        if args.remove_leftovers:
+            # Every child runs with --yes, so this is the one question
+            # before any profile's Step 23 removes its leftovers
+            info(
+                'Each profile removes its leftovers in Step 23 without asking again; '
+                f'--profile {ALL_PROFILES} {REMOVE_LEFTOVERS_FLAG} --dry-run previews what each one removes.',
+            )
+            question = f'Refresh these {len(profiles)} profile(s) and remove their leftovers? [y/N]: '
+        if not _ask_yes_no(f'{Colors.YELLOW}{question}{Colors.NC}'):
             info('Setup cancelled by user.')
             return 0
     # A child never decides elevation for itself: the parent did, so a
@@ -23671,12 +27396,16 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         ('--skip-install', args.skip_install),
         ('--no-admin', args.no_admin or not args.dry_run),
         (RUN_ALL_COMMANDS_FLAG, args.run_all_commands),
+        (REMOVE_LEFTOVERS_FLAG, args.remove_leftovers),
     ):
         if present:
             child_flags.append(flag)
     launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
     env = child_run_environment()
-    results: list[tuple[str, int]] = []
+    # A child's leftovers record counts as this run's only when written
+    # after this moment
+    started_at = datetime.now(UTC)
+    results: list[tuple[InstalledProfile, int]] = []
     for profile in profiles:
         print()
         print(f'{Colors.CYAN}=== Profile {profile.name} ==={Colors.NC}')
@@ -23685,16 +27414,24 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         except OSError as e:
             error(f'Cannot start the run of profile "{profile.name}": {e}')
             code = 1
-        results.append((profile.name, code))
+        results.append((profile, code))
     print()
     print(f'{Colors.YELLOW}Profiles refreshed:{Colors.NC}')
     failed = 0
-    for name, code in results:
+    retry_flags = f' {REMOVE_LEFTOVERS_FLAG}' if args.remove_leftovers else ''
+    for profile, code in results:
         if code == 0:
-            print(f'   * {name}: ok')
+            print(f'   * {profile.name}: ok')
         else:
             failed += 1
-            print(f'   * {name}: failed (exit code {code}); retry with --profile {name}')
+            print(f'   * {profile.name}: failed (exit code {code}); retry with --profile {profile.name}{retry_flags}')
+        # A dry run's children write nothing, so their manifests say
+        # nothing about this run
+        if not args.dry_run:
+            for line in profile_leftovers_lines(
+                profile, since=started_at, remove=bool(args.remove_leftovers), claude_dir=home_dir / '.claude',
+            ):
+                print(f'       {line}')
     print()
     if elevated_via_uac:
         if failed:
@@ -23803,8 +27540,16 @@ def main() -> None:
     parser.add_argument(
         '--switch-config',
         action='store_true',
-        help='Accept a different configuration for an existing profile and remove what the '
-        'previous configuration left behind',
+        help='Accept a different configuration for an existing profile and remove its leftovers in Step 23 '
+        'as --remove-leftovers does',
+    )
+    parser.add_argument(
+        '--remove-leftovers',
+        action='store_true',
+        help='Remove in Step 23 what earlier runs of the profile installed and the configuration no longer '
+        "installs, each item only while it still holds what the setup wrote; --profile all, a source's refresh "
+        'of its dependents and the refresh of a stale source hand it to every profile they run, and a scheduled '
+        'run only lists leftovers',
     )
     parser.add_argument(
         '--link-dirs',
@@ -23840,15 +27585,20 @@ def main() -> None:
     # program with --scheduled-run: the run takes the machine-wide update
     # lock, sends its output to a log in the toolbox state directory and
     # records its outcome, then runs the profile's setup (or the command the
-    # configuration names) in this process
+    # configuration names) in this process. The setup lists leftovers and
+    # removes none; the switch-off is announced once the output goes to the
+    # log, so the log says why
     if args.scheduled_run:
         if not args.profile or args.profile == ALL_PROFILES:
             error(f'{SCHEDULED_RUN_FLAG} runs the daily update of one installed profile and needs --profile NAME')
             sys.exit(1)
         custom_command = scheduled_custom_command(str(args.profile), get_real_user_home())
-        sys.exit(run_scheduled_update(
-            args, lambda: _run_setup(args, was_elevated_via_uac), custom_command=custom_command,
-        ))
+
+        def _scheduled_setup() -> None:
+            switch_off_scheduled_removal(args)
+            _run_setup(args, was_elevated_via_uac)
+
+        sys.exit(run_scheduled_update(args, _scheduled_setup, custom_command=custom_command))
     _run_setup(args, was_elevated_via_uac)
 
 
@@ -24107,11 +27857,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
 
         # An isolated run keeps every path that names the base config home
         # inside its own profile. The rerooter is built as soon as the
-        # target directory is known, because the switch guard below
-        # compares the previous run's records with the files this
-        # configuration installs at their re-rooted paths; the
-        # configuration itself is rewritten after the snapshot records it
-        # as authored
+        # target directory is known, because the leftovers below compare the
+        # previous run's records with the files this configuration installs
+        # at their re-rooted paths; the configuration itself is rewritten
+        # after the snapshot records it as authored
         installed = installed_profiles(get_real_user_home())
         reroot: ConfigHomeReroot | None = None
         if primary_command_name:
@@ -24122,10 +27871,9 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             )
 
         # Hold the run back, before any write, when the environment would
-        # change the names an installed profile remembers, or when a
-        # different configuration would re-provision it; the switch guard
-        # lists what the previous configuration leaves behind, and the run
-        # removes it after consent
+        # change the names an installed profile remembers or its links; the
+        # switch guard below holds it back when a different configuration
+        # would re-provision it
         guard_environment_name_change(args, effective_command_names, target_manifest, profile_name)
         guard_environment_link_change(args, link_spec, target_manifest, profile_name)
         dependents = content_dependents(home_dir, profile_name)
@@ -24147,7 +27895,35 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 for line in dependents_remedy(dependents):
                     info(line)
                 sys.exit(1)
-        residue_to_remove: ProfileResidue | None = None
+        # What the leftovers are read against before consent: the settings
+        # files a session reads (an isolated config.json as Step 18 rebuilds
+        # it, from the view the computation adds), the dependents that link
+        # hooks/ from this profile, the OS environment and the MCP
+        # registrations
+        pre_consent_live = LiveLeftoverState.for_profile(
+            target_config_dir, home_dir,
+            settings_files=leftover_settings_files(
+                target_config_dir, isolated=bool(primary_command_name), before_consent=True,
+            ),
+            dependents=dependents,
+            isolated=bool(primary_command_name),
+        )
+
+        # What the profile's earlier runs wrote and this configuration no
+        # longer installs, compared with the configuration before component
+        # selection (a deselected component's files are rows of the removal
+        # plan instead); computed for every profile with a manifest, also one
+        # whose recorded configuration cannot be resolved from here. A
+        # different configuration is a switch: the switch guard lists these
+        # leftovers, and an accepted switch removes them in Step 23 the way
+        # --remove-leftovers does. A hook file is checked against the
+        # settings files a session reads, the ones Step 18 rebuilds left out
+        # and the base settings.json as a flagged Step 23 leaves it once its
+        # own leftovers are gone, in every run, so the leftovers each run
+        # lists are what the flag removes; and against the dependents that
+        # link hooks/ from this profile.
+        leftover_report: LeftoverReport | None = None
+        switch_accepted = False
         if target_manifest is not None:
             recorded_identity = manifest_config_identity(target_manifest)
             if recorded_identity is None:
@@ -24155,25 +27931,31 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'Recording {config_source} as the configuration of profile "{profile_name}": its manifest '
                     'records a configuration that cannot be resolved from this directory.',
                 )
-            else:
-                residue = profile_residue(
-                    target_manifest, target_config_dir, config,
-                    isolated=bool(primary_command_name),
-                    config_source=config_source,
-                    base_url=config.get('base-url'),
-                    claude_dir=get_real_user_home() / '.claude',
-                    reroot=reroot,
-                )
-                if guard_configuration_switch(
+            leftover_report = compute_profile_leftovers(
+                target_manifest, target_config_dir,
+                profile_name=profile_name,
+                planned=planned_records(
+                    config, target_config_dir, claude_dir=home_dir / '.claude', reroot=reroot,
+                    base=not primary_command_name,
+                ),
+                live=pre_consent_live,
+                claude_dir=home_dir / '.claude',
+            )
+            if recorded_identity is not None:
+                switch_accepted = guard_configuration_switch(
                     args,
                     manifest=target_manifest,
                     profile_name=profile_name,
                     old_identity=recorded_identity,
                     new_identity=this_identity,
                     new_source=config_source,
-                    residue=residue,
-                ):
-                    residue_to_remove = residue
+                    leftovers=leftover_report,
+                    dropped_job=dropped_scheduled_job(target_manifest, config),
+                )
+        # Step 23 removes the leftovers in a run given --remove-leftovers and
+        # in an accepted configuration switch; the flag alone travels to the
+        # runs this one starts
+        remove_leftovers = bool(args.remove_leftovers) or switch_accepted
 
         # Guard the run against a CLAUDE_CONFIG_DIR inherited from the
         # environment. Runs as soon as the target directory is known, so no
@@ -24236,6 +28018,19 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     'file together.',
                 )
                 sys.exit(1)
+
+        # A leftover under an entry this run links is reached through the
+        # link from Step 3 on, so it belongs to the source profile from then;
+        # a hook group the selected components write is no leftover
+        if leftover_report is not None:
+            leftover_report = leftover_report.refined(
+                linked_entries=linked_entries,
+                link_source=link_spec.source,
+                selected=planned_records(
+                    config, target_config_dir, claude_dir=home_dir / '.claude', reroot=reroot,
+                    base=not primary_command_name,
+                ) if selection.is_active else None,
+            )
 
         # The configuration this run installs, recorded beside the manifest
         # as resolved-config.yaml; a remembered value that overrides a
@@ -24365,24 +28160,13 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
 
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
-        claude_code_version_normalized = None  # Default to latest
-
-        if claude_code_version is not None:
-            # Convert to string to handle YAML numeric values (e.g., 1.0 becomes "1.0")
-            claude_code_version_str = str(claude_code_version).strip()
-
-            # Handle empty strings
-            if not claude_code_version_str:
-                warning('Empty claude-code-version value, using latest')
-                claude_code_version_normalized = None
-            # Handle "latest" value (case-insensitive)
-            elif claude_code_version_str.lower() == 'latest':
-                info(f'Claude Code version specified: {claude_code_version} (will install latest available)')
-                claude_code_version_normalized = None
-            # Specific version specified
-            else:
-                info(f'Claude Code version specified: {claude_code_version_str}')
-                claude_code_version_normalized = claude_code_version_str
+        claude_code_version_normalized = normalized_claude_code_version(claude_code_version)
+        if claude_code_version_normalized is not None:
+            info(f'Claude Code version specified: {claude_code_version_normalized}')
+        elif claude_code_version is not None and not str(claude_code_version).strip():
+            warning('Empty claude-code-version value, using latest')
+        elif claude_code_version is not None:
+            info(f'Claude Code version specified: {claude_code_version} (will install latest available)')
 
         # Set process env early to prevent CLI auto-install during installation
         if claude_code_version_normalized is not None:
@@ -24673,6 +28457,14 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 pin_effect=plan.pin_effect,
                 scheduled_update=scheduled_update_plan,
                 node_upgrade=plan.node_upgrade,
+                leftover_destinations=(
+                    leftover_report.removable_destinations()
+                    if remove_leftovers and leftover_report is not None else []
+                ),
+                leftover_mcp_servers=(
+                    leftover_report.removable_project_mcp_servers()
+                    if remove_leftovers and leftover_report is not None else []
+                ),
             )
         plan.destination_warnings = shared_destination_warnings(
             plan.files_to_download, config_source, base_url,
@@ -24689,6 +28481,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             machine_pinned=machine_pinned,
             user_declared_keys=user_declared_control_keys,
         )
+        plan.leftovers = leftover_report
+        plan.remove_leftovers = remove_leftovers
+        plan.dry_run = bool(args.dry_run)
+        plan.scheduled_run = bool(args.scheduled_run)
 
         auto_confirm = args.yes
         dry_run = args.dry_run
@@ -24737,7 +28533,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'The refresh of profile "{source_refresh.source}" failed (exit code {refresh_code}); '
                     f'profile "{profile_name}" was not installed.',
                 )
-                info(f'Retry the source with --profile {source_refresh.source}, then run this command again.')
+                info(
+                    f'Retry the source with {source_refresh.retry_command(source_refresh.source)}, '
+                    'then run this command again.',
+                )
                 sys.exit(1)
             if not recorded:
                 print()
@@ -24760,7 +28559,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                         f'Its run could not refresh: {", ".join(source_refresh_failures)}',
                     )
                 for name in source_refresh_failures:
-                    info(f'Retry it with --profile {name} after this run.')
+                    info(f'Retry it with {source_refresh.retry_command(name)} after this run.')
             success(
                 f'Profile "{source_refresh.source}" refreshed; installing "{profile_name}" from its '
                 f'{RESOLVED_CONFIG_FILENAME}',
@@ -24794,13 +28593,6 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # config.json (the runtime launcher export is the authoritative runtime
         # source).
         export_setup_time_config_dir(primary_command_name, artifact_base_dir)
-
-        # A profile switched to another configuration sheds what the previous
-        # one left behind before the new one installs
-        if residue_to_remove:
-            print()
-            print(f'{Colors.CYAN}Removing what the previous configuration of "{profile_name}" left behind...{Colors.NC}')
-            remove_profile_residue(residue_to_remove, profile_dir=artifact_base_dir, claude_dir=claude_user_dir)
 
         # Derive all artifact directories from artifact_base_dir
         agents_dir = artifact_base_dir / 'agents'
@@ -24939,7 +28731,28 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             for command in source_work.commands:
                 info(f'Left to source profile "{source_work.source}": {command}')
         dependencies = config.get('dependencies', {})
-        dependency_failures = install_dependencies(dependencies)
+        # Each command runs watched: the top-level entries it creates or
+        # touches in the profile's content directories (never through a
+        # link) are credited to it, and an entry an earlier run recorded
+        # that no command installs any more is listed as a leftover, which a
+        # later run given --remove-leftovers removes
+        dependency_observer = dependency_entry_observer(artifact_base_dir, linked_entries)
+        dependency_failures = install_dependencies(dependencies, observer=dependency_observer)
+        dependency_attribution = attribute_dependency_entries(
+            (target_manifest or {}).get(DEPENDENCY_ENTRIES_KEY),
+            dependency_observer.runs,
+            profile_dir=artifact_base_dir,
+            planned_files=planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
+            linked_entries=linked_entries,
+        )
+        if leftover_report is not None:
+            leftover_report = leftover_report.after_dependency_commands(
+                credited=dependency_attribution.credited,
+                failed_commands=frozenset(dependency_failures),
+                listed_now=dependency_attribution.listed_now,
+            )
+            for line in leftover_report.listed_now_lines():
+                info(line)
 
         # A dependency command may have replaced a linked entry with a real
         # directory; the profile would then diverge from its source silently
@@ -25090,11 +28903,13 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # an isolated environment exists to provide.
         print()
         print(f'{Colors.CYAN}Step 14: Writing user settings...{Colors.NC}')
+        user_settings_written = False
         if not user_settings:
             info('No user settings to configure')
         elif primary_command_name:
             info('Isolated mode: user settings are built into config.json in Step 18')
         elif write_user_settings(user_settings, claude_user_dir):
+            user_settings_written = True
             success('User settings configured successfully')
         else:
             warning('Failed to write user settings (non-fatal)')
@@ -25126,8 +28941,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         )
 
         # What this run wrote and chose, as Step 20 records it: a later
-        # re-run reads the names and the component delta, and the switch
-        # guard reads the written records to list the residue
+        # re-run reads the names and the component delta and compares the
+        # written records and the carried leftovers with its configuration,
+        # which the switch guard lists too.
+        # The files, destinations and base settings are recorded in each
+        # branch right before Step 20, after the last write of the run.
         manifest_records: dict[str, Any] = {
             'resolved_config': installed_config_snapshot,
             'origins': {
@@ -25141,17 +28959,19 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 **configured_link_values,
             },
             'link': link_spec.record() if primary_command_name else None,
-            'machine_wide_destinations': machine_wide_download_records(
-                [cast(dict[str, Any], f) for f in cast(list[object], files_to_download or []) if isinstance(f, dict)],
-                config_source, base_url, claude_user_dir,
+            'os_env_written': os_env_records(os_level_env_variables, isolated=bool(primary_command_name)),
+            # The entry each registered server holds after Step 13, read where
+            # the CLI keeps it: the profile's own .claude.json when isolated
+            'mcp_servers': mcp_server_records(
+                mcp_servers,
+                live_entries=lambda name: _read_live_mcp_entries(
+                    name, artifact_base_dir if primary_command_name else None,
+                ),
             ),
-            'os_env_written': [key for key, value in os_level_env_variables.items() if value is not None],
-            'settings_keys_written': written_settings_keys(user_settings, status_line, config.get('hooks')),
-            'mcp_servers': mcp_server_records(mcp_servers),
-            'files_written': planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
             'auto_update': auto_update_manifest_record(
                 scheduled_update_plan.spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
             ),
+            'dependency_entries': dependency_attribution.records,
         }
         config_source_type = classify_config_source(config_source)
         config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -25219,6 +29039,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # Step 20: Write installation manifest
             print()
             print(f'{Colors.CYAN}Step 20: Writing installation manifest...{Colors.NC}')
+            profile_records = written_profile_records(
+                config, artifact_base_dir,
+                linked_entries=linked_entries,
+                files_to_download=files_to_download,
+                config_source=config_source,
+                base_url=base_url,
+                claude_dir=claude_user_dir,
+                previous_manifest=target_manifest,
+                download_failed=bool(download_failures),
+                settings_written=[],
+            )
             write_manifest(
                 config_base_dir=artifact_base_dir,
                 command_name=primary_command_name,
@@ -25229,6 +29060,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 command_names=command_names or [primary_command_name],
                 claude_code_version=claude_code_version_normalized,
                 **manifest_records,
+                **profile_records,
+                leftovers=leftovers_manifest_record(leftover_report, run_at=datetime.now(UTC).isoformat()),
             )
 
             # Step 21: Create launcher script
@@ -25270,10 +29103,18 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # Step 23: Remove previously installed artifacts of deselected
             # components (the removal plan derives from the unfiltered
             # config, so no on-disk state is needed); a linked entry belongs
-            # to another profile and is left alone
-            if has_deselected_items(deselected):
+            # to another profile and is left alone. Then the leftovers of
+            # earlier runs, with --remove-leftovers or after an accepted
+            # configuration switch, each checked against config.json as Step
+            # 18 rebuilt it
+            step_23 = step_23_heading(
+                deselection=has_deselected_items(deselected),
+                leftovers=leftovers_step_runs(leftover_report, remove=remove_leftovers),
+            )
+            if step_23 is not None:
                 print()
-                print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
+                print(f'{Colors.CYAN}{step_23}{Colors.NC}')
+            if has_deselected_items(deselected):
                 execute_deselection_cleanup(
                     deselected,
                     config,
@@ -25285,6 +29126,23 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     is_isolated=True,
                     linked_entries=linked_entries,
                 )
+            leftover_removal = run_leftovers_step(
+                leftover_report,
+                remove=remove_leftovers,
+                download_failed=bool(download_failures),
+                written=written_leftover_records({**manifest_records, **profile_records}),
+                live=LiveLeftoverState.for_profile(
+                    artifact_base_dir, get_real_user_home(),
+                    settings_files=leftover_settings_files(artifact_base_dir, isolated=True, before_consent=False),
+                    dependents=dependents,
+                    isolated=True,
+                ),
+                profile_dir=artifact_base_dir,
+                claude_dir=claude_user_dir,
+                manifest_path=artifact_base_dir / MANIFEST_FILENAME,
+                run_at=datetime.now(UTC).isoformat(),
+                failed_commands=frozenset(dependency_failures),
+            )
 
             # Every linked entry must still be a link when the run ends
             if link_plan is not None:
@@ -25295,6 +29153,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
+                remove_leftovers=bool(args.remove_leftovers),
             )
 
             # Step 25: The profile's daily update job (the auto-update key)
@@ -25346,7 +29205,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # Claude Code CLI itself, so the writer uses deep-merge with
             # RFC 7396 null-as-delete (via _write_merged_json()) to
             # preserve non-delta keys while allowing explicit YAML null
-            # to remove keys.
+            # to remove keys; the status line it declares replaces the
+            # file's whole (SETTINGS_OBJECTS_WRITTEN_WHOLE).
             print()
             print(f'{Colors.CYAN}Step 18: Writing profile settings to settings.json...{Colors.NC}')
 
@@ -25365,7 +29225,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # Build the profile settings delta (pure, no I/O)
             settings_delta = _build_profile_settings(profile_config_shared, hooks_dir)
 
-            write_profile_settings_to_settings(settings_delta, claude_user_dir)
+            profile_settings_written = write_profile_settings_to_settings(settings_delta, claude_user_dir)
 
             # Step 19: Build the uv environment of every PEP 723 hook the
             # base profile wires, on the path spelling settings.json names,
@@ -25385,6 +29245,22 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # machine-global auto-update controls are still needed.
             print()
             print(f'{Colors.CYAN}Step 20: Writing installation manifest...{Colors.NC}')
+            profile_records = written_profile_records(
+                config, artifact_base_dir,
+                linked_entries=linked_entries,
+                files_to_download=files_to_download,
+                config_source=config_source,
+                base_url=base_url,
+                claude_dir=claude_user_dir,
+                previous_manifest=target_manifest,
+                download_failed=bool(download_failures),
+                # What Steps 14 and 18 merged into settings.json, each part
+                # only when its write succeeded
+                settings_written=written_settings_records(
+                    user_settings if user_settings_written else None,
+                    settings_delta if profile_settings_written else {},
+                ),
+            )
             write_manifest(
                 config_base_dir=claude_user_dir,
                 command_name=None,
@@ -25395,6 +29271,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                 command_names=[],
                 claude_code_version=claude_code_version_normalized,
                 **manifest_records,
+                **profile_records,
+                leftovers=leftovers_manifest_record(leftover_report, run_at=datetime.now(UTC).isoformat()),
             )
 
             # Steps 21-22: Skip command creation
@@ -25405,9 +29283,17 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             # components (the removal plan derives from the unfiltered
             # config, so no on-disk state is needed). Runs after the Step 18
             # settings merge so the union-written file is reconciled last.
-            if has_deselected_items(deselected):
+            # Then the leftovers of earlier runs, with --remove-leftovers or
+            # after an accepted configuration switch, each hook file checked
+            # against settings.json as Step 18 left it
+            step_23 = step_23_heading(
+                deselection=has_deselected_items(deselected),
+                leftovers=leftovers_step_runs(leftover_report, remove=remove_leftovers),
+            )
+            if step_23 is not None:
                 print()
-                print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
+                print(f'{Colors.CYAN}{step_23}{Colors.NC}')
+            if has_deselected_items(deselected):
                 execute_deselection_cleanup(
                     deselected,
                     config,
@@ -25418,12 +29304,30 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     hooks_dir=hooks_dir,
                     is_isolated=False,
                 )
+            leftover_removal = run_leftovers_step(
+                leftover_report,
+                remove=remove_leftovers,
+                download_failed=bool(download_failures),
+                written=written_leftover_records({**manifest_records, **profile_records}),
+                live=LiveLeftoverState.for_profile(
+                    claude_user_dir, get_real_user_home(),
+                    settings_files=leftover_settings_files(claude_user_dir, isolated=False, before_consent=False),
+                    dependents=dependents,
+                    isolated=False,
+                ),
+                profile_dir=claude_user_dir,
+                claude_dir=claude_user_dir,
+                manifest_path=claude_user_dir / MANIFEST_FILENAME,
+                run_at=datetime.now(UTC).isoformat(),
+                failed_commands=frozenset(dependency_failures),
+            )
 
             # Step 24: Refresh the profiles that link content from the base profile
             dependent_results = run_dependent_refresh_step(
                 dependents, source_name=profile_name, child_run=args.child_run, for_dependent=args.for_dependent,
                 source_commands=frozenset(dependency_commands_for_this_platform(config.get('dependencies'))),
                 run_all_commands=args.run_all_commands,
+                remove_leftovers=bool(args.remove_leftovers),
             )
 
             # Step 25: The base profile's daily update job (the auto-update key)
@@ -25439,9 +29343,10 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         # Check for download, Node.js upgrade, dependency, hook environment, dependent and scheduled-job
         # failures and report accordingly
         dependent_failures = [result for result in dependent_results if result.code != 0]
+        leftover_failures = leftover_removal.failed() if leftover_removal is not None else []
         if (
             download_failures or node_step.failure or dependency_failures or hook_environments.failed
-            or dependent_failures or source_refresh_code or scheduled_update_failure
+            or dependent_failures or source_refresh_code or scheduled_update_failure or leftover_failures
         ):
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
@@ -25490,7 +29395,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     f'The run of profile "{source_refresh.source}" that refreshed the source of this profile ended '
                     f'with exit code {source_refresh_code}.',
                 )
-                error(f'Review its output above, then retry it with --profile {source_refresh.source}.')
+                error(f'Review its output above, then retry it with {source_refresh.retry_command(source_refresh.source)}.')
                 print()
             if dependent_failures or source_refresh_failures:
                 assert source_refresh is not None or not source_refresh_failures
@@ -25501,7 +29406,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
                     assert source_refresh is not None
                     error(
                         f'  - {name}: not refreshed by the run of profile "{source_refresh.source}"; '
-                        f'retry with --profile {name}',
+                        f'retry with {source_refresh.retry_command(name)}',
                     )
                 print()
                 error('Review the output of each failed dependent above, then retry it with its --profile command.')
@@ -25509,6 +29414,19 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             if scheduled_update_failure:
                 error('The scheduled update job (auto-update) was not applied:')
                 error(f'  - {scheduled_update_failure}')
+                print()
+            if leftover_failures:
+                assert leftover_report is not None
+                error('The following leftovers could not be removed (they stay recorded):')
+                for outcome in leftover_failures:
+                    error(f'  - {outcome.entry.item.display(leftover_report.profile_dir)}: {outcome.detail}')
+                error(f'Retry with --profile {profile_name} {REMOVE_LEFTOVERS_FLAG}.')
+                print()
+            if leftover_removal is not None and leftover_removal.skipped:
+                warning(
+                    f'Leftovers not removed: {leftover_removal.skipped}; they stay recorded, and the next run with '
+                    f'{REMOVE_LEFTOVERS_FLAG} removes them.',
+                )
                 print()
             if shadowing_npm is not None:
                 print_shadowing_npm_warning(shadowing_npm)
@@ -25625,6 +29543,15 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
+        # Under --yes nobody reads the installation summary before the run,
+        # so the closing lines repeat the leftovers it found and what Step 23
+        # did with them
+        for headline, items in (
+            leftover_report.completion_sections(leftover_removal) if leftover_report is not None else []
+        ):
+            print(f'   * {headline}')
+            for item in items:
+                print(f'       - {item}')
         scheduled_update_line = scheduled_update_completion_line(scheduled_update_plan, scheduled_update_failure)
         if scheduled_update_line:
             print(f'   * {scheduled_update_line}')

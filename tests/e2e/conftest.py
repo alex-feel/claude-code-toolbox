@@ -26,6 +26,9 @@ from tests.e2e.node_upgrade_support import CONFINEMENT_VARIABLE as NODE_CONFINEM
 from tests.e2e.node_upgrade_support import RECORD_VARIABLE as NODE_RECORD_VARIABLE
 from tests.e2e.node_upgrade_support import NodeCommandRecorder
 from tests.e2e.node_upgrade_support import replacements as node_upgrade_replacements
+from tests.e2e.user_environment_fake import ENVIRONMENT_VARIABLE as USER_ENVIRONMENT_VARIABLE
+from tests.e2e.user_environment_fake import FakeUserEnvironment
+from tests.e2e.user_environment_fake import replacements as user_environment_replacements
 
 
 def _setup_modules() -> list[ModuleType]:
@@ -148,6 +151,33 @@ def node_command_recorder(
     monkeypatch.setenv(NODE_RECORD_VARIABLE, str(recorder.path))
     monkeypatch.setenv(NODE_CONFINEMENT_VARIABLE, str(tmp_path_factory.getbasetemp()))
     return recorder
+
+
+@pytest.fixture(autouse=True)
+def fake_user_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeUserEnvironment | None:
+    """Keep the Windows user environment of the machine out of every E2E test.
+
+    On Windows Step 7 of a base run sets the profile's OS environment
+    variables with setx and reg delete in HKCU\\Environment, broadcasts the
+    change, and a re-run reads the variables back from there to find the
+    leftovers of earlier runs. In every setup module the fixture replaces the
+    writer, the reader and the broadcast with a user environment kept in a
+    file under the test's temporary directory, which it also hands to every
+    child run through USER_ENVIRONMENT_VARIABLE. On Linux and macOS the setup
+    writes the shell files of the isolated home, so nothing is replaced.
+
+    Returns:
+        The fake on Windows, None elsewhere.
+    """
+    monkeypatch.delenv(USER_ENVIRONMENT_VARIABLE, raising=False)
+    if sys.platform != 'win32':
+        return None
+    fake = FakeUserEnvironment(tmp_path / 'user-environment.json')
+    for module in _setup_modules():
+        for name, value in user_environment_replacements(fake).items():
+            monkeypatch.setattr(module, name, value)
+    monkeypatch.setenv(USER_ENVIRONMENT_VARIABLE, str(fake.path))
+    return fake
 
 
 def _shaped_scheduler(
